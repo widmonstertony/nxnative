@@ -352,37 +352,54 @@ void loader_hash_log(void) {
 }
 
 #if TARGET_OS_IPHONE
-// iOS does not allow code loaded at run time to execute, and Apple allows an executable only one segment with execute permission (ITMS-90999): the image is compiled into this executable by dm/ios/tools/gen_embed.py --
-// the two code blocks (original text, patch area) are sections in __TEXT, and W (the rest of ro + data + bss) is a separate RW segment. The three blocks are not adjacent in the file; here one contiguous address range is reserved,
-// and they are vm_remap'ed back at their original relative positions: code pages with copy=FALSE (sharing the same signed pages with __TEXT, r-x), W with copy=TRUE (copy-on-write, paged only when used).
-// The run-time layout is byte-identical to the original image. Remapping signed pages to a new address and then executing them on iOS is exactly what libffi's trampoline table (FFI_EXEC_TRAMPOLINE_TABLE) does
+// iOS allows only one executable segment.  For the normal (positive PATCH_OFF)
+// layout, gen_embed.py places X0, a hole for W, and X1 at their final addresses
+// inside __TEXT.  Only the hole is replaced with a writable copy-on-write
+// mapping; the code stays in dyld's original signed executable mapping.
 #include <mach/mach.h>
+#define IMAGE_MH (&_mh_execute_header)
 static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned long size, boolean_t copy, vm_prot_t need) {
     vm_address_t a = to; vm_prot_t cur = 0, max = 0;
     kern_return_t kr = vm_remap(mach_task_self(), &a, size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)from, copy, &cur, &max, VM_INHERIT_NONE);
-    if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p → %#lx (%#lx bytes) failed: %d", m->name, from, (unsigned long)to, size, kr);
+    if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p -> %#lx (%#lx bytes) failed: %d", m->name, from, (unsigned long)to, size, kr);
     if ((cur & need) != need) die("%s permissions after vm_remap %#x, missing %#x", m->name, cur, need);
 }
-#define IMAGE_MH (&_mh_execute_header)
 static void map_image(module_t *m, const char *dir) {
     (void)dir;
-    char sx0[17], sx1[17], dm[17]; snprintf(sx0, sizeof sx0, "__dm%sx0", m->name); snprintf(sx1, sizeof sx1, "__dm%sx1", m->name); snprintf(dm, sizeof dm, "__DM%sW", m->name);
-    unsigned long z0, zw, z1;
-    const uint8_t *x0 = getsectiondata(IMAGE_MH, "__TEXT", sx0, &z0), *w = getsectiondata(IMAGE_MH, dm, "__img", &zw), *x1 = getsectiondata(IMAGE_MH, "__TEXT", sx1, &z1);
-    if (!x0 || !w || !x1) die("embedded sections %s / %s / %s missing", sx0, dm, sx1);
-    // Patch area before the base (patch_off < 0): W ends at the end of data (FILE_IMAGE_LEN); bss and the key page are zero pages from vm_allocate and are not in the executable
-    int front = m->patch_off < 0;
-    if (z0 + zw != (front ? m->file_image_len : (uint64_t)m->patch_off) || (z0 & 0x3FFF) || (zw & 0x3FFF) || (z1 & 0x3FFF) || ((uintptr_t)x0 & 0x3FFF) || ((uintptr_t)w & 0x3FFF) || ((uintptr_t)x1 & 0x3FFF))
-        die("%s embedded section layout mismatch (x0 %#lx w %#lx x1 %#lx, PATCH_OFF %#llx)", m->name, z0, zw, z1, (unsigned long long)m->patch_off);
-    m->size = front ? m->image_size : m->patch_off + z1;
-    uint64_t pre = front ? (uint64_t)-m->patch_off : 0;
-    if (front) m->patch_len = z1;
+    char sw[17]; snprintf(sw, sizeof sw, "__DM%sW", m->name);
+    unsigned long zw; const uint8_t *w = getsectiondata(IMAGE_MH, sw, "__img", &zw);
+    if (!w) die("embedded section %s missing", sw);
+    uint64_t z0 = (m->text_end + 0x3FFF) & ~0x3FFFull;
+
+    if (m->patch_off >= 0) {
+        char si[17]; snprintf(si, sizeof si, "__dm%simg", m->name);
+        unsigned long zi; const uint8_t *img = getsectiondata(IMAGE_MH, "__TEXT", si, &zi);
+        if (!img) die("embedded section __TEXT,%s missing", si);
+        if (z0 + zw != (uint64_t)m->patch_off || (zi & 0x3FFF) || ((uintptr_t)img & 0x3FFF) || ((uintptr_t)w & 0x3FFF))
+            die("%s embedded section layout mismatch (image %#lx W %#lx PATCH_OFF %#llx)", m->name, zi, zw, (unsigned long long)m->patch_off);
+        m->base = (uint8_t *)img; m->size = zi;
+        vm_address_t data = (vm_address_t)(m->base + z0);
+        kern_return_t kr = vm_protect(mach_task_self(), data, zw, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+        if (kr != KERN_SUCCESS) die("%s vm_protect __TEXT data hole %p (%#lx bytes) failed: %d", m->name, (void *)data, zw, kr);
+        memcpy((void *)data, w, zw);
+        LOG("%s using signed __TEXT in place; W copied to %p (%#lx bytes)", m->name, (void *)data, zw);
+        install_key_page(m);
+        return;
+    }
+
+    // Negative PATCH_OFF builds retain the older three-piece representation.
+    char sx0[17], sx1[17]; snprintf(sx0, sizeof sx0, "__dm%sx0", m->name); snprintf(sx1, sizeof sx1, "__dm%sx1", m->name);
+    unsigned long zx0, zx1;
+    const uint8_t *x0 = getsectiondata(IMAGE_MH, "__TEXT", sx0, &zx0), *x1 = getsectiondata(IMAGE_MH, "__TEXT", sx1, &zx1);
+    if (!x0 || !x1 || zx0 + zw != m->file_image_len || (zx0 & 0x3FFF) || (zw & 0x3FFF) || (zx1 & 0x3FFF))
+        die("%s embedded front-patch section layout mismatch", m->name);
+    uint64_t pre = (uint64_t)-m->patch_off; m->size = m->image_size; m->patch_len = zx1;
     vm_address_t base = 0;
-    if (vm_allocate(mach_task_self(), &base, pre + m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s failed to reserve %#llx bytes of address space", m->name, (unsigned long long)(pre + m->size));
+    if (vm_allocate(mach_task_self(), &base, pre + m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s failed to reserve address space", m->name);
     base += pre;
-    remap_at(m, base, x0, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-    remap_at(m, base + z0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
-    remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    remap_at(m, base, x0, zx0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    remap_at(m, base + zx0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
+    remap_at(m, base + m->patch_off, x1, zx1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     m->base = (uint8_t *)base; install_key_page(m);
 }
 #else
