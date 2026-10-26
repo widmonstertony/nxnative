@@ -2,11 +2,14 @@
 // two .ushaderbytecode files in pakchunk0-Switch.pak, block header 8C 0A = Mermaid), Game Freak's Trinity engine every file of its packs (Pokémon Legends: Z-A: arc/data.trpfs, compression
 // type 3), and DRAGON QUEST XI S (Unreal Engine 4.18) the files of its paks with LZ5 2.0 (pak compression method 3; each block starts with the LZ5 level, 0x2d). Shaders are translated offline
 // only and Oodle's decoder is not open source, so they are decoded on the Mac with the copy statically linked into main (LZ5 the same way, so the tools need no decoder of their own), in one
-// of two modes:
+// of three modes:
 // DM_OODLE_JOB=<job file> runs the decoder on every record right before nnMain, writes <job file>.out and exits (the NSP script, Unreal);
 // DM_OODLE_SERVE=1 answers requests on stdin / stdout from the guest main thread before the SDK starts, until stdin ends (shader_split.py's workers, Trinity: the packs are decoded file by file
 // while they are scanned, about 4.7 GB, so they are never written out). Request: u64 compressed length, u64 decompressed length, the compressed bytes; answer: u64 bytes decoded (0 on failure),
 // then those bytes.
+// DM_OODLE_COMPRESS_JOB=<job file> runs OodleLZ_Compress after the SDK and module constructors have initialized the game's allocator, verifies an exact decode round trip, writes the raw
+// compressed stream to <job file>.out and exits. Its intentionally small, single-record format is "DMCJ", u32 compressor, u32 level, u32 raw length, then the raw bytes. It is used only by
+// offline, same-slot resource tools; the original archive stays read-only and the caller still has to reject a stream larger than its existing FlatBuffer vector.
 // Job file: "DMOJ", u32 count, then per record u32 compressed length, u32 raw length and the compressed bytes. Output: "DMOR", u32 count, then per record u32 decoded length
 // (0 = failed) and the decoded bytes.
 #include "hle.h"
@@ -31,12 +34,12 @@ static uint64_t func_start(const module_t *m, uint64_t off) {   // start of the 
     for (uint64_t i = 0; i < n; i++) { uint64_t s = eh_read(b, &o, tenc, ehs); eh_read(b, &o, tenc, ehs); if (s <= off && s > best) best = s; }
     return best;
 }
-static uint64_t oodle_find(const module_t *m) {
-    static const char nm[] = "OodleLZ_Decompress";   // sizeof includes the terminating NUL
+static uint64_t oodle_named_find(const module_t *m, const char *nm) {
+    size_t nm_n = strlen(nm) + 1;   // include the terminating NUL, so a profiler-name substring cannot match
     const uint8_t *b = m->base, *ro = b + m->ro_off, *re = b + m->data_off;
     uint64_t strs[8]; int ns = 0;
-    for (const uint8_t *p = ro; ns < 8 && (p = memmem(p, (size_t)(re - p), nm, sizeof nm)); p += sizeof nm) if (p[-1] == 0) strs[ns++] = (uint64_t)(p - b);
-    if (!ns) die("DM_OODLE_JOB: main has no \"OodleLZ_Decompress\" string: no Oodle decoder to find");
+    for (const uint8_t *p = ro; ns < 8 && (p = memmem(p, (size_t)(re - p), nm, nm_n)); p += nm_n) if (p[-1] == 0) strs[ns++] = (uint64_t)(p - b);
+    if (!ns) die("DM_OODLE_JOB: main has no \"%s\" string", nm);
     uint64_t fn = 0; int nfn = 0;
     for (uint64_t pc = 0; pc + 4 <= m->text_end; pc += 4) {
         uint32_t w; memcpy(&w, b + pc, 4);
@@ -51,9 +54,10 @@ static uint64_t oodle_find(const module_t *m) {
             break;
         }
     }
-    if (nfn != 1) die("DM_OODLE_JOB: %d functions reference \"OodleLZ_Decompress\" in main (expected exactly 1)", nfn);
+    if (nfn != 1) die("DM_OODLE_JOB: %d functions reference \"%s\" in main (expected exactly 1)", nfn, nm);
     return fn;
 }
+static uint64_t oodle_find(const module_t *m) { return oodle_named_find(m, "OodleLZ_Decompress"); }
 
 // OodleLZ_Decompress(compBuf, compBufSize, rawBuf, rawLen, fuzzSafe, checkCRC, verbosity, decBufBase, decBufSize, fpCallback, callbackUserData, decoderMemory, decoderMemorySize, threadPhase).
 // Arguments 9-14 go on the stack; all are 64-bit here so the Apple and AAPCS64 stack layouts agree (Apple packs smaller stack arguments)
@@ -107,6 +111,47 @@ void dm_oodle_job_maybe(void) {
     fflush(stderr); _exit(bad ? 1 : 0);
 }
 
+// OodleLZ_Compress(compressor, rawBuf, rawLen, compBuf, level, options, dictionaryBase, lrm, scratchMem, scratchSize).
+// Keep every scalar and every stack argument 64-bit so the Apple and AAPCS64 call layouts agree, as with oodle_fn above. This ABI and the scratch size are also independently checked by an
+// exact encoder -> game decoder round trip before any stream is published.
+typedef int64_t (*oodle_compress_fn)(int64_t, const void *, int64_t, void *, int64_t, const void *, const void *, const void *, void *, int64_t);
+
+static void oodle_compress_job(void) {
+    const char *job = getenv("DM_OODLE_COMPRESS_JOB");
+    if (!job || !*job) return;
+    dec_find("DM_OODLE_COMPRESS_JOB");
+    if (!g_dec.oodle) die("DM_OODLE_COMPRESS_JOB: game has no Oodle decoder");
+    module_t *main = NULL;
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) main = &g_mod[i];
+    if (!main) die("DM_OODLE_COMPRESS_JOB: no main module");
+    uint64_t off = oodle_named_find(main, "OodleLZ_Compress");
+    oodle_compress_fn encode = (oodle_compress_fn)(void *)(main->base + off);
+
+    FILE *in = fopen(job, "rb"); if (!in) die("DM_OODLE_COMPRESS_JOB: input unavailable");
+    if (rd32(in) != 0x4a434d44) die("DM_OODLE_COMPRESS_JOB: invalid header");
+    uint32_t compressor = rd32(in), level = rd32(in), n = rd32(in);
+    // The old, audited harness deliberately bounded one request to 64 MiB. Keep that bound: derived resource files larger than it must be skipped instead of relying on unbounded guest memory.
+    if (!n || n > (64u << 20) || level >= 10) die("DM_OODLE_COMPRESS_JOB: invalid request");
+    size_t comp_n = (size_t)n * 2 + 0x10000, scratch_n = 128u << 20;
+    uint8_t *raw = malloc(n), *comp = malloc(comp_n), *decoded = malloc((size_t)n + 0x10000), *scratch = malloc(scratch_n);
+    if (!raw || !comp || !decoded || !scratch) die("DM_OODLE_COMPRESS_JOB: buffers unavailable");
+    if (fread(raw, 1, n, in) != n || fgetc(in) != EOF) die("DM_OODLE_COMPRESS_JOB: invalid input length");
+    fclose(in);
+
+    LOG("DM_OODLE_COMPRESS_JOB: encoder main+%#llx compressor=%u level=%u bytes=%u", (unsigned long long)off, compressor, level, n);
+    int64_t got = encode(compressor, raw, n, comp, level, NULL, NULL, NULL, scratch, (int64_t)scratch_n);
+    if (got <= 0 || (uint64_t)got > comp_n) die("DM_OODLE_COMPRESS_JOB: encoder returned %lld", (long long)got);
+    int64_t roundtrip = dec_run(comp, got, decoded, n, scratch, (int64_t)scratch_n);
+    if (roundtrip != n || memcmp(raw, decoded, n)) die("DM_OODLE_COMPRESS_JOB: round-trip failed");
+
+    char outp[1024]; snprintf(outp, sizeof outp, "%s.out", job);
+    FILE *out = fopen(outp, "wb"); if (!out) die("DM_OODLE_COMPRESS_JOB: output unavailable");
+    if (fwrite(comp, 1, (size_t)got, out) != (size_t)got || fclose(out)) die("DM_OODLE_COMPRESS_JOB: output failed");
+    LOG("DM_OODLE_COMPRESS_JOB: %u -> %lld bytes; exact decoder round-trip passed", n, (long long)got);
+    free(raw); free(comp); free(decoded); free(scratch);
+    fflush(stderr); _exit(0);
+}
+
 static int read_all(int fd, void *p, size_t n) {
     for (uint8_t *q = p; n; ) { ssize_t k = read(fd, q, n); if (k <= 0) return 0; q += k; n -= (size_t)k; }
     return 1;
@@ -118,6 +163,7 @@ static void write_all(int fd, const void *p, size_t n) {
 // host. LZ5 at the second: LZ5_decompress_safe takes 512 KB of work memory from the game's malloc on every call, a StandardAllocator that nninitStartup sets up (DRAGON QUEST XI S main+0x4530440),
 // and returns -1 before that
 void dm_oodle_serve_maybe(int late) {
+    if (late) oodle_compress_job();
     if (!getenv("DM_OODLE_SERVE")) return;
     dec_find("DM_OODLE_SERVE");
     if (late != (g_dec.lz5 != NULL)) return;

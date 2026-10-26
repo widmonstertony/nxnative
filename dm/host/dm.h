@@ -62,8 +62,14 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
 // Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): read-only callbacks, called on a gate hit once attached
 enum { OBS_MOVIE_RING_LINK = 19, OBS_MOVIE_RING_UNLINK = 20,   // Metroid Dread 2.1.0's movie request ring (hle_movie.c)
        OBS_UE_MALLOC = 21,                                       // DRAGON QUEST VII Reimagined 1.2.0: Unreal's allocator object just made (hle_uemalloc.c)
-       OBS_MAX = 22 };
+       OBS_ZA_CLOCK_DELTA = 22, OBS_ZA_INTERVAL = 23,              // Pokemon Legends: Z-A 2.0.2 timing diagnostics / optional interval experiment
+       OBS_ZA_SKILL_VISIBILITY = 24, OBS_ZA_SKILL_DESTROY = 25,   // Read-only observation of the actual move layout lifetime
+       OBS_MAX = 26 };
 void gate_obs_set(int id, void (*fn)(const uint64_t *regs));
+// Explicit register-changing hook. dm_gate restores x0-x28 except Apple's x18;
+// the observation trampoline restores its own x29/x30. Never change those three.
+// Existing gate_obs_set callbacks remain read-only.
+void gate_obs_set_mutable(int id, void (*fn)(uint64_t *regs));
 int gate_obs_present(int id);
 uint64_t now_ns(void);
 uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance while frozen, guest_clock_freeze)
@@ -91,6 +97,7 @@ void hle_clear_system_event(void *g);    // hle_thread.c: clear a bound service-
 int hle_signal_bound_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent only if it is bound (any thread); 0 when it is not
 // Page fault hook / hook before the host writes guest memory (crash.c; used for write-protect dirty page tracking)
 void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc));
+void dm_fault_diagnostic_register(void (*fn)(const void *addr));
 void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len));
 void dm_res_report_register(void (*fn)(uint32_t tick, const char *why));   // Resource count callback (registered by the graphics layer): called every 250 ticks, when the loading screen has been dismissed, and on exit when the record is full
 void (*dm_res_report_cb(void))(uint32_t tick, const char *why);   // Get the registered resource count callback (null if not registered)
