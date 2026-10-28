@@ -16,10 +16,30 @@ static id<MTLLibrary> layered_slice_library(NSString *key, id<MTLLibrary> origin
         ![manifest[@"kind"] isEqual:@"layered-slices-v1"]) reason = @"Missing or mismatched layered-v1 companion manifest";
     NSDictionary *record = manifest[@"shaders"][key];
     if (!reason && !record) return original;
-    if (!reason && (![record[@"supported"] isEqual:@YES] || ![record[@"proof"] isEqual:@"instance-layer-pure-v1"] ||
-        ![record[@"slot"] isEqual:@30])) reason = [@"Unproven per-slice shader: " stringByAppendingString:record[@"reason"] ?: @"unknown proof"];
-    NSData *source = reason ? nil : [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:[key stringByAppendingString:@".metal"]]];
     NSData *base = reason ? nil : [NSData dataWithContentsOfFile:[g_msl_dir stringByAppendingPathComponent:[key stringByAppendingString:@".metallib"]] options:NSDataReadingMappedIfSafe error:nil];
+    NSDictionary *meta = reason ? nil : [NSJSONSerialization JSONObjectWithData:reflection options:0 error:nil];
+    BOOL supported = [record[@"supported"] isEqual:@YES] && [record[@"proof"] isEqual:@"instance-layer-pure-v1"] &&
+        [record[@"slot"] isEqual:@30];
+    if (!reason && !supported) {
+        // Newer translations can carry independent ordinary and layered entry
+        // points in the same library.  A failed per-slice proof applies only to
+        // the layered entry: rejecting the whole library also removes ordinary
+        // single-slice UI draws on pre-Apple5 GPUs.  Keep the hash-matched base
+        // entry and let draw()'s existing slice_variant gate limit a genuinely
+        // layered replay to slice zero.
+        NSString *entry = meta[@"entry"], *layered = meta[@"entry_layer"];
+        BOOL split = [entry isKindOfClass:NSString.class] && [layered isKindOfClass:NSString.class] &&
+            entry.length && layered.length && ![entry isEqualToString:layered];
+        BOOL exact = [record[@"library_sha256"] isEqual:nonpoint_digest(base)] &&
+            [record[@"reflection_sha256"] isEqual:nonpoint_digest(reflection)];
+        if (split && exact) {
+            MLOG("Per-slice shader %s: unproven layered entry left disabled; using independent base entry %s",
+                 key.UTF8String, entry.UTF8String);
+            return original;
+        }
+        reason = [@"Unproven per-slice shader: " stringByAppendingString:record[@"reason"] ?: @"unknown proof"];
+    }
+    NSData *source = reason ? nil : [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:[key stringByAppendingString:@".metal"]]];
     if (!reason && (![record[@"source_sha256"] isEqual:nonpoint_digest(source)] ||
         ![record[@"library_sha256"] isEqual:nonpoint_digest(base)] ||
         ![record[@"reflection_sha256"] isEqual:nonpoint_digest(reflection)])) reason = @"Per-slice source, reflection or library hash mismatch";

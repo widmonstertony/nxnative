@@ -12,16 +12,15 @@
 #include "haptics_apple.h"
 #include "DmAudioRetry.h"
 #include "DmDisplayRefresh.h"
+#include "DmGraphicsCapabilities.h"
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_set_active(int active);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
-// iPadOS 16 compatibility build: start directly with the generated defaults.
-// This avoids SwiftUI's compiler-plugin macros, which are unavailable in the
-// iPad-hosted macOS build environment. Settings remain overridable through
-// Documents/env.txt exactly as before.
-bool dm_show_launcher(void *view_controller, void (*done)(void)) { (void)view_controller; (void)done; return false; }
+int dm_za_fullscreen_active(void);
+// Implemented by the iOS 16-compatible Swift launcher.
+bool dm_show_launcher(void *view_controller, void (*done)(void));
 
 static CAMetalLayer *g_layer;
 static void front_ios_power_watch(void);
@@ -39,6 +38,7 @@ static void front_ios_present_hz_clamp(UIView *view);
     if ((self = [super initWithFrame:f])) {
         CAMetalLayer *l = (CAMetalLayer *)self.layer;
         l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        dm_graphics_capabilities(l.device);
         l.contentsScale = UIScreen.mainScreen.nativeScale; l.framebufferOnly = NO; l.opaque = YES;
         self.backgroundColor = UIColor.blackColor;
     }
@@ -59,6 +59,12 @@ static void front_ios_present_hz_clamp(UIView *view);
 - (void)startGame;
 @end
 static DmRootVC *g_root;
+void front_za_fullscreen_ready(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [g_root.view setNeedsLayout];
+        [g_root.view layoutIfNeeded];
+    });
+}
 static void launcher_done(void) { [g_root startGame]; }
 @implementation DmRootVC
 - (void)viewDidLoad {
@@ -77,6 +83,16 @@ static void launcher_done(void) { [g_root startGame]; }
 // The game view, the pad and the frame-rate counter are made once the launcher has set the switches they read (DM_SHOW_FPS, DM_METAL_HUD); the host's loading began at app launch (main.m)
 - (void)startGame {
     if (self.game) return;
+    const char *fullscreen = getenv("DM_ZA_FULLSCREEN"), *aspect = getenv("DM_ZA_ASPECT");
+    if (fullscreen && !strcmp(fullscreen, "1") && (!aspect || !strcmp(aspect, "auto"))) {
+        CGSize size = self.view.bounds.size;
+        if (size.width >= size.height && size.height > 0) {
+            char value[96];
+            snprintf(value, sizeof value, "%.9g:%.9g", (double)size.width, (double)size.height);
+            setenv("DM_ZA_ASPECT", value, 1);
+            LOG("front end: Z-A fullscreen aspect %s from game window", value);
+        }
+    }
     front_hud_env();   // before the game view makes its device (an env file's DM_METAL_HUD sets it in main.m already)
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
@@ -97,8 +113,11 @@ static void launcher_done(void) { [g_root startGame]; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
-    CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    CGFloat w = b.size.width, h = b.size.height;
+    const char *fullscreen = getenv("DM_ZA_FULLSCREEN");
+    if (!(fullscreen && !strcmp(fullscreen, "1") && dm_za_fullscreen_active())) {
+        if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    }
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);

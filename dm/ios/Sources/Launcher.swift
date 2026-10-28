@@ -8,6 +8,13 @@ import os
 
 private func info(_ key: String) -> Any? { Bundle.main.object(forInfoDictionaryKey: key) }
 
+private extension View {
+    @ViewBuilder func launcherMargins() -> some View {
+        if #available(iOS 17.0, *) { contentMargins(.horizontal, 12, for: .scrollContent) }
+        else { padding(.horizontal, 12) }
+    }
+}
+
 private struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let play: () -> Void
@@ -22,9 +29,9 @@ private struct LauncherView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 22))
                             .accessibilityHidden(true)
                     }
-                    Text((info("CFBundleDisplayName") as? String) ?? "Game")
+                    Text((info("CFBundleDisplayName") as? String) ?? LauncherText.display("Game"))
                         .font(.title.weight(.bold)).multilineTextAlignment(.center)
-                    Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
+                    Text("\(LauncherText.display("Version")) \((info("CFBundleShortVersionString") as? String) ?? "")")
                         .font(.callout).foregroundStyle(.secondary)
                     playButton
                 }
@@ -34,31 +41,32 @@ private struct LauncherView: View {
                     ForEach(m.sections, id: \.self) { section in
                         let rows = m.rows(in: section)
                         if !rows.isEmpty {
-                            Section(section) {
+                            Section(LauncherText.display(section)) {
                                 ForEach(rows) { SettingRow(s: $0, m: m) }
                             }
                         }
                     }
                     Section {
-                        Button("Reset to tested defaults") { m.reset() }
+                        Button(LauncherText.display("Reset to tested defaults")) { m.reset() }
                             .disabled(!m.changed)
                     } footer: {
-                        Text("Brings back all settings this game was tested with.")
+                        Text(LauncherText.display("Brings back all settings this game was tested with."))
                     }
                     Section {
                         HStack {
-                            Text("Memory available")
+                            Text(LauncherText.display("Memory available"))
                             Spacer()
                             Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory)).monospacedDigit().foregroundStyle(.secondary)
                         }
                     }
                 }
                 .listStyle(.insetGrouped)
-                .contentMargins(.horizontal, 12, for: .scrollContent)
+                .launcherMargins()
                 .frame(width: geometry.size.width * 2 / 3)
             }
         }
         .preferredColorScheme(.dark)
+        .environment(\.locale, Locale(identifier: "zh_Hans_CN"))
         .task {
             while !Task.isCancelled {
                 memory = os_proc_available_memory()
@@ -68,7 +76,7 @@ private struct LauncherView: View {
     }
 
     @ViewBuilder var playButton: some View {
-        let button = Button(action: play) { Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large)
+        let button = Button(action: play) { Text(LauncherText.display("Play")).font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large)
         if #available(iOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
     }
 

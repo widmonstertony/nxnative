@@ -26,5 +26,6 @@ OBS = {
     # the host. Diagnostics only: no input remapping or register changes.
     (0x425c70, 28, 'f9405408', 'Layout visibility: orig ldr x8,[x0,#0xa8]; observe the actual battle move layout, not ZL alone'),
     (0x2b7bfbc, 29, 'a9be7bfd', 'Waza layout destructor: orig stp x29,x30,[sp,#-0x20]!; expire the observed skill context'),
+    (0x1802f50, 30, '3cc04120', 'HUD rectangle: orig ldur q0,[x9,#4]; optional screen-aspect shadow rectangle'),
   ],
 }

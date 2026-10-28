@@ -23,6 +23,12 @@ import xcode_projects
 
 
 class XcodePipelineTests(unittest.TestCase):
+    def test_generated_project_restores_text_maxprot_before_signing(self):
+        project = (REPO / 'dm/ios/project.yml').read_text()
+        patch = 'python3 "${SRCROOT}/tools/set_text_maxprot.py" "${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}"'
+        self.assertIn(patch, project)
+        self.assertLess(project.index(patch), project.index('tools/stage_resources.sh'))
+
     def test_prepare_preserves_upstream_options_and_graphics_paths(self):
         for graphics in ('nvn', 'vulkan', 'gl'):
             for derived in (False, True):

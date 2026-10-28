@@ -65,10 +65,18 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
     NSUInteger bytes = 0; uint32_t layout[6];
     int valid = tid > 0 && tid < g_ntreg && g_treg[tid].ok &&
         nvn_zero_image_layout(texture, layout, &bytes) && layout[2] >= 3 &&
+        (!fragment->zero_image_format || texture.pixelFormat == (MTLPixelFormat)fragment->zero_image_format) &&
         texture.storageMode != MTLStorageModeMemoryless;
     const tex_t *destination = valid ? &g_treg[tid].t : NULL;
     if (valid) {
-        for (int i = 0; i < R.rt.n; i++) valid &= !zero_image_alias(destination, R.rt.color[i]);
+        for (int i = 0; i < R.rt.n; i++) if (zero_image_alias(destination, R.rt.color[i])) {
+            // RG11B10 companions have no color outputs. An already-loaded
+            // attachment is therefore only the rasterization surface; its
+            // contents remain unchanged until the shadow is copied back after
+            // the render encoder ends. A pending clear is not safe because the
+            // shadow capture precedes the attachment load action.
+            valid &= fragment->zero_image_variant == 2 && !fragment->rf.color_mask && !R.clear_c[i];
+        }
         valid &= !zero_image_alias(destination, R.rt.depth);
     }
     uint64_t serial = valid ? g_treg[tid].t.serial : 0;

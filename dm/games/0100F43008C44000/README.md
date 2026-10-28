@@ -85,3 +85,9 @@ General host changes first needed here; each applies to every game:
 - `c85de3713170e519` ORs bit fields into output 0 and has not been seen with an integer attachment (no row).
 - The development notes list "the render condition the host does not evaluate" among the Mac route's red lines; `render_cond` changes nothing here and stays off.
 - `game.tsv`'s header says "Plays on the Mac"; AGENTS.md and the development notes say it is playable on the iPhone.
+
+## Fork device display adaptation (2026-10-28)
+
+The iOS 16/17 frontend derives the target camera/HUD aspect from the actual landscape window (`DM_ZA_ASPECT=auto`). The renderer only fills the canvas after the exact-build HUD gate, module layout, original camera constant and RW/non-executable mapping guards succeed. Unsupported builds retain aspect fitting. The camera/HUD callback tests pass at 76:35, 683:512 and 4:3; the iOS executable compiles. Physical iPad HUD/scene validation and matching shader resources remain pending. Native face-button semantics are unchanged.
+
+MetalFX capability logging reports spatial/temporal/frame-interpolator support. Actual interpolation and internal-resolution upscaling integration remain open.

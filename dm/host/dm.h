@@ -98,7 +98,7 @@ enum { OBS_UE_MALLOC = 21,                                       // DRAGON QUEST
        OBS_STDALLOC_INIT = 25,                                         // StandardAllocator::Initialize's entry, the same way: the one gate whose callback writes a register (hle_svc.c)
        OBS_ZA_CLOCK_DELTA = 26, OBS_ZA_INTERVAL = 27,                  // Pokemon Legends: Z-A 2.0.2 timing diagnostics / optional interval experiment
        OBS_ZA_SKILL_VISIBILITY = 28, OBS_ZA_SKILL_DESTROY = 29,       // Read-only observation of the actual move layout lifetime
-       OBS_MAX = 30 };
+       OBS_ZA_HUD_RECT = 30, OBS_MAX = 31 };
 // A gate number's bits from 8 up are a parameter for its callback (OBS_REGION_GOT: the register that holds the address). Callbacks read the registers; a write to x0–x29 takes
 // effect when the gate returns (entry.S restores them from the frame), which only OBS_STDALLOC_INIT does
 void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param));

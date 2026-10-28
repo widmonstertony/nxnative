@@ -242,9 +242,9 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
         const char *run = getenv("DM_RUN_BUTTON"); g_run_button = 0;
         static const char *runNames[] = {"A", "B", "X", "Y", "LS", "RS"};
         for (int b = 0; run && b < 6; b++) if (!strcmp(run, runNames[b])) g_run_button = 1ull << b;
-        _run = shape(_controls); _runLabel = label(_run, @"Run");
+        _run = shape(_controls); _runLabel = label(_run, @"奔跑");
         const char *aim = getenv("DM_AIM_ZL"); g_aim_button = aim && atoi(aim) ? DM_BTN_ZL : 0;
-        _aim = shape(_controls); _aimLabel = label(_aim, @"Aim");
+        _aim = shape(_controls); _aimLabel = label(_aim, @"瞄准");
         if (g_run_button) LOG("front end: Run touch button and either Shift alias native %s independently of visible face labels", run);
         if (g_aim_button) LOG("front end: tap Aim toggles ZL; hold either Command to aim; release/focus loss clears modifier input");
         LOG("front end: native A/B/X/Y unchanged; virtual face geometry alone can follow the original battle skill HUD");

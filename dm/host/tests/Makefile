@@ -165,7 +165,13 @@ $(B)/t_za_timing: t_za_timing.c ../hle_za_timing.c ../za_frame_delta.h ../hle.h 
 	$(CLANG) -O1 -Wall -Wextra -Werror -I.. $(GINC) -o $@ t_za_timing.c
 $(B)/t_za_dynamic: t_za_dynamic.c ../hle_za_timing.c ../za_frame_delta.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wextra -Werror -I.. $(GINC) -o $@ t_za_dynamic.c
-.PHONY: za-timing
+.PHONY: za-timing za-display
+$(B)/t_za_display: t_za_display.c ../hle_za_display.c ../za_display_geometry.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -Wall -Wextra -Werror -I.. $(GINC) -o $@ t_za_display.c
+
+za-display: $(B)/t_za_display
+	@set -e; for ratio in 76:35 683:512 4:3; do $(B)/t_za_display $$ratio; done
+
 za-timing: $(B)/t_za_frame_delta $(B)/t_za_timing $(B)/t_za_dynamic
 	$(B)/t_za_frame_delta
 	@set -e; for c in off trace static-fixed static-adaptive native-adaptive wrong-build live concurrent; do $(B)/t_za_timing $$c 2>/dev/null; done

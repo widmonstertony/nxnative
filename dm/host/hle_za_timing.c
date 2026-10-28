@@ -20,6 +20,7 @@
 enum { ZA_GAME, ZA_STATIC60, ZA_ADAPTIVE60, ZA_DYNAMIC60 };
 static int g_za_diag, g_za_valid;
 static _Atomic int g_za_mode, g_za_live_allowed;
+static int g_za_dynamic_hz = 60;
 static _Atomic uint64_t g_za_epoch;
 static pthread_once_t g_za_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_za_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -52,7 +53,7 @@ static int za_read(uint64_t at, void *dst, size_t len) {
         len, (vm_address_t)dst, &got) == KERN_SUCCESS && got == len;
 }
 static const char *za_mode_name(int mode) {
-    return mode == ZA_STATIC60 ? "static60" : mode == ZA_ADAPTIVE60 ? "adaptive60" : mode == ZA_DYNAMIC60 ? "dynamic60" : "game";
+    return mode == ZA_STATIC60 ? "static60" : mode == ZA_ADAPTIVE60 ? "adaptive60" : mode == ZA_DYNAMIC60 ? (g_za_dynamic_hz == 120 ? "dynamic120" : "dynamic60") : "game";
 }
 // The loader intentionally maps NSO ro/data as RW, with text separately RX.
 // Never change a mapping's protection to make this optional experiment work.
@@ -154,7 +155,8 @@ static void za_init(void) {
         if (!strcmp(mode, "static60")) selected_mode = ZA_STATIC60;
         else if (!strcmp(mode, "adaptive60")) selected_mode = ZA_ADAPTIVE60;
         else if (!strcmp(mode, "dynamic60")) selected_mode = ZA_DYNAMIC60;
-        else LOG("[RED] DM_ZA_FPS_MODE=%s: expected game, static60, adaptive60 or dynamic60; leaving timing unchanged", mode);
+        else if (!strcmp(mode, "dynamic120")) { selected_mode = ZA_DYNAMIC60; g_za_dynamic_hz = 120; }
+        else LOG("[RED] DM_ZA_FPS_MODE=%s: expected game, static60, adaptive60, dynamic60 or dynamic120; leaving timing unchanged", mode);
     }
     if (!g_za_diag && !selected_mode) return;
     if (strcmp(dm_main_build(), "b1f12fd919eae86ab8a978317677e64b")) {

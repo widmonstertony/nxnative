@@ -112,3 +112,79 @@ final class LauncherModel: ObservableObject {
         }
     }
 }
+
+// Player-facing translations only: raw setting IDs, option values and saved choices stay unchanged.
+// The iPhone/iPad builds use Simplified Chinese even when the system language differs.
+enum LauncherText {
+    static let simplifiedChinese: [String: String] = [
+        "Game": "游戏",
+        "Controls": "操作",
+        "Performance": "性能",
+        "Version": "版本",
+        "Play": "开始游戏",
+        "Reset to tested defaults": "恢复已验证的默认设置",
+        "Brings back all settings this game was tested with.": "恢复此游戏经过测试的默认设置。",
+        "Memory available": "可用内存",
+        "Set at launch": "由启动参数设定",
+        "Set by an env file": "由配置文件设定",
+        "Frame rate": "目标帧率",
+        "30 fps": "30 帧/秒",
+        "60 fps": "60 帧/秒",
+        "120 fps": "120 帧/秒",
+        "Dynamic resolution": "动态分辨率",
+        "Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.": "根据负载在 70% 至 100% 之间调整分辨率。关闭后使用所选主机模式的完整分辨率。",
+        "Render scale": "内部渲染比例",
+        "Console mode": "主机模式",
+        "Docked": "底座模式",
+        "Handheld": "掌机模式",
+        "Upscaling": "超分辨率",
+        "Standard": "标准缩放（关闭超分）",
+        "MetalFX": "MetalFX 超分辨率",
+        "Uses more GPU time and can increase heat.": "需要额外 GPU 运算，可能增加发热；是否更流畅取决于内部渲染分辨率和设备性能。",
+        "Game language": "游戏语言",
+        "Display mode": "显示模式",
+        "Window": "窗口",
+        "Fullscreen": "全屏",
+        "Frame-rate counter": "显示实际帧率",
+        "Touch feedback": "触控振动反馈",
+        "Game rumble": "游戏振动",
+        "Rumble strength": "振动强度",
+        "Rumble cutoff": "振动过滤阈值",
+        "Frame buffering": "帧缓冲",
+        "Up to one frame more display latency.": "可能增加最多一帧的显示延迟。",
+        "Metal 4 pipelines": "Metal 4 渲染管线",
+        "Keeps a pipeline archive; uses more memory.": "保留渲染管线缓存，会占用更多内存。",
+        "Pipeline prebuild": "预编译渲染管线",
+        "The first start waits a few minutes for it, once.": "首次启动可能需要等待几分钟，完成后不必重复等待。",
+        "Encode thread": "独立渲染编码线程",
+        "Hold frames when late": "帧延迟时保持当前画面",
+        "Performance HUD": "性能监测面板",
+        "American English": "英语（美国）",
+        "British English": "英语（英国）",
+        "Japanese": "日语",
+        "French": "法语",
+        "German": "德语",
+        "Latin American Spanish": "西班牙语（拉丁美洲）",
+        "Spanish": "西班牙语",
+        "Italian": "意大利语",
+        "Dutch": "荷兰语",
+        "Canadian French": "法语（加拿大）",
+        "Portuguese": "葡萄牙语",
+        "Russian": "俄语",
+        "Korean": "韩语",
+        "Traditional Chinese": "繁体中文",
+        "Simplified Chinese": "简体中文",
+        "Brazilian Portuguese": "葡萄牙语（巴西）",
+        "Frame interpolation": "插帧",
+        "Not available on this device": "此设备暂不支持",
+        "Not implemented for this game": "此游戏暂未接入",
+    ]
+    static func chinese(_ source: String) -> String { simplifiedChinese[source] ?? source }
+    static func display(_ source: String) -> String {
+#if os(iOS)
+        return chinese(source)
+#else
+        return source
+#endif
+    }
+}

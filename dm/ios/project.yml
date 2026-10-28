@@ -13,10 +13,8 @@ targets:
     platform: iOS
     sources:
       - path: Sources
-        # SwiftUI's property-wrapper macro plugin cannot run in the iPad-hosted
-        # macOS build environment.  The iOS 16 build starts directly with the
-        # generated Info.plist/env defaults instead.
-        excludes: [Info.plist, Launcher.swift]
+        # The launcher uses an iOS 16 fallback for list margins.
+        excludes: [Info.plist]
       - path: Gen/embed.S
       - path: Gen/dm          # Rewriter tables (*.fixups.tsv / gates / cuts / obs) + shader map / c1 list / warm-up list
         type: folder
@@ -26,12 +24,20 @@ targets:
       - path: Gen/main/main.c
         compilerFlags: "-Dmain=dm_main"
     postBuildScripts:
+      - name: Allow rewritten text
+        # Xcode 27 can normalize __TEXT maxprot back to r-x even when ld was
+        # passed -segprot.  The loader temporarily makes the embedded module
+        # holes writable, so restore maxprot=rwx before Xcode signs the app.
+        script: python3 "${SRCROOT}/tools/set_text_maxprot.py" "${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}"
+        basedOnDependencyAnalysis: false
       - name: Copy game resources
         script: /bin/bash "${SRCROOT}/tools/stage_resources.sh"
         basedOnDependencyAnalysis: false   # rsync checks the game's files; no huge Xcode input/output lists
     info:
       path: Gen/Info.plist
       properties:
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleLocalizations: [zh-Hans]
         CFBundleDisplayName: ${DM_DISPLAY_NAME}   # the game name in the base NSP (set by build_ipa.sh)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
