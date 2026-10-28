@@ -1,11 +1,14 @@
 name	class	meaning
 DM_AB	diagnostic	`=<frames>` splits the run into phases of that many frames and alternates every switch set to `ab` (on in the odd phases); logs an `[ab]` line per phase with GPU and frame time and attachment traffic
+DM_AIM_ZL	player	Show a left-side focus toggle that aliases native ZL; preserve the original controller input
 DM_ALIAS_SIZE	diagnostic	`=<bytes>` gives the guest an alias region of that size instead of the profile's (at least 256 MB, whole host pages; the heap and stacks stay as they are): `0x1000000000`, the Switch's 64 GB, holds what a game reserves unchanged; the NSP script's address region check sets it (Mac only: an iPhone has no room)
 DM_ALIAS_WINDOWS	diagnostic	`=<MB>` logs every 30 s how much of each window of that size in the alias region is mapped (windows aligned to their size in absolute addresses)
 DM_ALLOW_OTHER_METAL	switch	`1` lets `own_compilers.py` build the shader libraries with a Metal compiler other than the one in `dmsh_chain.lock` (it stops otherwise, GitHub issue #242); the NSP script sets it for `--allow-other-metal`
 DM_AOC_DIR	path	Folder of add-on content: one numbered subfolder per DLC index holding that DLC's RomFS, reported by `aoc` and mounted read-only; the app, the Mac launcher and the NSP script set it when the build has DLC
 DM_AOC_OWNED	switch	`0` reports no add-on content even when `DM_AOC_DIR` has some, for runs without the DLC
 DM_APP_VERSION	switch	Overrides the IPA's version in `build_ipa.sh`; by default it is the packed game's display version from its control data (the update's when one is packed)
+DM_ARCEUS_FPS	player	Exact supported Arceus build: native 0 or elapsed-clock target 30/60/120; optical-flow mode limits real work to 60
+DM_ASPECT	player	Requested game camera aspect ratio for the available exact-build display adapter
 DM_AUDIO	switch	`1` plays audio through Core Audio, `0` uses the silent sink; real output is the default on iOS, the silent sink on the Mac (the Mac launcher sets `1`)
 DM_AUDIO_DUMP	diagnostic	`=<file>` writes every PCM block the game appends as is (16-bit, 48 kHz, channel count as in the OpenAudioOut log), to judge whether a sound played
 DM_AUDIO_MUTE	switch	`=1` runs the real Core Audio output path (callback pacing, background take-over) with the output silenced, for lifecycle tests on the Mac without noise
@@ -19,6 +22,7 @@ DM_DBG	diagnostic	When set, prints the guest's `svcOutputDebugString` text to st
 DM_DBG_AU_FRAMES	diagnostic	`=<frames>` asks the Mac's Core Audio output for that many frames per callback instead of about 5 ms (1024 reproduces the iOS default that caused crackling)
 DM_DETCLOCK	switch	`=<step ns>`: from the first present on, the guest clock advances a fixed step per present instead of following the wall clock, and the random source becomes a fixed-seed stream (replay and test runs)
 DM_DETCLOCK_PACE	switch	`=1` with `DM_DETCLOCK`: each frame takes at least one clock step of wall time, so background loading keeps up with the fixed clock (used by the screenshot gate)
+DM_DISPLAY_HZ	player	Explicit frontend display refresh request; actual capability and frame rate remain separate
 DM_DISPLAY_NAME	switch	Overrides the iOS app's name in `build_ipa.sh` (default the game name in the base NSP's control data)
 DM_DYNAMIC_RESOLUTION	player	`1` lets NieR:Automata 1.0.3's own dynamic resolution scale between 70 and 100 %, `0` (default) keeps full resolution; only on the builds whose patches.py names the DYNAMIC_RESOLUTION capability (`hle_fpslock.c` `k_nier_dr`). The launcher's Dynamic resolution
 DM_ENTITLEMENTS	path	`=<plist>` gives a prepared Xcode project another entitlements file instead of the Increased Memory Limit one, and the ad-hoc signature of the unsigned IPA's executable carries them; empty means no entitlements
@@ -32,6 +36,7 @@ DM_FORCE_STRICT	diagnostic	`=1` makes the loader fail on forced-hook entries no 
 DM_FPS	switch	`30` or `60` pins the frame rate the display link and frame pacing aim for; otherwise it follows the game's present interval (60, or 30 when the game asks for 30)
 DM_FPS_HOLD	player	`on` / `off` overrides the profile's `fps_hold`: whether late frames may raise the hold above the frame cap's vsyncs (on by default)
 DM_FPS_TARGET	player	Frame-rate cap: `30` or `60`, or `0` for the game's own limit; overrides the profile's `fps_target`
+DM_FRAMEGEN	player	`off` or experimental `opticalflow`: paired image-based GPU intermediate/real pictures on a 120Hz display link; not Apple MetalFX frame interpolation; Arceus exact-build settings default to optical flow, other games stay off
 DM_FS	diagnostic	When set, logs file opens, paths not found or not mounted, and a read summary every 64 MiB or 1000 reads
 DM_FSLOG	diagnostic	`=<file>` writes one TSV line per ReadFile: seconds since boot, guest path, offset, length and guest buffer address
 DM_FSLOG_HASH	diagnostic	With `DM_FSLOG`, adds a column with the FNV-1a 64 hash of the bytes read
@@ -53,9 +58,11 @@ DM_HITCH_DUMP	diagnostic	`=<ms>[:<s>]`: when no frame has been presented for tha
 DM_HLECOUNT	diagnostic	`=<file>` (`%d` = process ID) writes at exit a TSV of how many times the guest called each HLE function, zero counts included
 DM_ICON	path	`=<image>` gives `build_ipa.sh` another app icon (default the `icon.jpg` beside the RomFS)
 DM_IMPORTS	diagnostic	When set, logs each import the loader binds to a host function and each forced takeover
+DM_IOS_BUILD_LOCK_OWNER	path	Internal shared iOS packaging lock owner passed to nested build steps
 DM_KBD	switch	`=<text>`: the system keyboard returns that text as OK without showing an input box; unset with no window, it returns cancel
 DM_KBD_PLAYER	switch	`own` makes the Mac keyboard player 1 on its own, with controllers from player 2 on (by default the first controller shares player 1 with the keyboard)
 DM_KEYS	switch	Scripted input: `<seconds or f<frame>>:<key>[+key][~hold][*count/interval],…` presses buttons, sticks and `Shake` at those times
+DM_KEY_ENTER_A	player	Allow Enter to alias native A alongside the regular keyboard mapping
 DM_LANG	player	Game language as a language code (default `en-US`; the iOS app sets the one the IPA was packed with)
 DM_LAUNCHER	switch	`0` skips the iOS settings screen or the Mac settings window and starts the game at once, with the saved choices (on the Mac also `--no-launcher`)
 DM_LINK_VTICK	switch	`0` keeps the system's display-link rate on 144 or 165 Hz Mac screens; by default the link counts only the refreshes nearest a steady 1/60 s clock
@@ -73,6 +80,7 @@ DM_MOTION_AXES	switch	`=<map>` such as `x,-z,y`: maps Apple's controller axes to
 DM_MOTION_GAIN	switch	`=<gain>`: how fast the orientation is pulled toward the measured gravity, in rad/s per unit error (default 0.5; `0` integrates the gyro alone)
 DM_MOTION_HID	switch	On the Mac, `0` disables the passive Switch Pro Controller HID motion fallback (`motion_pro_mac.h`); enabled by default when exactly one physical Pro and one GameController Pro can use the same player slot; usable GameController motion takes priority
 DM_MOTION_LOG	diagnostic	`=1` logs player 1's mapped motion sample once a second per source (phone / GameController / controller HID; acceleration in G, gyro in revolutions/s), for checking the axes: flat and still reads acc 0 0 -1
+DM_MOUSE_LOOK_SCALE	player	Scale the frontend camera movement derived from mouse motion
 DM_MOVIE_TRACE	diagnostic	When set, the movie decoder logs every call with its thread and decoder (by default the first 12 calls, then every 2^k-th)
 DM_MSL_DIR	path	Parent folder of the shader libraries: NVN loads from `b-<chain version>/` beneath it, Vulkan from `vk/`, GL from `gl/`; the app and the Mac launcher set it
 DM_NICK	switch	The account nickname the game sees (default `Player`)
@@ -180,6 +188,8 @@ DM_OODLE_JOB	path	`=<job file>`: the host runs the game's own Oodle decoder on e
 DM_OODLE_MODULES	path	The rewritten modules the Mac host's Oodle tool mode loads when `shader_split.py` decodes Trinity packs; set by the NSP script
 DM_OODLE_SERVE	switch	`=1`: the host answers decode requests on stdin / stdout with the game's own Oodle (or LZ5) decoder from the guest main thread before the SDK starts, until stdin ends
 DM_OPMODE	player	The operation mode the game sees: `0` handheld, `1` console (default: the profile's `op_mode`, console unless set); read once at startup
+DM_PAD_FORCE_FULL	player	Keep the complete native Switch touch controller surface visible
+DM_PAD_KEEP_TOUCH	player	Keep touch controls available while a keyboard or controller is attached
 DM_PAD_MERGE	switch	`=1` on the Mac merges every controller into player 1, as before, instead of giving each controller a player of its own
 DM_PATCH_FRONT	switch	`=<bytes>`: the size of the patch area right before the module base for a long text (`BIG_TEXT`); set only by the rewriter's own rerun with the size it needs
 DM_PHONE_MOTION	switch	On iOS, whether the phone's own device motion drives player 1's six-axis sensor: `auto` (default) while no controller supplies fresh motion, `1` phone only, `0` never; each source keeps its own orientation
@@ -247,6 +257,7 @@ DM_RUMBLE	player	`0` turns game rumble off (on by default); launcher setting
 DM_RUMBLE_GAIN	player	`=0..3` scales the rumble strength (default 1, `0` is silent); launcher setting
 DM_RUMBLE_LOG	diagnostic	`=1` logs the game's vibration handle requests and, once a second, the values it sent, how many had no routed output and the peak amplitude
 DM_RUMBLE_MIN	player	`=0..0.9`: controller rumble levels below it stay silent and the rest is stretched over the full range (default 0; the phone is unaffected); for games whose quiet HD rumble texture keeps rotating motors running (Mario Kart 8 Deluxe: 0.45); launcher setting
+DM_RUN_BUTTON	player	Native button used by the optional left-side run shortcut
 DM_SAVE	path	This run's save folder (must be set); the device save is `<DM_SAVE>_device`, and `pso_user.tsv` goes in its parent folder; the Mac launcher, the iOS app and the NSP script set it
 DM_SAVED_CHOICES	switch	`0` ignores the player's saved choices (launcher.<VAR> in the app's preferences) and leaves them saved; the Mac launcher and the iOS settings screen
 DM_SCHEME_NAME	switch	Set by `build_ipa.sh` itself for xcodegen's `project.yml`: the Xcode scheme name, `DmIOS`, or `<display name> (<title ID>)` for a project prepared with `--prepare-xcode`
@@ -267,6 +278,7 @@ DM_TEMP	path	Temporary storage folder (default `$DM_ROOT/run/platform/temp`); st
 DM_TEST_ARCHIVE_CONSTANTS	test	Use optional function constants in the synthetic pipeline archive restart fixture
 DM_TEST_ARCHIVE_MIXED	test	Mix a newly compiled shader function with compacted bases in the archive restart fixture
 DM_TEST_BUILD	test	Build folder of `dm/host/tests` whose `t_svc_memory` `test_memory_profile.py` runs (default `build`; `make asan` sets `build/asan`)
+DM_TEST_DUAL_SHADER_DIR	test	External compiled shader directory for the real dual-source GPU regression
 DM_TEST_FS_FAIL	diagnostic	`=write:<n>[:<errno>]` makes the nth save write fail with that errno (default ENOSPC), which refuses the save transaction's commit
 DM_TEST_FS_FAILAT	diagnostic	`=<point>[:<count>][,…]` makes steps of the save transaction (`mountclone`, `reclone`, `guestname`, `renameback`) fail with ENOSPC
 DM_TEST_GEOMETRY	test	Path of the native `t_geometry` executable; `test_dmsh_geometry.py` runs its native geometry emitter checks only when it is set
@@ -285,6 +297,8 @@ DM_TEST_UP_LOST	diagnostic	`=<batch index>` treats that batch of uploads as drop
 DM_THERMAL_CAP	switch	`0` turns off the thermal cap, which holds the frame step at 30 fps while iOS reports a serious or critical thermal state (on by default)
 DM_THR	diagnostic	`=1` logs each SVC (except `SleepThread`) with its first four arguments, and each `CreateThread` with entry, stack, priority and core
 DM_THRCPU	diagnostic	`=<tsv path>[,<seconds>]` writes each thread's CPU time (100% = one core) and the total every interval (default 10 s); on iOS a relative path is under `Documents`
+DM_THROW_ZR	player	Show a momentary left-side Throw alias of native ZR, allowing an independent right camera finger
+DM_TOUCH_DIAG	diagnostic	Log touch ownership and input events to diagnose virtual controls
 DM_TOUCH_HAPTICS	player	`0` turns off the light haptic tap when a touch control is pressed (on by default); launcher setting
 DM_TOUCH_LOG	diagnostic	`=1` logs each touch-screen read with touch points (sample, finger, position, attributes) and each gesture entry, up to 500 lines
 DM_UDC_SELFTEST	diagnostic	`=1` runs a start-up check of DontCare load and store on private depth-stencil and RGBA8 textures (clear, Load + DontCare, read back) and logs one result line

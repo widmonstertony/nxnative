@@ -108,6 +108,12 @@ def build(gid, patched, control):
             # emitted as MRT1; Metal 4's compiler aborts on the resulting PSO.
             kind, values, default = 'choice', '0=Unavailable pending shader fix', '0'
             note = 'This game needs a dual-source shader variant before Metal 4 pipelines can be enabled.'
+        # The opt-in Arceus build starts with native handheld rendering and a
+        # real MetalFX upscale. This lowers game work instead of only sharpening
+        # an unchanged 1080p picture. Existing saved choices still take priority.
+        if 'ARCEUS_TIMING' in keys:
+            if var == 'DM_OPMODE': default = '0'
+            elif var == 'DM_PRESENT_UPSCALE': default = 'metalfx'
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
         if kind == 'choice':

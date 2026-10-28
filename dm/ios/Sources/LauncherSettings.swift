@@ -118,6 +118,10 @@ final class LauncherModel: ObservableObject {
 enum LauncherText {
     static let simplifiedChinese: [String: String] = [
         "Game": "游戏",
+        "Frame generation": "插帧",
+        "Off": "关闭",
+        "Optical flow (experimental)": "光流插帧（实验性）",
+        "Generates one intermediate picture per real frame. Uses image optical flow, not the MetalFX frame interpolator. Real target is at most 60 for 120 Hz output; fast HUD motion may show artifacts.": "每两个真实帧之间生成一张中间画面。此模式使用图像光流，不是 Apple MetalFX 原生插帧；开启时真实目标最高 60 帧，争取 120Hz 显示。快速移动的文字、界面可能变形。",
         "Controls": "操作",
         "Performance": "性能",
         "Version": "版本",

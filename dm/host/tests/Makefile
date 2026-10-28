@@ -31,6 +31,7 @@ arceus-timing: $(B)/t_arceus_timing
 	$(B)/t_arceus_timing 30
 	$(B)/t_arceus_timing 0
 	$(B)/t_arceus_timing 120bad
+	DM_FRAMEGEN=opticalflow $(B)/t_arceus_timing 120
 run: arceus-timing
 $(B)/t_violet_display: t_violet_display.c ../hle_violet_display.c ../hle_game_display.c ../gate_frame.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_violet_display.c

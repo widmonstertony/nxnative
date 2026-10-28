@@ -7,3 +7,8 @@ __pycache__/
 # Made from each shader build's Mac outputs (c1_guard.py, cb_extent.py; the NSP script makes them), not committed
 dm/games/*/c1_full.tsv
 dm/games/*/cb_extent.tsv
+
+# Optical-flow GPU regression executables
+dm/gfx/tests/t_framegen
+dm/gfx/tests/t_framegen_present
+dm/gfx/tests/t_framegen*.dSYM/

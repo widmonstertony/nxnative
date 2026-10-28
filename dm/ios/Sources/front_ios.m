@@ -10,6 +10,10 @@
 #include "dm.h"
 #include "haptics_apple.h"
 #include "DmDisplayRefresh.h"
+#include <stdatomic.h>
+static _Atomic int g_ios_screen_hz=60;
+int front_screen_max_fps(void) { return atomic_load(&g_ios_screen_hz); }
+void mtl_framegen_counts(uint64_t *,uint64_t *,uint64_t *);
 #include "DmGraphicsCapabilities.h"
 
 UIView *dm_gamepad_view(CGRect frame);
@@ -115,7 +119,7 @@ static void launcher_done(void) { [g_root startGame]; }
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
-        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), (getenv("DM_FRAMEGEN") && !strcmp(getenv("DM_FRAMEGEN"),"opticalflow"))?190:64, 22);
     }
 }
 - (void)viewDidAppear:(BOOL)a {
@@ -189,6 +193,7 @@ uint64_t mtl_present_count(void);
 - (void)configure {
     UIScreen *screen = _view.window.screen ?: UIScreen.mainScreen;
     _supported = (int)screen.maximumFramesPerSecond;
+    atomic_store(&g_ios_screen_hz,_supported);
     _preferred = dm_display_hz_select(_requested, _supported);
     _link.preferredFrameRateRange = CAFrameRateRangeMake(MIN(60, _preferred), _preferred, _preferred);
     dm_display_probe_reset(&_probe);
@@ -244,10 +249,17 @@ static UILabel *front_ios_fps_label(void) {
     l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
     l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
     l.text = @"-- fps";
-    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
+    __block uint64_t n0 = mtl_present_count(), e0=0,d0=0,r0=0;
+    mtl_framegen_counts(&e0,&d0,&r0); __block double t0 = CACurrentMediaTime();
+    BOOL flow=getenv("DM_FRAMEGEN") && !strcmp(getenv("DM_FRAMEGEN"),"opticalflow");
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
         (void)t; uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
-        if (now - t0 < 1.5) l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];   // a longer span is the time in the background: no reading
+        uint64_t engine,shown,real; mtl_framegen_counts(&engine,&shown,&real);
+        if (now-t0<1.5 && now>t0) {
+            if(flow) l.text=[NSString stringWithFormat:@"渲染 %.0f · 显示 %.0f",(engine-e0)/(now-t0),(shown-d0)/(now-t0)];
+            else l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];
+        }
+        e0=engine; d0=shown; r0=real;   // a longer span is the time in the background: no reading
         n0 = n; t0 = now;
     }];
     LOG("front end: frame-rate counter on");

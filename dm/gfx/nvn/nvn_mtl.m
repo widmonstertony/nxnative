@@ -18,6 +18,7 @@
 #include <os/proc.h>   // os_proc_available_memory: for the memory readout line
 #endif
 #include "nvn_mtl.h"
+#import "nvn_framegen.h"
 #include "nvn_obj.h"
 #include "../tex/nvn_fmt_mtl.h"
 #include "../tex/nvn_deswizzle.h"
@@ -9984,6 +9985,16 @@ void mtl_exec(const uint8_t *p) {
 static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
 static id<MTLSamplerState> g_blit_samp;
 static uint64_t g_present_n;
+int front_screen_max_fps(void);
+static DmFrameGenerator *g_framegen;
+static _Atomic int g_framegen_reset;
+static _Atomic uint64_t g_framegen_engine, g_framegen_shown, g_framegen_shown_real;
+static double g_framegen_last_input;
+static int fg_requested(void) { const char *e=getenv("DM_FRAMEGEN"); return e && !strcmp(e,"opticalflow"); }
+void mtl_framegen_counts(uint64_t *engine, uint64_t *shown, uint64_t *real) {
+    *engine=atomic_load(&g_framegen_engine); *shown=atomic_load(&g_framegen_shown); *real=atomic_load(&g_framegen_shown_real);
+}
+
 uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
 void mtl_res_snapshot(mtl_res_count *out) {
     memset(out, 0, sizeof *out);
@@ -10546,7 +10557,7 @@ static void present_gpu_note(double s, int fx) {
     n[fx] = 0;
 }
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
-static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
+static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, int phase) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
@@ -10610,7 +10621,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
     if (!dr) return 0;
-    int alloc_i = (int)(ticket % 3);
+    uint64_t alloc_stamp=fg_requested()?g_present_n:ticket;
+    int alloc_i = (int)(alloc_stamp % 3);
     if (g_present_alloc_fence[alloc_i]) {
         pthread_mutex_lock(&g_pq_mu);
         while (g_present_alloc_done[alloc_i] < g_present_alloc_fence[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
@@ -10620,15 +10632,50 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [g_q4 waitForDrawable:dr];
     id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    int kind = present_encode_m4(cb, src, dr.texture, crop, g_present_uv[alloc_i], &g_fx_present);
-    if (!kind) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
+    int generated=0; const int *draw_crop=crop;
+    if(phase<0 && g_framegen) { src=g_framegen.currentTexture; draw_crop=NULL; }
+    else if(phase==0 && fg_requested() && target_ts>0 && front_screen_max_fps()>=120) {
+        NSUInteger rect[4];
+        if(present_crop_rect(src,crop,rect)) {
+            if(!g_framegen || g_framegen.width!=rect[2] || g_framegen.height!=rect[3] || g_framegen.currentTexture.pixelFormat!=present_raw_src(src).pixelFormat) {
+                if(g_framegen) {
+                    pthread_mutex_lock(&g_pq_mu); while(g_pq_inflight) pthread_cond_wait(&g_pq_cv,&g_pq_mu); pthread_mutex_unlock(&g_pq_mu);
+                    [g_q4 removeResidencySet:g_framegen.residency];
+                }
+                // Earlier feedback blocks retain their exact instance and its
+                // allocations until completion, including across a resize.
+                g_framegen=[[DmFrameGenerator alloc] initWithDevice:g_dev width:rect[2] height:rect[3] format:present_raw_src(src).pixelFormat];
+                if(g_framegen) [g_q4 addResidencySet:g_framegen.residency];
+                g_framegen_last_input=0;
+            }
+            double now=CACurrentMediaTime(), dt=g_framegen_last_input>0?now-g_framegen_last_input:0;
+            g_framegen_last_input=now;
+            if(atomic_exchange(&g_framegen_reset,0)) [g_framegen resetHistory];
+            id<MTLTexture> mid=[g_framegen encode:cb source:present_raw_src(src) rect:rect interval:dt slot:alloc_i];
+            if(g_framegen) { src=mid?:g_framegen.currentTexture; draw_crop=NULL; generated=mid!=nil; }
+        }
+    } else if(g_framegen) [g_framegen resetHistory];
+    DmFrameGenerator *fg_keep=g_framegen;
+    int kind = present_encode_m4(cb, src, dr.texture, draw_crop, g_present_uv[alloc_i], &g_fx_present);
+    if (!kind) { [g_framegen resetHistory]; [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
     int fx_kind = kind == PRESENT_METALFX;
     [cb endCommandBuffer];
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
-        if (f.error) MLOG("[RED] display command buffer error: %s", f.error.description.UTF8String);
-        pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv);
-        present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind); pthread_mutex_unlock(&g_pq_mu);
+        if (f.error) { atomic_store(&g_framegen_reset,1); MLOG("[RED] display command buffer error: %s", f.error.description.UTF8String); }
+        (void)fg_keep;
+        pthread_mutex_lock(&g_pq_mu); if (!generated && ticket > g_pq_done) g_pq_done = ticket; if (alloc_stamp > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = alloc_stamp; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv);
+        present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind);
+        if(fg_requested()) {
+            static double ms[2]; static unsigned samples[2]; int k=generated!=0;
+            double cost=(f.GPUEndTime-f.GPUStartTime)*1e3;
+            if(cost>0 && cost<1000) { ms[k]+=cost; samples[k]++; }
+            if(samples[0]+samples[1]>=300) {
+                MLOG("framegen GPU: real+upscale %.3f ms (%u), flow+upscale %.3f ms (%u); engine enqueues %llu, actual displayed %llu (real %llu); input %lux%lu", samples[0]?ms[0]/samples[0]:0,samples[0],samples[1]?ms[1]/samples[1]:0,samples[1],(unsigned long long)atomic_load(&g_framegen_engine),(unsigned long long)atomic_load(&g_framegen_shown),(unsigned long long)atomic_load(&g_framegen_shown_real),(unsigned long)fg_keep.width,(unsigned long)fg_keep.height);
+                memset(ms,0,sizeof ms); memset(samples,0,sizeof samples);
+            }
+        }
+        pthread_mutex_unlock(&g_pq_mu);
     }];
     id<MTL4CommandBuffer> buffers[] = {cb};
     pthread_mutex_lock(&g_pq_mu); g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
@@ -10649,21 +10696,22 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         }
     }
     [g_q4 signalDrawable:dr];
-    g_present_alloc_fence[alloc_i] = ticket;
+    g_present_alloc_fence[alloc_i] = alloc_stamp;
 #if TARGET_OS_SIMULATOR   // The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
     (void)period; [dr present];
 #else
     uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
-        g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
+        if (!generated) g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
+        if(tt>0) { atomic_fetch_add(&g_framegen_shown,1); if(!generated) atomic_fetch_add(&g_framegen_shown_real,1); }
     }];
     // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
     if (target_ts > 0) [dr present];
     else if (period > 0) [dr presentAfterMinimumDuration:period]; else [dr present];
 #endif
     (void)frame;
-    return 1;
+    return generated?2:1;
 }
 // ---------- Present thread ----------
 // NVN semantics: QueuePresentTexture only queues the present and returns immediately (the game often calls it while holding a lock; iOS real device: synchronously waiting for nextDrawable inside it
@@ -10678,8 +10726,10 @@ static id<MTLSharedEvent> g_ext_ev;
 static void ext_wait(uint64_t v) { if (v && g_ext_ev) [g_q4 waitForEvent:g_ext_ev value:v]; }
 static void snap_commit_wait(uint64_t v);
 static pq_item g_pq[PQ];
+static pq_item g_fg_pending;
+static uint64_t g_fg_pending_ticket; // under g_pq_mu
 static uint64_t g_pq_in;
-static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double);
+static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double, int);
 static double g_link_vperiod, g_link_vhalf;   // virtual ticks (link_range): seconds per counted tick (0 = every callback is a tick) and half a refresh of the screen
 
 @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -10726,27 +10776,37 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pthread_cond_broadcast(&g_link_cv);
     pthread_mutex_unlock(&g_link_mu);
     pthread_mutex_lock(&g_pq_mu);
-    if (!g_dm_present_link || g_rescue_mode || g_pq_read == g_pq_in) { if (g_dm_present_link && !g_rescue_mode) g_link_empty++; pthread_mutex_unlock(&g_pq_mu); return; }
+    if (!g_dm_present_link || g_rescue_mode || (g_pq_read == g_pq_in && !g_fg_pending_ticket)) { if (g_dm_present_link && !g_rescue_mode) g_link_empty++; pthread_mutex_unlock(&g_pq_mu); return; }
     // The previous frame's present interval was >= 2 (period > 25 ms): keep it on screen for its whole period before taking the next one, as the Switch flips only every N vertical syncs. This also holds while the link runs at 60 Hz (Mario 1.2.1 sets 2 for single frames, see nvn_game_fps in hle_nvn.c);
     //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
     if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) { g_link_held++; pthread_mutex_unlock(&g_pq_mu); return; }
-    uint64_t first = g_pq_read + 1, ticket = g_pq_in;
+    uint64_t pending=g_fg_pending_ticket;
+    uint64_t first = g_pq_read + 1, ticket = pending?:g_pq_in;
     // In order, one frame per tick and at most one behind the newest: two waiting, the older now and the newer on the next tick; three or more, the older ones are dropped. Taking the newest
     // dropped the one before whenever two frames landed in the same refresh, as frames of a 60 fps game that take 16-17.5 ms do, and the next frame then stayed up 33 ms
     // (Dark Souls Remastered, from PR #31: presents within 14.7-18.7 ms 98.2 -> 99.98 %, about 2 ms more from enqueue to display). DM_PRESENT_FIFO=0 takes the newest, as before
     static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
-    if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
-    pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
-    g_pq_read = ticket;
-    if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
-    if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
+    if (!pending && fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
+    pq_item it = pending?g_fg_pending:g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
+    if(pending) g_fg_pending_ticket=0;
+    if(!pending) g_pq_read = ticket;
+    if (!pending && ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
+    if (!pending && ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
     g_link_ring[ticket % PRING] = (link_ent){ticket, update.targetPresentationTimestamp, (update.targetPresentationTimestamp - cb) * 1e3, gap_max * 1e3, nticks}; nticks = 0; gap_max = 0;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
     ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); }
-    g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
+    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp, pending?-1:0); }
+    if(submitted==2) {
+        pthread_mutex_lock(&g_pq_mu);
+        // Publish the second half before waking acquire waiters. A concurrent
+        // suspend may already have released this ticket while we encoded it.
+        if(ticket>g_pq_done) { g_fg_pending=it; g_fg_pending_ticket=ticket; }
+        pthread_cond_broadcast(&g_pq_cv);
+        pthread_mutex_unlock(&g_pq_mu);
+    }
+    g_link_hold_until = submitted==1 && !pending && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
     if (!submitted) {
         pthread_mutex_lock(&g_pq_mu);
         if (ticket > g_pq_done) g_pq_done = ticket;
@@ -10805,7 +10865,8 @@ static void link_sync(void) {   // Called every frame by the game's present thre
     }
     if (g_rescue_mode) want = 0;
     pthread_mutex_unlock(&g_pq_mu);
-    if (want && mtl_fps_target() == 30) want = 3;   // Power-saving mode: display link at 30 Hz
+    if (want && fg_requested()) want=2;
+    else if (want && mtl_fps_target() == 30) want = 3;   // Power-saving mode: display link at 30 Hz
     if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : 60);
     // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
     // while its thread starts (after link_main read the rate) is not lost
@@ -10830,7 +10891,9 @@ static void link_sync(void) {   // Called every frame by the game's present thre
 // waiting as-is for "the present queue to empty" would wait forever, the enter-background callback would not return, and the system would kill the process (the process disappears within 22 seconds after switching to another App).
 // These frames will not be seen anyway: discard them directly (accounted as dropped frames) and only wait for the one present already submitted to the GPU to finish.
 static void present_drop_for_suspend(void) {
+    atomic_store(&g_framegen_reset,1);
     pthread_mutex_lock(&g_pq_mu);
+    if(g_fg_pending_ticket) { g_pres[g_fg_pending_ticket%PRING]=(pres_ent){g_fg_pending_ticket,-1}; g_fg_pending_ticket=0; }
     if (g_link_owns_layer) {
         uint64_t n = g_pq_in - g_pq_read;
         for (uint64_t k = g_pq_read + 1; k <= g_pq_in; k++) g_pres[k % PRING] = (pres_ent){k, -1};
@@ -10849,13 +10912,14 @@ static void *present_main(void *arg) {
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0; pthread_get_qos_class_np(pthread_self(), &qc, &rp); atomic_store(&g_present_qos, (uint32_t)qc);
     for (;;) {
         pthread_mutex_lock(&g_pq_mu);
-        while (g_pq_read == g_pq_in || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
-        pq_item it = g_pq[g_pq_read % PQ];
-        uint64_t ticket = ++g_pq_read; g_classic_busy = 1;
+        while ((g_pq_read == g_pq_in && !g_fg_pending_ticket) || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
+        uint64_t pending=g_fg_pending_ticket;
+        pq_item it = pending?g_fg_pending:g_pq[g_pq_read % PQ];
+        uint64_t ticket = pending?:++g_pq_read; g_fg_pending_ticket=0; g_classic_busy = 1;
         pthread_mutex_unlock(&g_pq_mu);
         int submitted;
         ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0); }
+        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0, pending?-1:0); }
         pthread_mutex_lock(&g_pq_mu); g_classic_busy = 0; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
         if (!submitted) {
             pthread_mutex_lock(&g_pq_mu);
@@ -10988,6 +11052,7 @@ static uint64_t snap_take(const tex_t *t) {
 }
 static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4], uint64_t ev_val) {
     atomic_store(&dm_present_ns, now_ns());
+    atomic_fetch_add(&g_framegen_engine,1);
     if (g_classic || atomic_load(&g_present_discard)) return 0;   // Ticket number 0 = no pending present; the swapchain texture acquire does not wait (g_classic: no Metal 4 queue to present on)
     if (t) { xv_check(t->serial, 0, 0, "present"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
@@ -11020,14 +11085,18 @@ void mtl_present_wait(uint64_t tk) {
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_done < tk && !atomic_load(&g_present_discard)) {
         if (!g_link_owns_layer) { pthread_cond_wait(&g_pq_cv, &g_pq_mu); continue; }
-        if (g_pq_read >= tk) { pthread_cond_wait(&g_pq_cv, &g_pq_mu); continue; }   // This one has already been taken by the display link and is being presented: wait for it to be handed to the GPU (the GPU completion callback will wake us)
+        if (g_pq_read >= tk && g_fg_pending_ticket != tk) { pthread_cond_wait(&g_pq_cv, &g_pq_mu); continue; }   // This one has already been taken by the display link and is being presented: wait for it to be handed to the GPU (the GPU completion callback will wake us)
         struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += (long)STALL_NS; if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
         // Already determined to be in a stall (when the display link comes back the callback first clears g_stall_t0, then records the display-link tick time): no longer wait 100 ms in vain every frame, drop directly, and the game proceeds by its own display-link wait timeout (about two ticks)
         if (!g_stall_t0 && (pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts) != ETIMEDOUT || g_pq_done >= tk)) continue;
         uint64_t now = now_ns(), last = __atomic_load_n(&g_link_tick_ns, __ATOMIC_RELAXED);
-        if (g_pq_read >= tk) continue;
+        if (g_pq_read >= tk && g_fg_pending_ticket != tk) continue;
         if (now - last < STALL_NS) { pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts); continue; }   // The display link is still running, it is just not this one's turn yet: keep waiting (bounded, no busy spinning)
         uint64_t n = tk - g_pq_read;
+        if(g_fg_pending_ticket && g_fg_pending_ticket<=tk) {
+            g_pres[g_fg_pending_ticket%PRING]=(pres_ent){g_fg_pending_ticket,-1};
+            g_fg_pending_ticket=0; atomic_store(&g_framegen_reset,1); n++;
+        }
         for (uint64_t k = g_pq_read + 1; k <= tk; k++) g_pres[k % PRING] = (pres_ent){k, -1};
         g_link_dropped += n; g_pq_read = tk;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);

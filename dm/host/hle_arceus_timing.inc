@@ -20,6 +20,10 @@ void dm_arceus_timing_init(void) {
     uint64_t initial;
     memcpy(&initial, m->base + 0x397e8d8, sizeof initial);
     if (initial != 33333334) { LOG("[RED] Arceus timing: unexpected original frame duration; disabled"); return; }
+    const char *fg=getenv("DM_FRAMEGEN");
+    if(fg && !strcmp(fg,"opticalflow") && target>60) {
+        target=60; LOG("Arceus optical flow: target 60 real frames plus intermediate pictures, display target 120; game clock unchanged");
+    }
     g_arceus_target = target;
     g_arceus_time_base = m->base;
     float dt = 1.f / target;

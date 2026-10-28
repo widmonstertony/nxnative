@@ -448,6 +448,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - a jump to address 0 right after `glGetFloatv(0xb12)` (`lr=main+0x2d58c4`). → [Which GL functions a game calls](../reference/rendering.md#which-gl-functions-a-game-calls)
 - in a capture run every program links with no uniforms; the game's first `Shader:send` raises a Lua error and, on the Switch, its error handler quits (Any Lua error quits a LÖVE game). → [GL shaders put together at run time and captured](../reference/rendering.md#gl-shaders-put-together-at-run-time-and-captured)
 - read-only depth/stencil attachments are written back after every pass, and the periodic unwritten-store savings counter remains zero with the default configuration. → [Unwritten attachment stores without lookahead](../reference/rendering.md#unwritten-attachment-stores-without-lookahead)
+- A 120 Hz display request and final spatial scaling alone leave a costly 3D scene below 60 rendered frames per second. Interpolating with unrelated or placeholder depth/motion data produces invalid images. → [Experimental image optical-flow presentation](../reference/rendering.md#experimental-image-optical-flow-presentation)
 
 ## Shaders
 
