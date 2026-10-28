@@ -387,6 +387,7 @@ t_framegen: t_framegen.m ../nvn/nvn_framegen.m ../nvn/nvn_framegen.h ../nvn/nvn_
 .PHONY: check_t_framegen
 check_t_framegen: t_framegen
 	MTL_DEBUG_LAYER=1 ./t_framegen
+	MTL_DEBUG_LAYER=1 ./t_framegen --bgra
 run: check_t_framegen
 
 t_framegen_present: t_framegen_present.m t_framegen_screen.c $(MTL_T_DEP)

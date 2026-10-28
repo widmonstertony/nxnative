@@ -49,7 +49,7 @@
     MTL4ArgumentTableDescriptor *ad=[MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount=5; ad.maxBufferBindCount=1;
     for(int i=0;i<3;i++) {
         _cutFlag[i]=[device newBufferWithLength:16 options:MTLResourceStorageModeShared]; if(!_cutFlag[i]) return nil; [_residency addAllocation:_cutFlag[i]];
-        _output[i]=[self texture:MTLPixelFormatRGBA8Unorm width:w height:h usage:rw]; if(!_output[i]) return nil;
+        _output[i]=[self texture:format width:w height:h usage:rw]; if(!_output[i]) return nil;
         for(int k=0;k<11;k++) { _args[i][k]=[device newArgumentTableWithDescriptor:ad error:&e]; if(!_args[i][k]) return nil; }
         for(int l=0;l<3;l++) {
             _level[i][l]=[device newBufferWithLength:16 options:MTLResourceStorageModeShared]; if(!_level[i][l]) return nil;

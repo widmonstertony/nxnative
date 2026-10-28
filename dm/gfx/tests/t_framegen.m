@@ -4,6 +4,7 @@
 #include <stdlib.h>
 static int failed,checks;
 #define CHECK(c,s) do { checks++; if(!(c)){failed++; printf("FAIL: %s\n",s);}else printf("PASS: %s\n",s); }while(0)
+static MTLPixelFormat testFormat=MTLPixelFormatRGBA8Unorm;
 static id<MTLDevice> dev; static id<MTL4CommandQueue> queue; static id<MTLCommandQueue> readq;
 static id<MTLTexture> input(int x,BOOL cut) {
     enum { w=256,h=128 }; unsigned char pixels[w*h*4];
@@ -12,7 +13,7 @@ static id<MTLTexture> input(int x,BOOL cut) {
         int v=cut?230:rect?210+((i-x)/8+y/8)%2*35:16;
         pixels[k]=pixels[k+1]=pixels[k+2]=v; pixels[k+3]=255;
     }
-    MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
+    MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:testFormat width:w height:h mipmapped:NO];
     d.storageMode=MTLStorageModeShared; d.usage=MTLTextureUsageShaderRead;
     id<MTLTexture> t=[dev newTextureWithDescriptor:d]; [t replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:pixels bytesPerRow:w*4]; return t;
 }
@@ -33,13 +34,14 @@ static unsigned char *pixels(id<MTLTexture> t) {
     [e endEncoding];[cb commit];[cb waitUntilCompleted];
     unsigned char *p=malloc(256*128*4);memcpy(p,b.contents,256*128*4);return p;
 }
-int main(){@autoreleasepool {
+int main(int argc,char **argv){@autoreleasepool {
+    (void)argv; if(argc>1)testFormat=MTLPixelFormatBGRA8Unorm;
     setbuf(stdout,NULL);dev=MTLCreateSystemDefaultDevice();queue=[dev newMTL4CommandQueue];readq=[dev newCommandQueue];
     CHECK(queue!=nil,"real Metal 4 queue available");if(!queue)return 1;
-    DmFrameGenerator *fg=[[DmFrameGenerator alloc]initWithDevice:dev width:256 height:128 format:MTLPixelFormatRGBA8Unorm];
+    DmFrameGenerator *fg=[[DmFrameGenerator alloc]initWithDevice:dev width:256 height:128 format:testFormat];
     CHECK(fg!=nil,"production interpolation pipelines created");if(!fg)return 1;
     CHECK(!encode(fg,input(48,NO),1./60,0),"first frame is real only");
-    id<MTLTexture> mid=encode(fg,input(80,NO),1./60,1);CHECK(mid!=nil,"second frame generates a midpoint");
+    id<MTLTexture> mid=encode(fg,input(80,NO),1./60,1);CHECK(mid!=nil,"second frame generates a midpoint");CHECK(mid.pixelFormat==testFormat,"generated and real colors share one scaler format");
     unsigned char *p=pixels(mid);int inside=0;double sum=0,centre=0;for(int y=40;y<88;y++)for(int x=0;x<256;x++)if(p[(y*256+x)*4]>150){inside++;sum+=x;}
     centre=inside?sum/inside:0;printf("generated rectangle centre %.2f (expected 95.5)\n",centre);
     CHECK(centre>90 && centre<101,"moving object reaches its intermediate position");

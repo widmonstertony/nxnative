@@ -233,6 +233,11 @@ static void front_ios_present_hz_clamp(UIView *view) {
     // NVN pacer has not cached its explicit environment request at this point.
     // Never turn the existing 60 Hz default into an implicit high-rate mode.
     int requested = dm_display_hz_parse(getenv("DM_PRESENT_HZ"));
+    const char *flow=getenv("DM_FRAMEGEN");
+    if(flow && !strcmp(flow,"opticalflow") && requested>60) {
+        setenv("DM_PRESENT_HZ","60",1); requested=60;
+        LOG("image optical flow: real-frame pacing 60, display link target 120; elapsed game clock retained");
+    }
     if (requested != 120) return;
     UIScreen *screen = view.window.screen ?: UIScreen.mainScreen;
     int supported = (int)screen.maximumFramesPerSecond;

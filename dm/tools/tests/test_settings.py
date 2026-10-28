@@ -24,7 +24,7 @@ class ArceusFrameGeneration(unittest.TestCase):
     def test_exact_build_capability_controls_defaults(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
             p=Path(tmp)/'main.fixups.tsv'
-            for header,supported in [('',False),('# ARCEUS_TIMING\t1\n',True)]:
+            for header,supported in [('',False),('# ARCEUS_TIMING\t1\n',True),('# ZA_TIMING\t1\n',True)]:
                 p.write_text(header)
                 rows={r['env']:r for r in settings.build('01007EF00011E000',tmp,'unused')['settings']}
                 self.assertEqual('DM_FRAMEGEN' in rows,supported)

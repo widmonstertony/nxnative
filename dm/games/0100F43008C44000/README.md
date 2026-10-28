@@ -85,3 +85,7 @@ General host changes first needed here; each applies to every game:
 - `c85de3713170e519` ORs bit fields into output 0 and has not been seen with an integer attachment (no row).
 - The development notes list "the render condition the host does not evaluate" among the Mac route's red lines; `render_cond` changes nothing here and stays off.
 - `game.tsv`'s header says "Plays on the Mac"; AGENTS.md and the development notes say it is playable on the iPhone.
+
+### Experimental image optical-flow port
+
+The separate Air delivery snapshot for update 2.0.2 adds [image optical-flow presentation](../../../docs/reference/rendering.md#experimental-image-optical-flow-presentation) and MetalFX spatial scaling while retaining its original `d374e783beec` shader resources, full-screen camera and input layout. Its exact main build is `b1f12fd919eae86ab8a978317677e64b`; the delivery script verifies both existing elapsed-clock observation gates before adding `ZA_TIMING` launcher metadata. This metadata is not permission to use fixed addresses on another build. The modern settings table recognizes either `ARCEUS_TIMING` or `ZA_TIMING`; it does not enable Z-A timing in unpatched upstream game code. Real-frame pacing is capped at 60 only with interpolation enabled; a capable display targets paired 120 Hz output. Production GPU pair/allocator tests and the full iOS build passed. Air gameplay, actual dimensions, performance and older-device support for this experimental path remain unverified; no sustained 120 fps result is claimed.
