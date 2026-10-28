@@ -15,6 +15,9 @@ static char *g_argv[64] = {"game"}; static int g_argc = 1;
 
 static void guest_main(void) {
     guest_thread_init();
+    { void dm_arceus_display_init(void); dm_arceus_display_init(); }
+    { void dm_arceus_timing_init(void); dm_arceus_timing_init(); }
+    { void dm_violet_display_init(void); dm_violet_display_init(); }
     { void dm_oodle_serve_maybe(int); dm_oodle_serve_maybe(0); }   // DM_OODLE_SERVE tool mode: the game's own Oodle decoder over stdin / stdout (hle_oodle.c, exits when the input ends)
     uint32_t hmain = svc_thread_main_init();   // Main thread handle: x0 of nnosInitialize (stored in an sdk global, used by ThreadManagerImplByHorizon); x1 = pointer to the argument area
     // Copy Start step by step: _init_libc1 = __nnmusl_init_locks (initializes the stdio etc. locks as recursive locks; skipping it self-deadlocks on nested locking in putc) + __init_ssp.

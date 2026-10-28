@@ -1,5 +1,7 @@
 # nxnative
 
+This branch publishes the fork's current iPhone/iPad game fixes. The iOS 16.1/17 baseline and older-GPU renderer remain on `ios16-pokemon-za-port`. See [fork status and validation](docs/fork-status.md) for the separate deployment requirements and open work.
+
 Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.
 
 It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.

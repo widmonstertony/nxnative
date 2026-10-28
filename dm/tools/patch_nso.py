@@ -350,7 +350,7 @@ def site_gate(ins, kind, arg):
 
 def site_obs(off, oid, word):
     """Observation gate: original entry instruction → enter the host gate (arg = observation number) → restore x29/x30 → execute the original instruction → jump back to off+4.
-        The first half of the gate block is word-for-word isomorphic with site_gate; the host only reads registers and does not modify them (the x0–x8 written back by dm_gate are the original values)."""
+        The first half is isomorphic with site_gate. entry.S preserves the complete saved frame; callbacks normally observe it, while exact-build display/allocator callbacks may adjust selected saved values."""
     ins = dis(word, off)
     assert ins.mnemonic not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz') and not ins.mnemonic.startswith('b.') \
         and not (ins.mnemonic.startswith('ldr') and '[' not in ins.op_str) and not has18(ins), f'observation gate original instruction cannot be relocated {off:#x} {ins.mnemonic} {ins.op_str}'
@@ -1098,10 +1098,30 @@ obs = list(PATCHES['OBS'].get(BUILD_ID, []))
 for off, oid, ow, why in obs:
     w = struct.unpack_from('<I', IMG, off)[0]
     assert f'{w:08x}' == ow, f'observation gate original instruction mismatch {off:#x}: {w:08x}'
-    # Function entries, or the instruction right after a bl, only: dm_gate writes back only x0–x8 / x30, and host C code may modify x9–x17; at entry these carry no values under AAPCS64 (arguments are only in x0–x7 / x8),
+    # Conservative default placement remains function entries or the instruction after a bl: at entry x9–x17 carry no live values under AAPCS64 (arguments are in x0–x7 / x8),
     # and right after a call returns the callee was free to clobber them anyway (x16 / x17 are the veneer registers). Elsewhere, where the code ahead reads none of them before its next bl
     after_bl = off >= 4 and struct.unpack_from('<I', IMG, off - 4)[0] >> 26 == 0x25
-    assert off in set(starts) or after_bl or scratch_dead(off), f'observation gate neither at a function entry, after a bl nor before a call with x9–x17 unread {off:#x}'
+    # entry.S preserves all GPRs, SIMD and flags. These exact-build camera/HUD/timing
+    # sites intentionally update a saved register before its original consumer.
+    audited_site = BUILD_ID == "aee8f150dda1b5a838806e1a5ea6827a" and (off, oid, ow) in {
+        (0x1261ba0, 2079, "b9024008"),
+        (0x191ddd8, 2079, "b9024288"),
+        (0x19336c4, 2079, "b902329f"),
+        (0x275065c, 2079, "b9024008"),
+        (0x124ee04, 2335, "b9002109"),
+        (0x194a664, 2335, "d29999aa"),
+        (0x124eac4, 2591, "b902410a"),
+        (0x2abe894, 32, "2d408500"),
+        (0x2a7e734, 35, "b9419022"),
+        (0x29faf98, 291, "1e270101"),
+        (0x2af25fc, 291, "1e270100"),
+        (0x2aa2790, 547, "b940ee6a"),
+    }
+    audited_site |= BUILD_ID == "709bfd66115298640155fcc4979dba15" and (off, oid, ow) in {
+        (0xcf11ec, 33, "6ea7e406"),
+        (0x192bd30, 34, "2d408500"),
+    }
+    assert audited_site or off in set(starts) or after_bl or scratch_dead(off), f'observation gate neither at a function entry, after a bl nor before a call with x9–x17 unread {off:#x}'
     assert off < TEXT_END and off not in kinds and not any(lo <= off < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'observation gate conflicts with a rewrite site {off:#x}'
     put_branch(off, site_obs(off, oid, w)); stat('obs')
 

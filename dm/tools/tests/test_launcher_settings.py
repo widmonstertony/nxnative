@@ -26,6 +26,20 @@ def build(gid, api, platform=None):
 
 
 class LauncherSettingsTests(unittest.TestCase):
+    def test_exact_build_timing_and_known_pipeline_limit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=['en-US']), patch.dict(os.environ, {'GFXAPI': 'nvn', 'SETTINGS_PLATFORM': 'ios'}):
+            root = Path(tmp)
+            without = {s['env']: s for s in settings.build(BOTW, root, root / 'control.nacp')['settings']}
+            self.assertNotIn('DM_ARCEUS_FPS', without)
+            (root / 'main.fixups.tsv').write_text('# ARCEUS_TIMING\t1\n# MTL4_DUAL_SOURCE_UNAVAILABLE\t1\n')
+            rows = {s['env']: s for s in settings.build(BOTW, root, root / 'control.nacp')['settings']}
+            self.assertEqual(rows['DM_ARCEUS_FPS']['default'], '120')
+            self.assertEqual([o[0] for o in rows['DM_ARCEUS_FPS']['options']], ['0', '30', '60', '120'])
+            self.assertEqual(rows['DM_PSO_MTL4']['default'], '0')
+            self.assertEqual(rows['DM_PSO_MTL4']['options'], [['0', 'Unavailable pending shader fix']])
+            self.assertIn('dual-source', rows['DM_PSO_MTL4']['note'])
+            self.assertEqual(without['DM_PSO_MTL4']['kind'], 'toggle')
+
     def test_upscaling_is_opt_in_for_every_graphics_api(self):
         for api, gid in [('nvn', BOTW), ('vulkan', '0100535012974000'), ('gl', '010014E00DB56000')]:
             with self.subTest(api=api):

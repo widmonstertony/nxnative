@@ -746,6 +746,22 @@ def vs_depth(src):
     single = src[:m.start()] + gl
     return single, single + '\n' + re.sub(r'\bmain0\s*\(', 'main0_z(', body, count=1)
 
+def fs_dual(src):
+    """Keep MRT output 1, and add a separate entry for NVN's secondary blend source.
+    A pipeline using SRC1 reads that value at color(0), index(1), not color(1).
+    Only the return structure changes; resources, constants and shader arithmetic stay identical.
+    """
+    m = re.search(r'^.*\bfragment\s+main0_out\s+main0\s*\(', src, re.M)
+    st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
+    if not m or not st: return None
+    mem = re.findall(r'^\s*(\w+)\s+(\w+)\s*(\[\[[^\]]*\]\])?;', st.group(1), re.M)
+    colors = {int(c.group(1)): ty for ty, _, at in mem if (c := re.search(r'color\((\d+)\)', at))}
+    if set(colors) != {0, 1} or any(not ty.startswith(('float', 'half')) for ty in colors.values()): return None
+    struct = 'struct main0_out_d\n{\n' + ''.join(f'    {ty} {nm} {at.replace("[[color(1)]]", "[[color(0), index(1)]]")};\n' for ty, nm, at in mem) + '};\n'
+    ret = 'return main0_out_d{' + ', '.join(f'out.{nm}' for _, nm, _ in mem) + '};'
+    body = re.sub(r'\bfragment\s+main0_out\s+main0\s*\(', 'fragment main0_out_d main0_d(', src[m.start():], count=1).replace('return out;', ret)
+    return '\n' + struct + body
+
 def fs_uint(src):
     """Integer colour targets. With no PC version the translator declares every fragment output float; a shader writes an integer as the float with its bits (as_type<float>(…)), and Metal
     refuses a pipeline whose float output meets an integer attachment. Luigi's Mansion 3 draws its whole scene into an R32Uint + RGBA8Uint G-buffer (1,377 of its 4,307 pixel shaders write
@@ -945,7 +961,8 @@ def finish(key, w, j, c1):
         full, lay = vs_layer_entry(full)   # layer entry points for a slice-writing geometry shader (see vs_layer_entry)
         open(msl, 'w').write(full)
     fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
-    if fu: plain = src; open(msl, 'w').write(fu)
+    fd = fs_dual(src) if j['stage'] == 'ps' else None
+    if fu or fd: plain = src + (fd or ''); open(msl, 'w').write((fu or src) + (fd or ''))
     def compile_targets():   # the selected targets from the same MSL (MSL identical to one compiled before takes that library, dmsh_mtlcache.py)
         if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
         if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
@@ -960,7 +977,7 @@ def finish(key, w, j, c1):
     dr = drv_reads(src)
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
             'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
-            **({'entry_discard': 'main0_discard'} if discard else {}),
+            **({'entry_discard': 'main0_discard'} if discard else {}), **({'entry_d': 'main0_d'} if fd else {}),
             **({'entry_tf': 'main0_tf', 'tf_strides': [e['stride'] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),

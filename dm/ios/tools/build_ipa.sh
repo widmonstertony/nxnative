@@ -18,6 +18,11 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 IOS_SOURCE=$PWD; IOS=$PWD; DM=$(cd .. && pwd)
+# Shader builds can run in parallel, but IPA mode mutates this checkout's Gen/.
+# Hold the lock across Xcode and packing so another title cannot replace it.
+if [ "${1:-}" != --prepare-xcode ] && [ "${DM_IOS_BUILD_LOCK_OWNER:-}" != "$$" ]; then
+  exec python3 "$IOS_SOURCE/tools/build_lock.py" "$IOS_SOURCE" /bin/bash "$IOS_SOURCE/tools/build_ipa.sh" "$@"
+fi
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
 [ -n "${GAME:-}" ] || die "GAME is not set: GAME=<base game title ID> $0; profiles: $(python3 "$DM/games/game.py" list | awk -F'\t' '{printf "%s (%s)  ", $1, $3}')"
 export GAME; GD=$(python3 "$DM/games/game.py" dir "$GAME") || die "no game profile $GAME"   # dm/games/<id>, or a profile in DM_GAMES_DIR (the NSP script's provisional one); the make that gen_build.py runs uses the same GAME

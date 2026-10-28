@@ -12,6 +12,34 @@ QUIET = $(if $(strip $(SAN)),,2>/dev/null)
 GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
 $(B)/t_fs $(B)/t_fs_case $(B)/t_fs_commit_list $(B)/t_fs_commit_list_tsan: ../romfs_image.h
 GAME_H = ../gen/$(GAME)/game_profile.h
+# Exact-build display adapters must preserve unrelated native registers and
+# refuse unsupported modules before the frontend expands the canvas.
+$(B)/t_arceus_display: t_arceus_display.c ../hle_arceus_display.c ../hle_arceus_timing.inc ../hle_game_display.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_arceus_display.c
+.PHONY: arceus-display
+arceus-display: $(B)/t_arceus_display
+	$(B)/t_arceus_display 76:35
+	$(B)/t_arceus_display 683:512
+	$(B)/t_arceus_display 4:3
+run: arceus-display
+$(B)/t_arceus_timing: t_arceus_timing.c ../hle_arceus_timing.inc ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -I.. $(GINC) -o $@ t_arceus_timing.c
+.PHONY: arceus-timing
+arceus-timing: $(B)/t_arceus_timing
+	$(B)/t_arceus_timing 120
+	$(B)/t_arceus_timing 60
+	$(B)/t_arceus_timing 30
+	$(B)/t_arceus_timing 0
+	$(B)/t_arceus_timing 120bad
+run: arceus-timing
+$(B)/t_violet_display: t_violet_display.c ../hle_violet_display.c ../hle_game_display.c ../gate_frame.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_violet_display.c
+.PHONY: violet-display
+violet-display: $(B)/t_violet_display
+	$(B)/t_violet_display 76:35
+	$(B)/t_violet_display 683:512
+	$(B)/t_violet_display 4:3
+run: violet-display
 run: $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple
 	$(B)/t_heap_size
 	$(B)/t_touch

@@ -9,6 +9,8 @@
 #include "hle.h"
 #include "dm.h"
 #include "haptics_apple.h"
+#include "DmDisplayRefresh.h"
+#include "DmGraphicsCapabilities.h"
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
@@ -19,6 +21,8 @@ bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.
 
 static CAMetalLayer *g_layer;
 static void front_ios_power_watch(void);
+static void front_ios_display_refresh_start(UIView *view);
+static void front_ios_present_hz_clamp(UIView *view);
 static void front_ios_audio_watch(void);
 static UILabel *front_ios_fps_label(void);
 
@@ -30,6 +34,7 @@ static UILabel *front_ios_fps_label(void);
     if ((self = [super initWithFrame:f])) {
         CAMetalLayer *l = (CAMetalLayer *)self.layer;
         l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        dm_graphics_capabilities(l.device);
         l.contentsScale = UIScreen.mainScreen.nativeScale; l.framebufferOnly = NO; l.opaque = YES;
         self.backgroundColor = UIColor.blackColor;
     }
@@ -50,6 +55,12 @@ static UILabel *front_ios_fps_label(void);
 - (void)startGame;
 @end
 static DmRootVC *g_root;
+int dm_game_fullscreen_active(void);
+void front_fullscreen_ready(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [g_root.view setNeedsLayout]; [g_root.view layoutIfNeeded];
+    });
+}
 static void launcher_done(void) { [g_root startGame]; }
 @implementation DmRootVC
 - (void)viewDidLoad {
@@ -69,6 +80,14 @@ static void launcher_done(void) { [g_root startGame]; }
 // The game view, the pad and the frame-rate counter are made once the launcher has set the switches they read (DM_SHOW_FPS, DM_METAL_HUD); the host's loading began at app launch (main.m)
 - (void)startGame {
     if (self.game) return;
+    const char *aspect = getenv("DM_ASPECT");
+    if (!aspect || !strcmp(aspect, "auto")) {
+        CGSize size = self.view.bounds.size;
+        if (size.width >= size.height && size.height > 0) {
+            char value[96]; snprintf(value, sizeof value, "%.9g:%.9g", (double)size.width, (double)size.height);
+            setenv("DM_ASPECT", value, 1);
+        }
+    }
     front_hud_env();   // before the game view makes its device (an env file's DM_METAL_HUD sets it in main.m already)
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
@@ -82,13 +101,17 @@ static void launcher_done(void) { [g_root startGame]; }
     if (self.fps) [self.view addSubview:self.fps];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
+    front_ios_present_hz_clamp(self.game);
+    front_ios_display_refresh_start(self.game);
     front_ios_boot();
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    if (!dm_game_fullscreen_active()) {
+        if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    }
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
@@ -132,6 +155,88 @@ static void front_ios_power_watch(void) {
 // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
 // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 in Documents/env.txt overrides that without a rebuild. NULL when off
 uint64_t mtl_present_count(void);
+
+// iOS 16 has CADisplayLink even though it cannot use CAMetalDisplayLink.
+// This link requests a screen cadence and measures its timestamps; it never
+// obtains a drawable, submits a frame or changes the game's 60 Hz timebase.
+@interface DmDisplayRefreshObserver : NSObject {
+    CADisplayLink *_link;
+    __weak UIView *_view;
+    int _requested, _supported, _preferred;
+    dm_display_probe _probe;
+}
+- (instancetype)initWithView:(UIView *)view requested:(int)requested;
+- (void)configure;
+- (void)tick:(CADisplayLink *)link;
+- (void)setActive:(BOOL)active;
+- (void)invalidate;
+- (void)activated:(NSNotification *)notification;
+- (void)deactivated:(NSNotification *)notification;
+@end
+@implementation DmDisplayRefreshObserver
+- (instancetype)initWithView:(UIView *)view requested:(int)requested {
+    if ((self = [super init])) {
+        _view = view; _requested = requested;
+        _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
+        _link.paused = YES;
+        [self configure];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(activated:) name:UIApplicationDidBecomeActiveNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(deactivated:) name:UIApplicationWillResignActiveNotification object:nil];
+        [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
+    return self;
+}
+- (void)configure {
+    UIScreen *screen = _view.window.screen ?: UIScreen.mainScreen;
+    _supported = (int)screen.maximumFramesPerSecond;
+    _preferred = dm_display_hz_select(_requested, _supported);
+    _link.preferredFrameRateRange = CAFrameRateRangeMake(MIN(60, _preferred), _preferred, _preferred);
+    dm_display_probe_reset(&_probe);
+    LOG("display refresh: requested=%d Hz supported_max=%d Hz preferred=%d Hz; screen cadence request only, game pacing unchanged",
+        _requested, _supported, _preferred);
+}
+- (void)setActive:(BOOL)active {
+    if (active) [self configure];
+    dm_display_probe_reset(&_probe);
+    _link.paused = !active;
+}
+- (void)tick:(CADisplayLink *)link {
+    UIScreen *screen = _view.window.screen ?: UIScreen.mainScreen;
+    if ((int)screen.maximumFramesPerSecond != _supported) [self configure];
+    dm_display_probe_result result;
+    if (dm_display_probe_tick(&_probe, link.timestamp, link.targetTimestamp, mtl_present_count(), &result))
+        LOG("display cadence: requested=%d preferred=%d supported_max=%d Hz; measured_callback=%.2f Hz target_period=%.3f ms callback_period_min/max=%.3f/%.3f ms; actual_drawable=%.2f fps frames=%llu over=%.3f s; callback cadence is not rendered FPS",
+            _requested, _preferred, _supported, result.callback_hz, result.target_period_ms,
+            result.min_period_ms, result.max_period_ms, result.presented_fps,
+            (unsigned long long)result.presented_frames, result.seconds);
+}
+- (void)activated:(NSNotification *)notification { (void)notification; [self setActive:YES]; }
+- (void)deactivated:(NSNotification *)notification { (void)notification; [self setActive:NO]; }
+- (void)invalidate { [NSNotificationCenter.defaultCenter removeObserver:self]; [_link invalidate]; _link = nil; }
+@end
+static DmDisplayRefreshObserver *g_display_refresh;
+static void front_ios_display_refresh_start(UIView *view) {
+    int requested = dm_display_hz_parse(getenv("DM_DISPLAY_HZ"));
+    if (requested < 0) { LOG("[RED] DM_DISPLAY_HZ expects 60 or 120; retaining system display policy"); return; }
+    if (!requested) return;
+    [g_display_refresh invalidate];
+    g_display_refresh = [[DmDisplayRefreshObserver alloc] initWithView:view requested:requested];
+    [g_display_refresh setActive:UIApplication.sharedApplication.applicationState == UIApplicationStateActive];
+}
+static void front_ios_present_hz_clamp(UIView *view) {
+    // This runs on the main thread before front_ios_boot starts the guest. The
+    // NVN pacer has not cached its explicit environment request at this point.
+    // Never turn the existing 60 Hz default into an implicit high-rate mode.
+    int requested = dm_display_hz_parse(getenv("DM_PRESENT_HZ"));
+    if (requested != 120) return;
+    UIScreen *screen = view.window.screen ?: UIScreen.mainScreen;
+    int supported = (int)screen.maximumFramesPerSecond;
+    int selected = dm_display_hz_select(requested, supported);
+    char value[16]; snprintf(value, sizeof value, "%d", selected);
+    setenv("DM_PRESENT_HZ", value, 1);
+    LOG("present refresh: explicit request=%d Hz supported_max=%d Hz selected=%d Hz; configured before guest startup", requested, supported, selected);
+}
+
 static UILabel *front_ios_fps_label(void) {
     const char *e = getenv("DM_SHOW_FPS");
     if (!(e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue])) return nil;

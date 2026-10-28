@@ -849,9 +849,10 @@ def gfpak_members(d, label):
         if ct == 2:
             import lz4.block
             data = lz4.block.decompress(raw, uncompressed_size=usz)
+        elif ct == 3: data = oodle(raw, usz)
         elif ct == 1: data = __import__('zlib').decompress(raw)
         elif ct == 0: data = raw
-        else: red(f'{label}: entry {i} has compression {ct} (Oodle), which this reader does not decode')
+        else: red(f'{label}: entry {i} has unsupported compression {ct}')
         if len(data) != usz: red(f'{label}#{i}: {len(data):#x} bytes, the entry says {usz:#x}')
         yield f'#{i}', data
 

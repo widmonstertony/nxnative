@@ -753,7 +753,7 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 
 - **Cause:** SPIRV-Cross binds the push constant block at `buffer(0)`, where the first renumbered uniform buffer goes.
 - **Fix:** the translator moves it to the next free buffer slot (`p:0.0=<slot>` in the table) and the replay sets the recorded bytes there (`setVertexBytes` / `setFragmentBytes`, the pipeline layout's range).
-- **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md).
+- **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md).
 
 ### Descriptor arrays bound to consecutive slots
 
@@ -780,7 +780,7 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 
 - **Symptom:** Metal refuses the pipeline: "Fragment shader does not write to render target color(0), index(1)".
 - **Cause:** the GX shaders write the second blend source as an ordinary output at location 1 (no `Index` decoration), and pipelines blend with `SRC1` factors; NVIDIA's hardware feeds MRT 1 to source 1.
-- **Fix:** `vk_shaders.py` builds a variant `vk_<key>_d` with that output at `[[color(0), index(1)]]`, which the host takes for pipelines whose blend reads source 1.
+- **Fix:** `vk_shaders.py` builds a variant `vk_<key>_d` with that output at `[[color(0), index(1)]]`. NVN uses `dmsh_build.py` to append `main0_d` and records `entry_d`; `shader_load` retains its Metal 4 function descriptor and specializes its function constants. `pso_desc` selects it for an ordinary floating-point target-0 pipeline reading source 1, preserving `main0` for MRT draws. Metal disallows a dual-source pipeline with any additional color attachments. NVN keeps the guest targets bound but opens a physical pass with color 0 only, lands pending clears on other targets first, and reopens the full set when ordinary MRT draws return. Tile-fetch merge proofs reject dual-source draws; direct clears can reopen the full set. The secondary value is not also written to MRT 1. Tile-fetch variants are generated only from the original entry. No blending factors are zeroed when output 1 is present. A chain rebuild and matching host are required. `t_missing_src1` covers both compiler paths with actual pixel values, ordinary MRT preservation, and optional external Arceus shaders via `DM_TEST_DUAL_SHADER_DIR`.
 - **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md).
 
 ### Scaled and three-component vertex formats
