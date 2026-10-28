@@ -248,6 +248,9 @@ if [ -n "${PROGRAMS_TSV:-}" ]; then   # each program's shader libraries, RomFS, 
   done < <(prog_rows); prog_back
 else
 MAPS=()
+# The fork packs the slim IPA by default (upstream: DM_COPY_ROMFS=NO): DM_FULL_ROMFS=1 or DM_COPY_ROMFS=YES packs the
+# game files into the package, which for a large game is many GB and iOS refuses to install it (PackageExtractionFailed)
+[ -n "${DM_COPY_ROMFS:-}" ] || { [ -n "${DM_FULL_ROMFS:-}" ] && DM_COPY_ROMFS=YES || DM_COPY_ROMFS=NO; }
 if [ "${DM_COPY_ROMFS:-YES}" = NO ]; then
   t "no game files in the IPA (DM_COPY_ROMFS=NO): the app takes Documents/romfs.img (scripts/push_romfs.sh)"
   # The image's identity (dm/host/romfs_identity.h) goes into the app as romfs.id: main.m then uses only a Documents/romfs.img with the same size and index hash, and says so when it is another version or missing.
@@ -257,7 +260,11 @@ if [ "${DM_COPY_ROMFS:-YES}" = NO ]; then
     MAPS=("$P/romfs.id=$O/romfs.id"); t "game files identity: $(cat "$O/romfs.id")"
   fi
 elif [ -f "$ROMFS" ]; then MAPS=("$P/romfs.img=$ROMFS"); else MAPS=("$P/romfs=$ROMFS"); fi
-if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
+if [ "$DM_COPY_ROMFS" != NO ] && [ -n "$AOC" ] && [ -d "$AOC" ]; then
+  MAPS+=("$P/aoc=$AOC"); t "add-on content packed into the IPA: $(ls "$AOC" | tr '\n' ' ')"
+elif [ -n "$AOC" ] && [ -d "$AOC" ]; then
+  t "add-on content alongside the game data (DM_FULL_ROMFS=1 packs it): $(ls "$AOC" | tr '\n' ' ')"
+fi
 if [ -n "${PSO:-}" ]; then MAPS+=("$P/pso=$PSO"); fi
 MAPS+=("$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR" "$P=$APP")
   if [ -d "$(dirname "$ROMFS")/html" ]; then MAPS+=("$P/html=$(dirname "$ROMFS")/html"); t "offline HTML pages: $(dirname "$ROMFS")/html"; fi   # beside its RomFS, where the host finds them (hle_web.c)
