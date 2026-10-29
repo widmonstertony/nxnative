@@ -96,3 +96,12 @@ The user still reports a gray scene, so the rendering repair remains open;
 the render-target failure and pass contents require further device diagnostics.
 A10X remains uninstalled because its strict resource audit still rejects two
 layered and eighteen sampler-limit paths.
+
+### Compact binding replay repair (2026-10-29)
+
+[Compact buffer bindings](../../../docs/reference/rendering.md#compact-buffer-bindings-lost-by-legacy-replay)
+were silently discarded by this game's frozen legacy host. The production
+recorder/replay regression passes 252 checks; the old host fails all 112 compact
+binding checks. Minimum-16.1 build `20261029.5` includes the shared host repair
+without changing the frozen shader chain. Packaging and device installation are
+in progress; this does not establish a corrected picture or gameplay.

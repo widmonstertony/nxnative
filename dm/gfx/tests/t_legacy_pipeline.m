@@ -1,6 +1,10 @@
 // An unwritten second blend source uses zero; compare the folded descriptor with a shader that explicitly writes that zero.
 #define DM_NVN_LEGACY_RENDERER_TEST 1
 #include "../nvn/nvn_mtl.m"
+#include "../nvn/nvn_protos.h"
+#include "../../host/hle.h"
+#include <mach-o/getsect.h>
+#include <mach-o/ldsyms.h>
 
 uint64_t g_t0_ns;
 int dm_guest_as_contains(uintptr_t p) { (void)p; return 0; }
@@ -27,8 +31,56 @@ static void pixels(id<MTLRenderPipelineState> ps, __fp16 out[4]) {
     [t getBytes:out bytesPerRow:32 fromRegion:MTLRegionMake2D(1,1,1,1) mipmapLevel:0];
 }
 
+
+// Use the real recorder, not hand-built packets: a recorder/backend ABI gap
+// otherwise drops every ordinary vertex/uniform binding without a GPU error.
+static void binding_commands(void) {
+    unsigned long length = 0;
+    const hle_force_ent *entries = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &length);
+    void *(*bootstrap)(const char *) = NULL;
+    for (size_t i=0;i<length/sizeof *entries;i++) if (!strcmp(entries[i].name, "nvnBootstrapLoader")) bootstrap=entries[i].fn;
+    CHECK(bootstrap != NULL, "production NVN bootstrap is registered");
+    if (!bootstrap) return;
+    PFNNVNDEVICEGETPROCADDRESSPROC gpa = (PFNNVNDEVICEGETPROCADDRESSPROC)bootstrap("nvnDeviceGetProcAddress");
+#define API(name) ((NVNT_##name)gpa(NULL, #name))
+    static uint8_t memory[16384] __attribute__((aligned(4096)));
+    NVNmemoryPoolBuilder builder; NVNmemoryPool pool; NVNcommandBuffer commands;
+    API(nvnMemoryPoolBuilderSetDefaults)(&builder);
+    API(nvnMemoryPoolBuilderSetStorage)(&builder, memory, sizeof memory);
+    API(nvnMemoryPoolBuilderSetFlags)(&builder, 0x24);
+    CHECK(API(nvnMemoryPoolInitialize)(&pool, &builder), "binding command pool initializes");
+    CHECK(API(nvnCommandBufferInitialize)(&commands, NULL), "binding recorder initializes");
+    API(nvnCommandBufferAddCommandMemory)(&commands, &pool, 0, sizeof memory);
+    API(nvnCommandBufferBeginRecording)(&commands);
+    for (int st=0;st<6;st++) for (int slot=0;slot<16;slot++)
+        API(nvnCommandBufferBindUniformBuffer)(&commands, st, slot, 0x123400000ull + (st*16+slot)*4096, 256+slot*16);
+    for(int slot=0;slot<16;slot++)
+        API(nvnCommandBufferBindVertexBuffer)(&commands, slot, 0x567800000ull+slot*4096, 512+slot*16);
+    NVNcommandHandle handle=API(nvnCommandBufferEndRecording)(&commands);
+    mtl_sub_begin(); mtl_exec((const uint8_t *)(uintptr_t)handle); mtl_sub_commit(); mtl_drain();
+    for(int st=0;st<6;st++) for(int slot=0;slot<16;slot++) {
+        CHECK(S.ubo[st][slot].addr == 0x123400000ull+(st*16+slot)*4096 && S.ubo[st][slot].size == 256+slot*16,
+              "recorded compact uniform binding reaches replay for every stage/slot");
+    }
+    for(int slot=0;slot<16;slot++) CHECK(S.vbuf[slot].address == 0x567800000ull+slot*4096 && S.vbuf[slot].size == 512+slot*16,
+                                         "recorded compact vertex binding reaches replay for every stream");
+    // Large uniform bindings and vector vertex bindings still use the wide ABI.
+    API(nvnCommandBufferBeginRecording)(&commands);
+    API(nvnCommandBufferBindUniformBuffer)(&commands, 1, 3, 0x987600000ull, UINT64_C(0x100000100));
+    NVNbufferRange ranges[2]={{0xabc000000ull,128},{0xabc001000ull,256}};
+    API(nvnCommandBufferBindVertexBuffers)(&commands, 4, 2, ranges);
+    handle=API(nvnCommandBufferEndRecording)(&commands);
+    mtl_sub_begin();mtl_exec((const uint8_t *)(uintptr_t)handle);mtl_sub_commit();mtl_drain();
+    CHECK(S.ubo[1][3].addr==0x987600000ull && S.ubo[1][3].size==UINT64_C(0x100000100), "wide uniform binding remains exact above 4GiB");
+    CHECK(S.vbuf[4].address==ranges[0].address && S.vbuf[5].address==ranges[1].address && S.vbuf[5].size==256,
+          "wide multi-stream vertex binding remains intact");
+    API(nvnCommandBufferFinalize)(&commands);API(nvnMemoryPoolFinalize)(&pool);
+    state_reset();
+#undef API
+}
+
 int main(int argc, char **argv) { @autoreleasepool {
-    mtl_init(); NSError *error = nil;
+    mtl_init(); binding_commands(); NSError *error = nil;
     NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint i [[vertex_id]]) { return float4(i == 1 ? 3.0 : -1.0, i == 2 ? 3.0 : -1.0, 0, 1); }\n"
         "fragment float4 f() { return float4(.125,.25,.5,.375); }\n"
