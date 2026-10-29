@@ -2,6 +2,7 @@
 // guest tables and executable pages remain untouched. See the game's note.
 #include "hle.h"
 #include <math.h>
+#include "display_hud_geometry.h"
 #include <stdatomic.h>
 #include "hle_arceus_timing.inc"
 
@@ -55,7 +56,10 @@ static void arceus_hud(uint64_t *regs, int param) {
     // Original code loads s0/s1 at +4, s2/s3 at +12, then returns without
     // reading x8 again. SIMD values are read by the original LDP instructions.
     static _Thread_local struct { uint32_t unused; float rect[4]; } shadow;
-    memcpy(shadow.rect, g_hud_rect, sizeof g_hud_rect);
+    float original[4], aspect;
+    memcpy(original, (const char *)(uintptr_t)regs[8]+4, sizeof original);
+    memcpy(&aspect, &g_aspect_bits, sizeof aspect);
+    if (!dm_display_hud_rect(original, aspect, shadow.rect)) return;
     regs[8] = (uint64_t)(uintptr_t)&shadow;
 }
 __attribute__((constructor)) static void arceus_display_gates(void) {

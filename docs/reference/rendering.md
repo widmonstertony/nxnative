@@ -943,3 +943,14 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Upscaling and measurement:** The exact-build launcher defaults to native handheld mode and MetalFX spatial scaling; saved choices still win. Generated and real images keep the same pixel format, avoiding a spatial-scaler rebuild on alternating frames. Actual render dimensions must be measured in the game. The overlay separates guest enqueues from actual presented drawables; GPU feedback logs separate real/upscale and flow/upscale costs. No sustained 120 fps, latency benefit or iOS 16/17 compatibility is established by the synthetic tests.
 - **Checks:** `check_t_framegen` reads back a moving object's generated midpoint and scene-cut output on a real GPU. `check_t_framegen_present` checks paired submission, texture release, suspend and watchdog handling. Existing crop/allocator tests, elapsed-clock tests, launcher tests and a complete iOS build also run. Air gameplay testing is delegated to the user.
 - **Found on:** [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md), experimental modern-Metal host. The separate exact-build Z-A snapshot also passes the production GPU pair/allocator tests and a complete iOS build with its original shader chain; its Air gameplay/performance validation remains open.
+
+
+The fullscreen HUD adapter now keeps the original logical canvas (including
+handheld sizes) and adapts only full-screen 16:9 rectangles. Unrelated menu
+panels retain their dimensions and origin. The image-only interpolator keeps
+stable real pixels and protects a narrow border around stable high-contrast
+strokes; output alpha comes from the current real frame. This reduces text and
+icon distortion without changing controller mappings. It is a conservative
+image heuristic, not a separate engine UI layer: moving or translucent UI still
+requires user evaluation. Regression covers docked/handheld canvases, panel
+rejection and stationary HUD strokes over a moving scene on the GPU.

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 static int failed,checks;
 #define CHECK(c,s) do { checks++; if(!(c)){failed++; printf("FAIL: %s\n",s);}else printf("PASS: %s\n",s); }while(0)
+static int hud;
 static MTLPixelFormat testFormat=MTLPixelFormatRGBA8Unorm;
 static id<MTLDevice> dev; static id<MTL4CommandQueue> queue; static id<MTLCommandQueue> readq;
 static id<MTLTexture> input(int x,BOOL cut) {
@@ -11,6 +12,7 @@ static id<MTLTexture> input(int x,BOOL cut) {
     for(int y=0;y<h;y++) for(int i=0;i<w;i++) {
         int k=(y*w+i)*4; BOOL rect=i>=x && i<x+64 && y>=32 && y<96;
         int v=cut?230:rect?210+((i-x)/8+y/8)%2*35:16;
+        if(hud && y>=40 && y<88 && i>=96 && i<104) v=255;
         pixels[k]=pixels[k+1]=pixels[k+2]=v; pixels[k+3]=255;
     }
     MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:testFormat width:w height:h mipmapped:NO];
@@ -50,5 +52,11 @@ int main(int argc,char **argv){@autoreleasepool {
     [fg resetHistory];CHECK(!encode(fg,input(112,NO),1./60,0),"explicit suspend reset keeps first frame real");
     mid=encode(fg,input(0,YES),1./60,1);p=pixels(mid);int bad=0;for(int i=0;i<256*128;i++)bad+=abs(p[i*4]-230)>2;
     CHECK(bad==0,"scene cut preserves current pixels without crossfade");free(p);
+    hud=1; [fg resetHistory];
+    encode(fg,input(48,NO),1./60,0);
+    mid=encode(fg,input(80,NO),1./60,1); p=pixels(mid);
+    int uiBad=0;
+    for(int y=40;y<88;y++) for(int x=96;x<104;x++) uiBad+=p[(y*256+x)*4]!=255;
+    CHECK(uiBad==0,"stationary HUD stroke stays exact over moving scene");free(p);
     printf("frame generation: %d checks, %d failed\n",checks,failed);return failed?1:0;
 }}
