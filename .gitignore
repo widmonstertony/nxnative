@@ -13,3 +13,5 @@ dm/games/*/cb_extent.tsv
 dm/gfx/tests/t_framegen
 dm/gfx/tests/t_framegen_present
 dm/gfx/tests/t_framegen*.dSYM/
+/dm/gfx/tests/t_legacy_pipeline
+/dm/gfx/tests/t_legacy_pipeline.dSYM/

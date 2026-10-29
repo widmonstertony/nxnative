@@ -2,6 +2,21 @@
 
 Current preparation: owned update 1.1.1, main build `aee8f150dda1b5a838806e1a5ea6827a`. The full profile and shader tables are still provisional in the external game work directory. Gameplay and device validation remain open.
 
+## Legacy iPad rendering repair
+
+M2 build `20261029.1` installs but the user reports a gray scene. The log shows
+depth pipeline rejection and real SRC1-blended fragments with two written
+outputs (`f4f36a03b0c6691d_b`, `ff45da02e225f961_b`). The shared
+[depth prediction and secondary blend repair](../../../docs/reference/rendering.md#legacy-depth-prediction-and-secondary-blend-sources)
+preserves these outputs instead of disabling their blending. The complete M2
+minimum-16.1 host and full package `20261029.2` build successfully; installation
+and user evaluation are separate checkpoints.
+
+The A10X package is still blocked by two layered shaders with vertex/storage
+dependencies and eighteen genuinely used sampler sets exceeding Tier 1. The
+strict audit remains enabled. Bounded image atomics alone do not establish
+A10X support, and this game has not been installed on that iPad.
+
 The exact-build display observation sites adapt six camera aspect constants and the original HUD rectangle to the current window. The original instructions and full GPR/SIMD gate preservation were inspected before enabling these sites. No executable memory is modified at runtime. The HUD table is borrowed through thread-local storage; the original table stays untouched. Geometry follows the author's [ultrawide patch](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods), parameterized for the actual device.
 
 GFPAK type 3 archives require the game's own Oodle decoder. The earlier baseline skipped 678 archives and is not a completed build. The source survey now detects those archives before the split; corrected shaders must be rebuilt. The shared touch surface retains every native button and keyboard direction.
@@ -73,3 +88,11 @@ The modern host adds a Chinese launcher choice for experimental image optical fl
 ### iOS Backbone input update
 
 See [Backbone button letters and automatic touch visibility](../../../docs/reference/services.md#backbone-button-letters-and-automatic-touch-visibility). The host preserves touch layout and keyboard semantics; device button testing remains with the user.
+
+Current M2 status (2026-10-29): minimum-16.1 build `20261029.2` was
+installed with matching code/version and unchanged saved-state hashes. Both
+secondary-source entries load, and the depth compiler errors no longer appear.
+The user still reports a gray scene, so the rendering repair remains open;
+the render-target failure and pass contents require further device diagnostics.
+A10X remains uninstalled because its strict resource audit still rejects two
+layered and eighteen sampler-limit paths.

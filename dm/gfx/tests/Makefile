@@ -396,3 +396,12 @@ run: check_t_framegen_present
 
 t_atomic_image: t_atomic_image.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_atomic_image.m $(MTL_T_SRC) $(FW)
+
+# Exercise the production traditional Metal descriptor on the host GPU.
+t_legacy_pipeline: t_legacy_pipeline.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_legacy_pipeline.m $(MTL_T_SRC) $(FW)
+
+.PHONY: check_t_legacy_pipeline
+check_t_legacy_pipeline: t_legacy_pipeline
+	MTL_DEBUG_LAYER=1 ./t_legacy_pipeline
+run: check_t_legacy_pipeline

@@ -4,6 +4,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ## Containers by engine
 
+### Captured NVN stages missing from the offline map
+
+- **Symptom:** a game continues submitting frames and audio, but the scene is black and the log reports shader keys missing from the map.
+- **Cause:** a completed static split does not prove that every program constructed by the running game was discovered. Matching only a similar control section or instruction stream would select the wrong program.
+- **Fix:** on iOS, `DM_NVN_SHDUMP=auto` resolves to the app's own `Documents/shader-dumps` directory. `dm/ios/tools/pack_shader_dumps.py` validates complete control/code pairs, their lengths, graphics stage and exact runtime hash before producing offline package records and map rows. Import these into the external provisional profile, rebuild its complete matching shader set/stamp and rebuild the host. No shader data belongs in Git, and this introduces no runtime translator.
+- **Found on:** [Pokken Tournament DX](../../dm/games/0100B3F000BE2000/README.md): four real M2 captures absent from the original map; the complete set, including these captures, translates successfully. Remaining runtime coverage and gameplay stay open.
+- **Checks:** `test_ios_shader_dumps.py` covers identity, byte preservation, lengths, stage rejection and refusal to overwrite an existing package.
+
 ### Phyre NVN effects in Virtuos VBF archives
 
 - **Symptom:** the shader split finds no game programs despite loose `.fx.phyre` effects and multi-GB `.vbf` archives.

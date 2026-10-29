@@ -443,6 +443,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 
 ## Shaders
 
+- a game continues submitting frames and audio, but the scene is black and the log reports shader keys missing from the map. → [Captured NVN stages missing from the offline map](../reference/shaders.md#captured-nvn-stages-missing-from-the-offline-map)
 - the shader split finds no game programs despite loose `.fx.phyre` effects and multi-GB `.vbf` archives. → [Phyre NVN effects in Virtuos VBF archives](../reference/shaders.md#phyre-nvn-effects-in-virtuos-vbf-archives)
 - the shader split stops on one archive with a Python traceback (an `IndexError` or `struct.error` naming no file), or a reader's `[RED]` line about a format it does not know, and nothing is written; the NSP script loses the build at the split. → [A file no reader reads](../reference/shaders.md#a-file-no-reader-reads)
 - `shader_split.py` finds 0 shaders in a RomFS of zstd files named `.zst`. → [Zstd files recognised by their magic](../reference/shaders.md#zstd-files-recognised-by-their-magic)

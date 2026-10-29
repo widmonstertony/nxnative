@@ -1,5 +1,13 @@
 # Rendering
 
+## Legacy depth prediction and secondary blend sources
+
+- **Symptom:** `Fragment shader writes to depth, but pipeline's depth attachment pixel format is not set` persists even for later descriptors with a valid depth format; games show black or gray scenes. Separate SRC1 blend failures reject otherwise valid draws.
+- **Cause:** speculative legacy pipeline prediction tried the depth-less format before the valid depth-attached draw. A native Metal reproduction showed the first invalid compilation poisoning subsequent depth-format variants of the same functions. In addition, older shader libraries expose output 1 as MRT color 1, while SRC1 blending requires color 0, index 1 and a single physical color attachment.
+- **Fix:** exact-library-hash-bound raster metadata identifies depth-writing fragments. Reject their invalid depth-less predictions before calling Metal, retaining all valid depth/stencil variants. A hash-bound supplemental dual-source entry preserves the original fragment arithmetic and argument layout while exposing the secondary blend ABI. Keep the original MRT entry for ordinary draws, split passes when switching modes, preserve clears on other logical targets and reject tile-fetch merging for dual-source draws. The pipeline-cache ABI advances to `pso8`. An unwritten secondary source uses the same zero convention as the modern renderer; blending remains enabled.
+- **Checks:** `t_legacy_pipeline` executes 135 GPU checks: all four SRC1 factors against explicit references, MRT/dual-source transitions in separate and shared submissions, preserved clears, and an invalid/valid/invalid depth-format sequence. The actual failing NFS fragment also passes that sequence. Export tests cover native-entry preservation and exact source/library identity. These M4 tests establish resource semantics, not A10X gameplay.
+- **Found on:** [Arceus](../../dm/games/01001F5010DFA000/README.md), [Pokken](../../dm/games/0100B3F000BE2000/README.md), and [Need for Speed](../../dm/games/010029B0118E8000/README.md). Game-specific delivery and remaining failures are recorded in those notes.
+
 The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
 
 ## Textures and formats

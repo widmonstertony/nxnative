@@ -44,10 +44,10 @@ new chain. A successful host compile is not a matching resource build.
 
 | Game / target | Confirmed result | Open work |
 |---|---|---|
-| Arceus / M2, iPadOS 16.1 | Installed `20261029.1`; user reports gray scene, log records rejected depth and secondary-blend pipelines | Repair rendering; this is not a playable delivery |
+| Arceus / M2, iPadOS 16.1 | `20261029.2` installed, code/version and saved-state readback passed | User still reports gray screen; native depth/SRC1 compiler errors are gone, but a render-target setup failure remains under investigation |
 | Arceus / A10X, iPadOS 17.7 | Not installed | Two layered and eighteen sampler-limit paths fail the strict resource audit |
-| Pokken / both iPads | Installed; M2 user reports black | Missing runtime shader keys; static discovery did not recover them |
-| Need for Speed / A10X | Installed; user reports black | Null uniform fallback fixed and compile/GPU checked; new game package not delivered, depth pipeline failure remains |
+| Pokken / both iPads | `20261029.2` installed on both; user still reports black screen on M2 | Four real runtime stages captured and validated; augmented 158-stage `20261029.3` update is uploading, not yet a gameplay result |
+| Need for Speed / both iPads | Repair `20261029.2` installed, code/version and saved-state readback passed | M2 still black; ten missing runtime stages and unsupported BC readback need investigation. A10X gameplay is unverified |
 | Animal Crossing / A10X | Shader compilation completed | Eleven unsupported-resource paths block packaging |
 | Witcher 3 US / A10X | Shader compilation completed | Eighteen unsupported-resource paths block packaging |
 

@@ -3125,13 +3125,15 @@ static id<MTLTexture> diag_c0_texture(NSUInteger w, NSUInteger h, NSUInteger sam
 // mode 1 (clear_only): a pass opened only to land pending clears, attaching only the attachments that have clears; mode 2: the lookahead proves this pass does not use depth-stencil, so depth is not attached.
 // clear_only: a pass opened only to land pending clears, attaching only the attachments that have clears - the other attachments are not touched by this pass, and attaching them costs a pointless load and store on TBDR
 // (Mac character select screen: the color-clear pass drags along a 400x225 depth load and store)
+static int g_rp_dual, g_enc_dual;
 static id<MTLRenderCommandEncoder> rp_begin_ex(int clear_only);
-static id<MTLRenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
+static id<MTLRenderCommandEncoder> rp_begin(void) { if (!g_enc) g_rp_dual = 0; return rp_begin_ex(0); }
 static id<MTLRenderCommandEncoder> rp_begin_ex_(int clear_only);
 static id<MTLRenderCommandEncoder> rp_begin_ex(int clear_only) { AP_B; id<MTLRenderCommandEncoder> e = rp_begin_ex_(clear_only); AP_E(1); return e; }
 static id<MTLRenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (g_enc) return g_enc;
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
+    g_enc_dual = g_rp_dual && clear_only != 1;
     g_enc_mode = clear_only;
     if (!R.has_rt) { RED_ONCE(3, "绘制前没有设置渲染目标"); return nil; }
     // The version of the attachment-range candidate is taken before capturing any attachment; if it changes during setup, there is no continuation.
@@ -3142,6 +3144,7 @@ static id<MTLRenderCommandEncoder> rp_begin_ex_(int clear_only) {
     MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor new];
     int any = 0, diag_c0 = 0;
     for (int i = 0; i < R.rt.n; i++) {
+        if (g_enc_dual && i != 0) continue;
         if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue;
         if (rt_dup_slot(&R.rt, i)) continue;   // a slot attached twice is not attached (see rt_dup_slot)
         attach(pd.colorAttachments[i], R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
@@ -3430,7 +3433,7 @@ static void shmap_load(void) {
     warm_start();
 }
 
-@interface NvShader : NSObject { @public id<MTLFunction> fn, tf_fn; uint16_t tf_stride[4]; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, specialized, slice_variant, zero_image_variant, zero_image_aid, zero_image_reg, zero_image_format; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public id<MTLFunction> fn, tf_fn, fn_d; uint16_t tf_stride[4]; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, depth_out, has_dual, specialized, slice_variant, zero_image_variant, zero_image_aid, zero_image_reg, zero_image_format; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     id<MTLFunction> nonpoint_fn; id<MTLLibrary> nonpoint_lib; NSError *nonpoint_error; int nonpoint_tried;
     id<MTLFunction> min_reduction_fn; id<MTLLibrary> min_reduction_lib; int min_reduction_tried, min_reduction_last, min_reduction_notes;
     int min_reduction_bound, min_reduction_sid, min_reduction_tid, min_reduction_pso_failed;
@@ -3534,6 +3537,7 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
 // nvnDeviceSetDepthMode.  The mode is set before shaders are first loaded.
 static _Atomic int g_depth_zero, g_vs_loaded;
 static NSString *nonpoint_digest(NSData *data);
+static NSDictionary *nonpoint_sources_manifest(void);
 #include "nvn_layered_slices.h"
 #include "nvn_zero_image_library.h"
 #include "nvn_atomic_image_record.h"
@@ -3580,6 +3584,18 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (!lib || !j) { MLOG("【红】加载着色器失败 %s：%s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "无反射 json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】着色器 %s 的翻译链版本 %s 与本宿主期望的 %s 不符", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
     NvShader *o = [NvShader new];
+    if (stage == 1) {
+        NSDictionary *manifest = nonpoint_sources_manifest();
+        NSDictionary *record = manifest[@"fragment_depth_outputs"][pc];
+        if (record && [manifest[@"schema"] isEqual:@1] && [manifest[@"chain"] isEqual:@DMSH_CHAIN]) {
+            NSData *bytes = [NSData dataWithContentsOfFile:lp options:NSDataReadingMappedIfSafe error:nil];
+            if (![record[@"library_sha256"] isEqual:nonpoint_digest(bytes)]) {
+                MLOG("[RED] Shader %s depth-output metadata does not match its library", pc.UTF8String);
+                return nil;
+            }
+            o->depth_out = 1;
+        }
+    }
     if (!g_layered_native) {
         lib = layered_slice_library(pc, lib, jd, &o->slice_variant, &e);
         if (!lib) { MLOG("[RED] Shader %s per-slice compatibility unavailable: %s", pc.UTF8String, e.localizedDescription.UTF8String); return nil; }
@@ -3641,6 +3657,12 @@ static NvShader *shader_load(NSString *pc, int stage) {
         NSArray *strides = j[@"tf_strides"];
         for (NSUInteger b = 0; b < 4 && b < strides.count; b++) o->tf_stride[b] = (uint16_t)[strides[b] unsignedIntValue];
         if (!o->tf_fn) MLOG("[RED] shader %s has no transform-feedback entry point %s in its library", pc.UTF8String, [j[@"entry_tf"] UTF8String]);
+    }
+    if (stage == 1) {
+        o->has_dual = j[@"entry_d"] != nil || nonpoint_sources_manifest()[@"fragment_dual_sources"][pc] != nil;
+        if (j[@"entry_d"]) o->fn_d = [lib newFunctionWithName:j[@"entry_d"]];
+        if (o->fn_d.functionConstantsDictionary.count)
+            o->fn_d = [lib newFunctionWithName:j[@"entry_d"] constantValues:[MTLFunctionConstantValues new] error:&e];
     }
     if (o->fn.functionConstantsDictionary.count) {
         MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
@@ -4301,6 +4323,13 @@ static MTLBlendFactor bfac(int f) {
         case 0x61: return MTLBlendFactorBlendColor; case 0x62: return MTLBlendFactorOneMinusBlendColor; case 0x63: return MTLBlendFactorBlendAlpha; case 0x64: return MTLBlendFactorOneMinusBlendAlpha; }
     return MTLBlendFactorOne;
 }
+static int blend_zero_src1(int f) {
+    switch (f) {
+        case NVN_BLEND_FUNC_SRC1_COLOR: case NVN_BLEND_FUNC_SRC1_ALPHA: return NVN_BLEND_FUNC_ZERO;
+        case NVN_BLEND_FUNC_ONE_MINUS_SRC1_COLOR: case NVN_BLEND_FUNC_ONE_MINUS_SRC1_ALPHA: return NVN_BLEND_FUNC_ONE;
+        default: return f;
+    }
+}
 static MTLBlendOperation bop(int e) { switch (e) { case 2: return MTLBlendOperationSubtract; case 3: return MTLBlendOperationReverseSubtract; case 4: return MTLBlendOperationMin; case 5: return MTLBlendOperationMax; } return MTLBlendOperationAdd; }
 
 // Pipeline: cached by (program, target formats, blend / write mask, vertex layout, sample count)
@@ -4347,6 +4376,39 @@ static int hilite_index(NvShader *fs) {
     for (int i = 0; i < g_hilite_n; i++) if (!strncmp(fs->key, g_hilite_keys[i], strlen(g_hilite_keys[i]))) return i;
     return -1;
 }
+static int pf_int_kind(MTLPixelFormat f);
+static int blend_reads_src1(blend_st b) {
+    return blend_zero_src1(b.src_rgb) != b.src_rgb || blend_zero_src1(b.dst_rgb) != b.dst_rgb ||
+        blend_zero_src1(b.src_a) != b.src_a || blend_zero_src1(b.dst_a) != b.dst_a;
+}
+static id<MTLFunction> legacy_dual_function(NvShader *fs) {
+    @synchronized (fs) {
+        if (fs->fn_d) return fs->fn_d;
+        NSString *key = @(fs->key);
+        NSDictionary *manifest = nonpoint_sources_manifest();
+        NSDictionary *record = manifest[@"fragment_dual_sources"][key];
+        NSString *root = [g_msl_dir stringByAppendingPathComponent:@"nonpoint-v1"];
+        NSData *source = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:[key stringByAppendingString:@".dual.metal"]]];
+        NSData *base = [NSData dataWithContentsOfFile:[g_msl_dir stringByAppendingPathComponent:[key stringByAppendingString:@".metallib"]] options:NSDataReadingMappedIfSafe error:nil];
+        if (![manifest[@"schema"] isEqual:@1] || ![manifest[@"chain"] isEqual:@DMSH_CHAIN] ||
+            ![record[@"source_sha256"] isEqual:nonpoint_digest(source)] ||
+            ![record[@"library_sha256"] isEqual:nonpoint_digest(base)]) {
+            MLOG("[RED] Dual-source variant %s missing or mismatched", fs->key); return nil;
+        }
+        MTLCompileOptions *options = [MTLCompileOptions new]; options.languageVersion = MTLLanguageVersion3_0;
+        options.preserveInvariance = YES; options.fastMathEnabled = NO;
+        NSError *error = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:[[NSString alloc] initWithData:source encoding:NSUTF8StringEncoding] options:options error:&error];
+        id<MTLFunction> fn = [lib newFunctionWithName:@"main0_d"];
+        if (fn.functionConstantsDictionary.count) fn = [lib newFunctionWithName:@"main0_d" constantValues:[MTLFunctionConstantValues new] error:&error];
+        if (!fn || (fs->rf.nb && [fn newArgumentEncoderWithBufferIndex:fs->rf.abi].encodedLength != fs->arg_len)) {
+            MLOG("[RED] Dual-source variant %s failed or changed argument layout: %s", fs->key, error.localizedDescription.UTF8String); return nil;
+        }
+        fs->fn_d = fn;
+        MLOG("Dual-source variant %s: output 1 feeds color(0), index(1); MRT entry retained", fs->key);
+        return fn;
+    }
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.label = [NSString stringWithFormat:@"vs=%s fs=%s topology=%u", vs->key, fs ? fs->key : "-", k->topology];
@@ -4360,11 +4422,14 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         d.fragmentFunction = g_hilite_fs[hi];
         if (g_hilite_full && g_hilite_vs) d.vertexFunction = g_hilite_vs;
     }
+    int dual = fs && fs->has_dual && !fsfn && d.fragmentFunction == fs->fn && k->cfmt[0] &&
+        (!merged || k->lmap[0] == 0) && (k->blend_en & 1) && !pf_int_kind(k->cfmt[0]) && blend_reads_src1(k->blend[0]);
+    if (dual) { d.fragmentFunction = legacy_dual_function(fs); if (!d.fragmentFunction) return nil; }
     d.rasterSampleCount = k->samples ? k->samples : 1;
     d.inputPrimitiveTopology = (MTLPrimitiveTopologyClass)k->topology;
     d.alphaToCoverageEnabled = k->a2c;
     for (int i = 0; i < 8; i++) {
-        if (!k->cfmt[i]) continue;
+        if (!k->cfmt[i] || (dual && i != 0)) continue;
         MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[i];
         c.pixelFormat = (MTLPixelFormat)k->cfmt[i];
         int l = merged ? k->lmap[i] : i;
@@ -4375,11 +4440,20 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         int unwritten = fs && fs->rf.color_known && !fsfn && l != 0xff && !(fs->rf.color_mask >> l & 1);
         if (unwritten) m = 0;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
-        if (l != 0xff && k->blend_en >> l & 1 && !unwritten) {
+        if (l != 0xff && k->blend_en >> l & 1 && !unwritten && !pf_int_kind(c.pixelFormat)) {
             c.blendingEnabled = YES;
-            c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
-            c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
-            c.rgbBlendOperation = bop(k->blend[l].eq_rgb); c.alphaBlendOperation = bop(k->blend[l].eq_a);
+            blend_st bl = k->blend[l];
+            // Match the modern renderer's zero for an unwritten secondary
+            // source (guest behavior is undefined). Keep blending, but
+            // express that value in the factors instead of requiring Metal's
+            // color(0), index(1) output from a shader that does not write it.
+            if (fs && fs->rf.color_known && !(fs->rf.color_mask & 2) && !fsfn) {
+                bl.src_rgb = blend_zero_src1(bl.src_rgb); bl.dst_rgb = blend_zero_src1(bl.dst_rgb);
+                bl.src_a = blend_zero_src1(bl.src_a); bl.dst_a = blend_zero_src1(bl.dst_a);
+            }
+            c.sourceRGBBlendFactor = bfac(bl.src_rgb); c.destinationRGBBlendFactor = bfac(bl.dst_rgb);
+            c.sourceAlphaBlendFactor = bfac(bl.src_a); c.destinationAlphaBlendFactor = bfac(bl.dst_a);
+            c.rgbBlendOperation = bop(bl.eq_rgb); c.alphaBlendOperation = bop(bl.eq_a);
         }
     }
     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt;
@@ -4487,6 +4561,17 @@ static id<MTLFunction> nonpoint_vertex(NvShader *vs, NSError **error) {
 }
 static id<MTLRenderPipelineState> pso_build(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged, int specialized, NSError **error) {
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, fsfn, merged);
+    if (!d) { if (error) *error = [NSError errorWithDomain:@"NVNMetalCompatibility" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Required dual-source variant unavailable"}]; return nil; }
+    // Do not submit a provably invalid prediction to Metal. On traditional
+    // Metal, compiling a depth-writing fragment first without a depth format
+    // can cache that validation failure for subsequent valid descriptors too.
+    // The actual depth-attached draw must remain available to the compiler.
+    if (fs && fs->depth_out && !fsfn && (d.fragmentFunction == fs->fn || d.fragmentFunction == fs->fn_d) &&
+        d.rasterizationEnabled && d.depthAttachmentPixelFormat == MTLPixelFormatInvalid) {
+        if (error) *error = [NSError errorWithDomain:@"NVNMetalCompatibility" code:2 userInfo:@{
+            NSLocalizedDescriptionKey:@"Depth-writing fragment requires a depth attachment; prediction rejected before Metal compilation"}];
+        return nil;
+    }
     if (!g_bare_native && d.rasterizationEnabled) {
         BOOL attached = d.depthAttachmentPixelFormat || d.stencilAttachmentPixelFormat;
         for (int i = 0; i < 8; i++) attached |= d.colorAttachments[i].pixelFormat != MTLPixelFormatInvalid;
@@ -6878,6 +6963,7 @@ static int uv_proof(NvShader *vs, int locn, const p_draw *dw, const p_draw_idx *
 }
 // One draw of the later pass: verify and produce the specialization. Returns 0 = cannot be proven (the caller ends the merged render pass and reopens with the original targets)
 static int fz_p2_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint8_t lmap[8], __strong id<MTLFunction> *fn) {
+    if (pr->sh[1] && pr->sh[1]->has_dual && (S.color.blend_en & 1) && blend_reads_src1(S.blend[0])) { *fn = nil; return 0; }
     NvShader *vs = pr->sh[0], *fs = pr->sh[1]; *fn = nil;
     if (!vs || !fs) { PD("F %llu 证不出：无顶点 / 片元着色器", g_stat_pass); return 0; }
     if (!g_fz.rt2.depth && R.rt.depth && (S.ds.dt || S.ds.dw || S.ds.st)) { PD("F %llu 证不出：深度来自前一个通道而本次绘制开了深度模板测试", g_stat_pass); return 0; }
@@ -7741,6 +7827,18 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_fz.active && g_enc && g_fz.phase == 2 && !fz_p2_draw(pr, dw, di, g_fz.lmap2, &fz_fn)) {   // Cannot be proven: end the merged render pass (the earlier pass's result is stored as usual) and reopen with the later pass's original targets
         static int once3; if (!once3++) MLOG("可读 tile 通道合并：后一个通道的绘制证不出，退回分开（首例 通道 %llu）", g_stat_pass);
         g_fz_fallback++; rp_end(); }
+    int dual_draw = pr->sh[1] && pr->sh[1]->has_dual && (S.color.blend_en & 1) && blend_reads_src1(S.blend[0]);
+    if (dual_draw) {
+        id<MTLTexture> target = R.has_rt && R.rt.n && R.rt.color[0] ? tex_mtl(R.rt.color[0]) : nil;
+        dual_draw = target && !pf_int_kind(rt_view_fmt(target, &R.rt.cview[0], R.rt.has_cview[0]));
+    }
+    if (dual_draw && g_fz.active) rp_end();
+    if (g_enc && g_enc_dual != dual_draw) rp_end();
+    // Clears on the other logical targets still run before the single-target draw.
+    if (dual_draw && !g_enc) {
+        int pending = 0; for (int i = 1; i < R.rt.n && i < 8; i++) pending |= R.clear_c[i];
+        if (pending) { rp_begin_ex(1); rp_end(); }
+    }
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
     if (R.has_sc && !g_enc) {
         NSUInteger tw0 = 0, th0 = 0; rt_dims(&tw0, &th0);
@@ -7753,10 +7851,10 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
 #endif
     int defer_q_draw = !g_enc && !g_defer_replaying && g_defer_natq > 0;   // The draw that opens Q's render pass: after the render pass is opened as usual through hoist_try / fuse_try, replay P first and then draw this one
     if (g_frz_state) goto frz_plain;   // Full frame / frozen frame of world freeze: no hoisting, no deferral, no merging (the pass-skipping state machine must see every set-target)
-    if (!g_enc && tbdr_on()) hoist_try();   // First hoist and execute the pure-clear render passes sandwiched between this render pass and its continuation (before rp_begin_ex, not occupying this render pass)
+    if (!dual_draw && !g_enc && tbdr_on()) hoist_try();   // First hoist and execute the pure-clear render passes sandwiched between this render pass and its continuation (before rp_begin_ex, not occupying this render pass)
     // The deferral decision comes after hoist_try: hoisted pure-clear render passes are skipped in the lookahead, and only then can P's same-target continuation segment be recognized
-    if (!g_enc && tbdr_on() && !defer_has_in_p() && !g_defer_replaying && !g_fz.active && !g_fz_checking && g_exec_next) { defer_try(dw, di); if (g_defer_cur->active && g_defer_cur->in_p) return; }
-    if (!g_enc && tbdr_on() && !g_fz_checking) fuse_try();   // Readable tile render pass merge is on by default; when the structure / same-pixel proof does not hold it still falls back to a normal render pass, and it is not re-entered during the CHECK redraw
+    if (!dual_draw && !g_enc && tbdr_on() && !defer_has_in_p() && !g_defer_replaying && !g_fz.active && !g_fz_checking && g_exec_next) { defer_try(dw, di); if (g_defer_cur->active && g_defer_cur->in_p) return; }
+    if (!dual_draw && !g_enc && tbdr_on() && !g_fz_checking) fuse_try();   // Readable tile render pass merge is on by default; when the structure / same-pixel proof does not hold it still falls back to a normal render pass, and it is not re-entered during the CHECK redraw
 frz_plain:;
     int prim = dw ? dw->prim : di->prim;
     uint8_t topology = pso_topology_class(prim);
@@ -7781,6 +7879,7 @@ frz_plain:;
     int need = g_enc || !tbdr_on() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 attach neither, 3 attach stencil only, 4 attach depth only
     int skip_d = mode != 0;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
+    g_rp_dual = dual_draw;
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { PD("Z %llu 绘制跳过：没开成渲染通道", g_stat_pass); return; }   // Z lines: why a draw was dropped at these early returns
@@ -8798,7 +8897,7 @@ static void clear_color_tri(const p_clear_color *c) {
         return;
     }
     id<MTLRenderCommandEncoder> en = rp_begin();
-    if (en && !g_pass.cfmt[slot] && g_enc_mode) { rp_end(); en = rp_begin(); }
+    if (en && !g_pass.cfmt[slot] && (g_enc_mode || g_enc_dual)) { rp_end(); en = rp_begin(); }
     if (!en) return;
     int at = slot;
     if (!g_pass.cfmt[at] && rt_dup_slot(&R.rt, slot))

@@ -85,6 +85,15 @@ static int boot_env(void) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); [from_file addObject:k]; fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
+    // A portable per-app dump path for diagnostics baked into an IPA. Resolve
+    // it inside the app; an external installer need not write its container.
+    if (getenv("DM_NVN_SHDUMP") && !strcmp(getenv("DM_NVN_SHDUMP"), "auto")) {
+        NSString *dump = [doc stringByAppendingPathComponent:@"shader-dumps"];
+        NSError *error = nil;
+        if ([fm createDirectoryAtPath:dump withIntermediateDirectories:YES attributes:nil error:&error])
+            setenv("DM_NVN_SHDUMP", dump.fileSystemRepresentation, 1);
+        else { unsetenv("DM_NVN_SHDUMP"); fprintf(stderr, "[RED] boot: shader dump directory unavailable: %s\n", error.localizedDescription.UTF8String); }
+    }
     setenv("DM_ENV_FILE_KEYS", [from_file componentsJoinedByString:@" "].UTF8String, 1);   // the launcher keeps what an env file set (LauncherSettings.swift)
     setenv("DM_ENV_LAUNCH_KEYS", [from_launch componentsJoinedByString:@" "].UTF8String, 1);   // and what the launch environment set (docs/frontends.md, Saved choices)
     front_hud_env();   // before the early loading below can make a device
