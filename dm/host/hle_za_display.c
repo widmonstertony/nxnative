@@ -4,13 +4,14 @@
 // Reference: Fl4sh9174, Z-A 2.0.2 21:9 patch; geometry follows the target screen.
 #include "hle.h"
 #include "za_display_geometry.h"
+#include "display_hud_geometry.h"
 #include <mach/mach.h>
 #include <stdatomic.h>
 
 static _Atomic int g_za_fullscreen;
 static float g_za_rect[4];
+static double g_za_hud_aspect;
 int dm_za_fullscreen_active(void) { return atomic_load_explicit(&g_za_fullscreen, memory_order_acquire); }
-__attribute__((weak)) void front_za_fullscreen_ready(void) {}
 void dm_za_display_init(void) {
     const char *enabled = getenv("DM_ZA_FULLSCREEN"), *ratio = getenv("DM_ZA_ASPECT");
     if (!enabled || strcmp(enabled, "1")) return;
@@ -43,8 +44,8 @@ void dm_za_display_init(void) {
     if (!__atomic_compare_exchange_n(p, &expected, bits, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         LOG("[RED] Z-A fullscreen: original camera aspect mismatch; disabled"); return;
     }
+    g_za_hud_aspect=w/h;
     atomic_store_explicit(&g_za_fullscreen, 1, memory_order_release);
-    front_za_fullscreen_ready();
     LOG("Z-A fullscreen: camera %.9f, HUD %.6f,%.6f %.6fx%.6f; game projection and display mapping enabled",
         aspect, g_za_rect[0], g_za_rect[1], g_za_rect[2], g_za_rect[3]);
 }
@@ -54,7 +55,9 @@ static void za_hud_rect(uint64_t *regs, int param) {
     // Original LDUR reads [x9+4], then overwrites w9 with 1. A thread-local
     // shadow preserves the original table and prevents concurrent writers.
     static _Thread_local struct { uint32_t unused; float rect[4]; } shadow;
-    memcpy(shadow.rect, g_za_rect, sizeof g_za_rect);
+    float original[4];
+    memcpy(original, (const char *)(uintptr_t)regs[9]+4, sizeof original);
+    if (!dm_display_hud_rect(original, g_za_hud_aspect, shadow.rect)) return;
     regs[9] = (uint64_t)(uintptr_t)&shadow;
 }
-__attribute__((constructor)) static void za_display_gates(void) { gate_obs_set(OBS_ZA_HUD_RECT, za_hud_rect); }
+__attribute__((constructor)) static void za_display_gates(void) { gate_obs_mutable_set(OBS_ZA_HUD_RECT, za_hud_rect); }
