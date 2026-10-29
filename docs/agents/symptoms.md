@@ -12,6 +12,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - starting a Mac app through a front end with unchanged settings enables the encode thread, and can disable Metal 4 pipelines and the pipeline archive; starting the same app from Finder keeps the host's defaults. → [A Mac front end's default settings change Metal execution paths](../reference/packing.md#a-mac-front-ends-default-settings-change-metal-execution-paths)
 - `decompress NSZ` stops immediately with `nsz: error: unrecognized arguments: --keys …`. → [NSZ decompression rejects `--keys`](../reference/packing.md#nsz-decompression-rejects---keys)
 - the extraction of a game whose base is an XCI that also carries its update (a "1G+1U" dump) stops with `[RED] nx_extract exit code -6`. `extract_v<version>.log` lists the update's build IDs even for the base game alone, then ends in an unhandled exception from the RomFS (`ResultFsNonRealDataVerificationFailed (2002-4604): Hash error!` from `RomFsFileSystem..ctor`, or `ArgumentException` / `InvalidOperationException` from the patch layers). → [A cartridge dump with its update on it extracts the update as the base game](../reference/packing.md#a-cartridge-dump-with-its-update-on-it-extracts-the-update-as-the-base-game)
+- package discovery reports duplicate updates or tries to decompress a `._` file from a macOS-managed external drive. → [AppleDouble files are mistaken for game packages](../reference/packing.md#appledouble-files-are-mistaken-for-game-packages)
 
 ## Rewriter
 

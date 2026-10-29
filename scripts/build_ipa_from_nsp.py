@@ -433,6 +433,11 @@ def scan_nsps(nsp_dir):
     the title as an NSP's does) and converted afterwards (decompress_nsz)"""
     fams, unknown = {}, []
     for p in sorted([*nsp_dir.glob('*.nsp'), *nsp_dir.glob('*.xci'), *nsp_dir.glob('*.nsz'), *nsp_dir.glob('*.xcz')]):   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
+        # exFAT AppleDouble sidecars can carry a title/version in their name.
+        # Ignore metadata only by both its name and actual AppleDouble v2 header.
+        if p.name.startswith('._'):
+            with p.open('rb') as f: metadata = f.read(8) == b'\x00\x05\x16\x07\x00\x02\x00\x00'
+            if metadata: continue
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
         if p.suffix in COMPRESSED and p.with_suffix(COMPRESSED[p.suffix]).exists():
