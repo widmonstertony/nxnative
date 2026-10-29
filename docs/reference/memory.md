@@ -174,6 +174,14 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 
 ## Engine allocators
 
+### An engine region that exceeds the iOS guest address space
+
+- **Symptom:** The Witcher 3: Wild Hunt US 4.04b (`main` build `b151a224a429f9a73abb05c5a3de9468`) traps at `main+0x8924` during static initialization on an M2 iPad running iOS 16.1. `AllocateMemoryPages` returned `0xe03` for address zero and size `0x100000`, before graphics initialization.
+- **Cause:** `main+0x89e8` requests a 48 GB region through `nn::os::AllocateAddressRegion`; the provisional profile has only a 4.375 GB alias region. Its failure leaves the bump allocator's base at zero. The first page commit then fails and reaches the game's original assertion. This is virtual address space, not a request for 48 GB of physical RAM. The earlier survey already reported this reservation; a successful IPA build did not resolve it.
+- **Fix in progress:** preserve the original allocator's layout and request a Switch-sized alias region using `DM_ALIAS_SIZE=0x1000000000`, paired with Apple's `com.apple.developer.kernel.extended-virtual-addressing` entitlement. `build_ipa.sh` now picks up a profile's optional `ios.entitlements` alongside `ios.env`; an explicit `DM_ENTITLEMENTS`, including empty, takes precedence. Retain Increased Memory Limit separately. A valid installation must retain the address-space entitlement, and the device must actually permit the reservation; merely embedding the key does not prove support. Do not shrink an engine-owned region without auditing its layout and derived bounds.
+- **Validation:** the M2 application's previous runtime log and the original module establish the failed commit and 48 GB reservation. Two standalone diagnostic executables were killed before producing output, so they establish no device address-space result. Extended-address-space delivery and user gameplay remain open; the device has not been claimed playable.
+- **Found on:** the user's external provisional Witcher US profile; no registered playable profile is added by this finding.
+
 ### StandardAllocators over 12 to 62 GB of address space
 
 - **Symptom:** `StandardAllocator::Initialize` aborts in `nninitStartup` (Pokémon Legends: Z-A: `main+0x1b2e690`); `nn::diag` abort at `sdk+0x11ff34` (`StandardAllocator::Initialize`) in `nninitStartup`, SDK 15.3.2, called from `main+0x31370c` (Paper Mario: The Thousand-Year Door).
