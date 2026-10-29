@@ -14,7 +14,7 @@ $(B)/t_fs $(B)/t_fs_case $(B)/t_fs_commit_list $(B)/t_fs_commit_list_tsan: ../ro
 GAME_H = ../gen/$(GAME)/game_profile.h
 # Exact-build display adapters must preserve unrelated native registers and
 # refuse unsupported modules before the frontend expands the canvas.
-$(B)/t_arceus_display: t_arceus_display.c ../hle_arceus_display.c ../hle_arceus_timing.inc ../hle_game_display.c ../hle.h ../dm.h $(GAME_H) | $(B)
+$(B)/t_arceus_display: t_arceus_display.c ../display_hud_geometry.h ../hle_arceus_display.c ../hle_arceus_timing.inc ../hle_game_display.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_arceus_display.c
 .PHONY: arceus-display
 arceus-display: $(B)/t_arceus_display
@@ -195,7 +195,7 @@ $(B)/t_za_timing: t_za_timing.c ../hle_za_timing.c ../za_frame_delta.h ../hle.h 
 $(B)/t_za_dynamic: t_za_dynamic.c ../hle_za_timing.c ../za_frame_delta.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wextra -Werror -I.. $(GINC) -o $@ t_za_dynamic.c
 .PHONY: za-timing za-display
-$(B)/t_za_display: t_za_display.c ../hle_za_display.c ../za_display_geometry.h ../hle.h ../dm.h $(GAME_H) | $(B)
+$(B)/t_za_display: t_za_display.c ../display_hud_geometry.h ../hle_za_display.c ../za_display_geometry.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wextra -Werror -I.. $(GINC) -o $@ t_za_display.c
 
 za-display: $(B)/t_za_display
@@ -301,7 +301,7 @@ tsan-threads-run: $(addprefix $(B)/,$(TSAN_T))
 
 # Exact-build display adapters must preserve unrelated native registers and
 # refuse unsupported modules before the frontend expands the canvas.
-$(B)/t_arceus_display: t_arceus_display.c ../hle_arceus_display.c ../hle_arceus_timing.inc ../hle_game_display.c ../hle.h ../dm.h $(GAME_H) | $(B)
+$(B)/t_arceus_display: t_arceus_display.c ../display_hud_geometry.h ../hle_arceus_display.c ../hle_arceus_timing.inc ../hle_game_display.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_arceus_display.c
 .PHONY: arceus-display
 arceus-display: $(B)/t_arceus_display

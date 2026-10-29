@@ -23,12 +23,11 @@ void dm_arceus_display_init(void) {
             m->size < 0x401a000 || !gate_obs_present(OBS_ARCEUS_ASPECT) || !gate_obs_present(OBS_ARCEUS_HUD)) return;
     float aspect = (float)(w / h);
     memcpy(&g_aspect_bits, &aspect, sizeof aspect);
-    g_hud_rect[2] = (float)(1920.0 * (16.0 / 9.0) / (w / h));
-    g_hud_rect[0] = (1920 - g_hud_rect[2]) * .5f;
-    g_hud_rect[1] = 0; g_hud_rect[3] = 1080;
+    const float native_rect[4]={0,0,1920,1080};
+    if (!dm_display_hud_rect(native_rect, w/h, g_hud_rect)) return;
     atomic_store_explicit(&g_display_active, 1, memory_order_release);
     dm_game_fullscreen_activate();
-    LOG("Arceus fullscreen: exact build, camera %.9f HUD %.3f,0 %.3fx1080", aspect, g_hud_rect[0], g_hud_rect[2]);
+    LOG("Arceus fullscreen: exact build, camera %.9f HUD %.3f,%.3f %.3fx%.3f", aspect, g_hud_rect[0], g_hud_rect[1], g_hud_rect[2], g_hud_rect[3]);
 }
 static void arceus_aspect(uint64_t *regs, int param) {
     if (!atomic_load_explicit(&g_display_active, memory_order_acquire)) return;

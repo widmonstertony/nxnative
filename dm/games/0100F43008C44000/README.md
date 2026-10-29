@@ -98,3 +98,11 @@ The separate Air delivery snapshot for update 2.0.2 adds [image optical-flow pre
 ### iOS Backbone input update
 
 See [Backbone button letters and automatic touch visibility](../../../docs/reference/services.md#backbone-button-letters-and-automatic-touch-visibility). The host preserves touch layout and keyboard semantics; device button testing remains with the user.
+
+### iPad fullscreen HUD bounds (2026-10-29)
+
+The user reports fullscreen UI outside the iPad picture. The shared
+[narrow-screen HUD bounds repair](../../../docs/reference/rendering.md#fullscreen-hud-extends-past-a-narrow-device-canvas)
+keeps the HUD inside the native canvas without stretching the camera or changing
+input layout. Callback and geometry tests cover iPad ratios; updated device
+builds and user evaluation are pending.

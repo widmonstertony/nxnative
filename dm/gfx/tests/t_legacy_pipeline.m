@@ -102,6 +102,51 @@ static void cpu_texture_readback(void) {
     mtl_tex_release(&t); free(t.mem);
 }
 
+// A lazy format-view copy must precede the consumer's encoder. NFS changes
+// an integer target to a normalized sampled view in the first scene after its splash.
+static void format_view_draw(id<MTLFunction> vertex) {
+    NSError *error = nil;
+    NSString *source = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        "fragment uint4 integer_color() { return uint4(32,64,128,96); }\n"
+        "struct A { texture2d<float> image [[id(0)]]; };\n"
+        "fragment float4 sample_view(constant A &a [[buffer(0)]]) { return a.image.read(uint2(1,1)); }\n";
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:&error];
+    CHECK(lib != nil, "format-view consumer compiles"); if (!lib) return;
+    NvShader *vs=[NvShader new], *fs=[NvShader new], *sample=[NvShader new];
+    vs->fn=vertex;fs->fn=[lib newFunctionWithName:@"integer_color"];fs->rf.color_known=1;fs->rf.color_mask=1;
+    sample->fn=[lib newFunctionWithName:@"sample_view"];
+    sample->ae=[sample->fn newArgumentEncoderWithBufferIndex:0];sample->arg_len=sample->ae.encodedLength;
+    sample->rf.abi=0;sample->rf.nb=1;sample->rf.color_known=1;sample->rf.color_mask=1;
+    sample->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEX,.reg=0,.aid=0,.dtt=MTLTextureType2D};
+    tex_t input={0},output={0};
+    input.magic=output.magic=MAGIC('T','E','X',0);input.serial=nvn_new_serial();output.serial=nvn_new_serial();
+    input.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8UI,.width=4,.height=4,.depth=1,.levels=1,.samples=1};
+    output.d=input.d;output.d.format=NVN_FORMAT_RGBA16F;
+    MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Uint width:4 height:4 mipmapped:NO];
+    d.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;d.storageMode=MTLStorageModePrivate;
+    id<MTLTexture> original=[g_dev newTextureWithDescriptor:d];res_add(original);mtl_tex_init(&input);serial_put(input.serial,original);
+    d=tex_desc(&output,0);d.storageMode=MTLStorageModeShared;
+    id<MTLTexture> result=[g_dev newTextureWithDescriptor:d];res_add(result);mtl_tex_init(&output);serial_put(output.serial,result);
+    CHECK(!(original.usage&MTLTextureUsagePixelFormatView), "source initially lacks format-view usage");
+    view_t view={.set_format=1,.format=NVN_FORMAT_RGBA8};mtl_reg_tex(2,&input,&view);
+    NvProg *program=[NvProg new];program->sh[0]=vs;program->sh[1]=fs;
+    prog_t guest={.serial=nvn_new_serial()};serial_put(guest.serial,program);
+    state_reset();memset(&R,0,sizeof R);S.prog=&guest;S.chmask.mask=15;S.poly.mode=NVN_POLYGON_MODE_FILL;
+    R.has_rt=1;R.rt.n=1;R.rt.color[0]=&input;
+    p_draw triangle={.prim=NVN_DRAW_PRIMITIVE_TRIANGLES,.count=3,.instances=1};
+    mtl_sub_begin();draw(&triangle,NULL);rp_end();
+    R.rt.color[0]=&output;program->sh[1]=sample;S.tex[1][0]=2;g_pso_dirty=1;args_dirty_all();
+    uint64_t upgrades=g_pfv_upgrades;draw(&triangle,NULL);
+    CHECK(g_pfv_upgrades==upgrades+1, "consumer upgrades exactly once before argument encoding");
+    CHECK(g_enc!=nil, "consumer retains a live render encoder after the copy");
+    mtl_sub_commit();mtl_drain();CHECK(!mtl_last_commit_error(), "format-view producer/copy/consumer completes with Metal validation");
+    __fp16 got[4];[result getBytes:got bytesPerRow:32 fromRegion:MTLRegionMake2D(1,1,1,1) mipmapLevel:0];
+    float linear[4]={32.0f/255,64.0f/255,128.0f/255,96.0f/255};
+    for(int c=0;c<4;c++) { float want=linear[c];
+        CHECK(fabsf((float)got[c]-want)<.006f, "upgraded view preserves earlier GPU writes and samples the requested linear format"); }
+    mtl_reg_tex(2,NULL,NULL);mtl_tex_release(&input);mtl_tex_release(&output);state_reset();memset(&R,0,sizeof R);
+}
+
 int main(int argc, char **argv) { @autoreleasepool {
     mtl_init(); binding_commands(); cpu_texture_readback(); NSError *error = nil;
     NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
@@ -115,6 +160,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     vs->fn = [lib newFunctionWithName:@"v"];
     fs->fn = [lib newFunctionWithName:@"f"];
     fs->rf.color_known = 1; fs->rf.color_mask = 1;
+    format_view_draw(vs->fn);
     pso_key k = {0}; k.samples = 1; k.chmask = 15; k.blend_en = 1; k.cfmt[0] = MTLPixelFormatRGBA16Float;
     int factors[] = {NVN_BLEND_FUNC_SRC1_COLOR, NVN_BLEND_FUNC_ONE_MINUS_SRC1_COLOR, NVN_BLEND_FUNC_SRC1_ALPHA, NVN_BLEND_FUNC_ONE_MINUS_SRC1_ALPHA};
     for (int i = 0; i < 4; i++) {

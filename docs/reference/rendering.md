@@ -946,3 +946,19 @@ icon distortion without changing controller mappings. It is a conservative
 image heuristic, not a separate engine UI layer: moving or translucent UI still
 requires user evaluation. Regression covers docked/handheld canvases, panel
 rejection and stationary HUD strokes over a moving scene on the GPU.
+
+### Legacy format-view copies end a live consumer encoder
+
+- **Symptom:** a black scene followed by SIGSEGV in `legacy_use_resource`, immediately after `tex_upgrade_pfv`; iPad logs report address `0x550` or `0x5c8`.
+- **Cause:** argument encoding lazily resolved an integer/normalized texture view. Adding `PixelFormatView` copies the old allocation through `blit()`, which ends the render pass. The argument loop then declared the resource on its saved, ended render encoder. Both iPad GPU drivers crashed inside that declaration.
+- **Fix:** resolve shader-visible texture, image and bindless-UBO handles before choosing a draw or compute encoder, including rasterizer-discard draws. The copy stays in command-buffer order after the producer, and argument encoding uses the newly opened consumer pass. Do not skip resource declarations or move the copy to an earlier independent submission.
+- **Validation:** a production draw regression writes an integer RGBA8 target, upgrades its view to normalized RGBA8, then samples the earlier GPU writes into a float target in the same submission, under Metal validation. Native and forced-no-BC modes each pass 266 checks. Restoring the old encoder selection order reproduces SIGSEGV (exit 139) in the same regression. Device installation and user evaluation are separate checkpoints.
+- **Found on:** [Need for Speed Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md), both M2 iPadOS 16.1 and A10X iPadOS 17.7.11, build `20261029.6`.
+
+### Fullscreen HUD extends past a narrow device canvas
+
+- **Symptom:** Pokemon fullscreen UI extends outside an iPad display, despite a correctly adapted 3D camera.
+- **Cause:** the ultrawide HUD rule always corrected width. On a 4:3 screen it enlarged the 16:9 logical rectangle beyond its native canvas, with a negative left edge.
+- **Fix:** fit the HUD rectangle in both axes. Wider screens retain the width correction; narrower screens retain the full native width and reduce the centered HUD height. The camera still uses the actual screen ratio; the 3D picture fills the display. Keep unrelated menu rectangles and the original guest tables intact.
+- **Validation:** handheld/docked canvases, 4:3 and 683:512 iPads, ultrawide and native aspect ratios; callback tests retain unrelated saved registers and exact-build guards. User visual evaluation remains required.
+- **Found on:** [Arceus](../../dm/games/01001F5010DFA000/README.md) and [Z-A](../../dm/games/0100F43008C44000/README.md). Adapted from the author's [aspect/HUD patches](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods), with the narrow-screen case handled separately.

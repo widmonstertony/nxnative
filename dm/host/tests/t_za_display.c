@@ -47,12 +47,12 @@ int main(int argc, char **argv) {
     hud_callback(regs, 0);
     for (int i = 0; i < 31; i++) if (i != 9) assert(regs[i] == saved[i]);
     memcpy(r, (char *)(uintptr_t)regs[9] + 4, sizeof r);
-    assert(fabs((r[2] / 1920) * width / height - 16.0 / 9) < 1e-6);
-    assert(fabs(r[0] - (1920 - r[2]) * .5) < .001 && r[1] == 0 && r[3] == 1080);
+    assert(fabs((r[2] / 1920) / (r[3] / 1080) * width / height - 16.0 / 9) < 1e-6);
+    assert(fabs(r[0] - (1920 - r[2]) * .5) < .001 && fabs(r[1] - (1080-r[3])*.5) < .001 && r[2]<=1920 && r[3]<=1080);
     native.rect[2] = 1280; native.rect[3] = 720;
     regs[9] = saved[9]; hud_callback(regs, 0);
     memcpy(r, (char *)(uintptr_t)regs[9] + 4, sizeof r);
-    assert(fabs((r[2] / 1280) * width / height - 16.0 / 9) < 1e-6 && r[3] == 720);
+    assert(fabs((r[2] / 1280) / (r[3] / 720) * width / height - 16.0 / 9) < 1e-6 && r[2]<=1280 && r[3]<=720);
     native.rect[2] = 500; native.rect[3] = 300;
     regs[9] = saved[9]; hud_callback(regs, 0);
     assert(regs[9] == saved[9] && native.rect[2] == 500 && native.rect[3] == 300);

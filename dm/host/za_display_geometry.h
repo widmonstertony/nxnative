@@ -1,11 +1,7 @@
-// Compensate Trinity's logical 1920x1080 HUD before mapping its 16:9 target
-// to the wider screen. The camera uses that screen's aspect ratio as well.
+// Preserve a 16:9 HUD inside the device-aspect game picture.
 #pragma once
-#include <math.h>
+#include "display_hud_geometry.h"
 static inline int za_display_rect(double aspect, float rect[4]) {
-    if (!isfinite(aspect) || aspect < 1.0 || aspect > 4.0) return 0;
-    double width = 1920.0 * (16.0 / 9.0) / aspect;
-    rect[0] = (float)((1920.0 - width) * 0.5);
-    rect[1] = 0; rect[2] = (float)width; rect[3] = 1080;
-    return 1;
+    const float original[4]={0,0,1920,1080};
+    return dm_display_hud_rect(original, aspect, rect);
 }

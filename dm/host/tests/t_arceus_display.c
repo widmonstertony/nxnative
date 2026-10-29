@@ -57,8 +57,8 @@ int main(int argc, char **argv) {
     regs[8]=(uintptr_t)&native;
     hud_cb(regs, 0);
     float rect[4]; memcpy(rect, (char *)(uintptr_t)regs[8] + 4, sizeof rect);
-    assert(fabs((rect[2] / 1920) * w / h - 16.0 / 9) < 1e-6);
-    assert(fabs(rect[0] - (1920 - rect[2]) * .5) < .001 && rect[1] == 0 && rect[3] == 1080);
+    assert(fabs((rect[2] / 1920) / (rect[3] / 1080) * w / h - 16.0 / 9) < 1e-6);
+    assert(fabs(rect[0] - (1920 - rect[2]) * .5) < .001 && fabs(rect[1]-(1080-rect[3])*.5)<.001 && rect[2]<=1920 && rect[3]<=1080);
     for (int i = 0; i < 31; i++) if (i != 8) assert(regs[i] == (uint64_t)(0x123400 + i));
     printf("PASS: Arceus %s camera/HUD, module/gate guards and unrelated registers\n", ratio);
 }

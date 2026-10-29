@@ -5505,6 +5505,23 @@ static void sample_trace_args(NvShader *sh, int stage, const uint64_t *slots) {
         [g_sub_sample_notes appendString:@"\n"];
     }
 }
+// Texture lookup can upgrade format-view usage by copying the old allocation.
+// That copy ends the current render pass. Resolve every shader-visible texture
+// before selecting this draw/dispatch's encoder, never from its argument loop.
+static void prepare_argument_textures(NvShader *sh, int stage) {
+    if (!sh) return;
+    pthread_mutex_lock(&g_rmu);
+    for (int i = 0; i < sh->rf.nb; i++) {
+        const nvn_rbind *b = &sh->rf.b[i]; int reg = b->reg, tid = 0;
+        if (b->kind == NVN_RB_TEXU) tid = (int)(ubo_handle(stage, reg, b->off) & 0xfffff);
+        else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF)
+            tid = reg < NTEX ? (int)(S.tex[stage][reg] & 0xfffff) : 0;
+        else if (b->kind == NVN_RB_IMG || b->kind == NVN_RB_IMGA)
+            tid = reg < 32 ? (int)(S.img[stage][reg] & 0xfffff) : 0;
+        if (tid) (void)tex_fast(tid);
+    }
+    pthread_mutex_unlock(&g_rmu);
+}
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) { AP_B; int r = encode_args_(en, sh, nvn_stage, metal_vertex); AP_E(3); return r; }
 static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
     if (!sh->ae) { sh->min_reduction_bound = 0; return 1; }
@@ -7736,6 +7753,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         (unsigned long long)sid.diag_frame, sid.diag_id, g_exec_next, pr && pr->sh[0] ? pr->sh[0]->key : "-",
         pr && pr->sh[1] ? pr->sh[1]->key : "-", S.poly.cull, S.ds.dt, S.ds.dw, S.ds.df, S.ds.st,
         R.sc.x, R.sc.y, R.sc.w, R.sc.h);
+    for (int stage = 0; stage < 5; stage++) prepare_argument_textures(pr->sh[stage], stage);
     if (S.rast_discard) { tf_draw(pr, dw, di); return; }
     if (g_nubd && g_enc && ubd_conflict(pr, dw, di)) { g_ubd_conflicts++; rp_end(); }   // land the deferred inline updates before this draw (see ubd_conflict)
     if (g_ruler_truth == 0) {   // Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
@@ -8214,6 +8232,7 @@ static void dispatch(const p_dispatch *dp) {
         pend_add(a1->addr, a1->size ? a1->size : 1);
         return;
     }
+    prepare_argument_textures(cs, 5);
     const uint16_t *tg = cs->rf.tg;
     if (!tg[0]) { RED_ONCE(29, "计算着色器缺线程组大小反射"); return; }
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }

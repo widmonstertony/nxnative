@@ -107,3 +107,11 @@ without changing the frozen shader chain. Packaging and device installation are
 in progress; this does not establish a corrected picture or gameplay.
 
 Delivery update: M2 `20261029.5` is now installed with exact executable/code-section and saved-state hashes verified. The user tests whether its gray scene is repaired. A10X remains uninstalled; its strict resource blockers are unchanged.
+
+### iPad fullscreen HUD bounds (2026-10-29)
+
+The user reports fullscreen UI outside the iPad picture. The shared
+[narrow-screen HUD bounds repair](../../../docs/reference/rendering.md#fullscreen-hud-extends-past-a-narrow-device-canvas)
+keeps the HUD inside the native canvas without stretching the camera or changing
+input layout. Callback and geometry tests cover iPad ratios; updated device
+builds and user evaluation are pending.

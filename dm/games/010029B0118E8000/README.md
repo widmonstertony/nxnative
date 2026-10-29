@@ -40,3 +40,13 @@ truly GPU-written BC image, which remains unsupported. The device log alone
 does not establish the failing texture's ownership. Build `.6` will contain
 both the resource coverage and CPU read fix; installation and user picture
 confirmation remain pending.
+
+### Format-view consumer crash (2026-10-29)
+
+Current: both `.6` iPad logs reproduce SIGSEGV in `legacy_use_resource`
+right after an integer-to-normalized format-view upgrade. The [ended consumer
+encoder](../../../docs/reference/rendering.md#legacy-format-view-copies-end-a-live-consumer-encoder)
+fix moves that copy before encoder selection and preserves the producer's GPU
+writes. `.7` will include this repair and automatic hardware-input overlay
+hiding. A black scene may have additional causes; installation does not certify
+picture recovery. GPU-written BC recompression remains open.
