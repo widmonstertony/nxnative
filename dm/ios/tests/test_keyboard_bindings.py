@@ -66,7 +66,7 @@ int main(void) {
         self.assertIn('static BOOL pad_force_full(void)', source)
         self.assertIn('if (pad_force_full()) l = 1;', source)
         self.assertIn('int l = pad_force_full() ? 1', source)
-        self.assertIn('BOOL any = !keepTouch &&', source)
+        self.assertIn('BOOL any = dm_controller_hides_touch(controller, hasKeyboard, mouse, _touchPreferred, keepTouch);', source)
         mouse = source[source.index("- (void)mouseMotionX:"):source.index("- (void)inputDevicesChanged")]
         self.assertIn('if (!pad_keep_touch() &&', mouse)
 

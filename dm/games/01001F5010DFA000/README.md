@@ -69,3 +69,7 @@ The generic NVN offline chain now emits a distinct secondary-source entry for th
 ### Experimental image interpolation and spatial upscaling
 
 The modern host adds a Chinese launcher choice for experimental image optical flow, alongside MetalFX spatial scaling. The exact-build defaults select native handheld mode and this combination; existing preferences are preserved. With a target above 60 and interpolation enabled, the elapsed-clock adapter requests at most 60 real frames, paired with intermediate pictures on a 120 Hz display. Turning interpolation off retains the existing real-120 target option. The counter distinguishes rendering submissions from actual displayed pictures. This is not Apple's depth/motion-based MetalFX frame interpolator, and neither sustained 120 fps nor improved latency has been measured on Air. Cuts/invalid motion keep current pixels; fast game HUD motion may still distort. The user tests gameplay after a backed-up same-bundle update. See [image optical-flow presentation](../../../docs/reference/rendering.md#experimental-image-optical-flow-presentation) for resource lifetime, pacing, fallback and tests. The shader chain and older-device compatibility work are unchanged.
+
+### iOS Backbone input update
+
+See [Backbone button letters and automatic touch visibility](../../../docs/reference/services.md#backbone-button-letters-and-automatic-touch-visibility). The host preserves touch layout and keyboard semantics; device button testing remains with the user.
