@@ -13,19 +13,30 @@ installed on both iPads with exact code/version and saved-state readback.
 The user tests the game; a successful build or installation does not establish
 that every black-screen cause is resolved.
 
-Current: the user still reports a black scene on M2 with `20261029.2`.
-Its runtime log names ten stages absent from the offline map and a BC texture
-readback that returns zeroes; neither issue is resolved by the depth fix.
-A diagnostic build captures exact missing control/code bytes for offline
-translation. No alias to a similar program or successful-rendering claim is made.
+Current: the user still reports a black scene on M2 with `20261029.5`.
+Its log contains ten missing stages and a BC texture readback returning zeroes;
+the shared compact-binding fix alone did not restore this title.
 
 ### Compact binding replay repair (2026-10-29)
 
 [Compact buffer bindings](../../../docs/reference/rendering.md#compact-buffer-bindings-lost-by-legacy-replay)
-were silently discarded by this game's frozen legacy host. The production
-recorder/replay regression passes 252 checks; the old host fails all 112 compact
-binding checks. Minimum-16.1 build `20261029.5` includes the shared host repair
-without changing the frozen shader chain. Packaging and device installation are
-in progress; this does not establish a corrected picture or gameplay.
+were silently discarded by this game's frozen legacy host. Minimum-16.1
+`20261029.5` is now verified installed on both iPads, including code sections,
+version and saved-state fingerprints. The A10X helper initially returned NO and
+briefly disconnected, but later readback confirms the same `.5` completed;
+no retry or uninstall was needed. This does not establish a corrected picture.
 
-Delivery update: M2 `20261029.5` is now installed with exact executable/code-section and saved-state hashes verified; user picture confirmation is pending. The A10X installer returned `installApplication returned NO` for the same verified upload, then its MCP briefly disconnected. Readback after reconnection confirms `.2` remains installed. The new upload and diagnostics are preserved; no uninstall or blind retry was performed. The old iPad was running an unrelated game, so further installation diagnostics wait for the user to return to MCP.
+### Runtime coverage and CPU texture reads (2026-10-29)
+
+All ten missing M2 `.5` stages were captured and validated against their actual
+control/code hashes: five vertex and five fragment programs. Stable per-key
+packages extend the external profile; the complete matching 99-stage Mac/iOS
+resource build succeeds. Captures and translated game assets remain outside Git.
+
+[Legacy CPU-written BC readback](../../../docs/reference/nvn-objects.md#legacy-cpu-written-bc-textures-return-zero-blocks)
+also lacked the modern path's ownership check. Its exact no-BC regression now
+passes, with a failing pre-fix control. This is separate from recompressing a
+truly GPU-written BC image, which remains unsupported. The device log alone
+does not establish the failing texture's ownership. Build `.6` will contain
+both the resource coverage and CPU read fix; installation and user picture
+confirmation remain pending.

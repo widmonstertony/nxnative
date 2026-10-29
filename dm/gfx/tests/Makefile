@@ -404,4 +404,5 @@ t_legacy_pipeline: t_legacy_pipeline.m $(MTL_T_DEP)
 .PHONY: check_t_legacy_pipeline
 check_t_legacy_pipeline: t_legacy_pipeline
 	MTL_DEBUG_LAYER=1 ./t_legacy_pipeline
+	DM_TEST_NO_BC=1 MTL_DEBUG_LAYER=1 ./t_legacy_pipeline
 run: check_t_legacy_pipeline

@@ -85,3 +85,12 @@ legacy image shadow/discard/copyback (610). These establish the tested resource
 semantics on M4, not A10X playability. The user requested gameplay testing remain
 with them; no multi-game gameplay route is claimed. The new shared shader chain
 must be rebuilt per game before a delivery from this branch can be installed.
+
+### Need for Speed follow-up (2026-10-29)
+
+M2 `.5` remains black by user report. A10X `.5` eventually registered despite
+the earlier installer error; code/version and saved-state fingerprints were
+read back without another installation. Ten exact runtime stages are now
+translated in a complete 99-stage matching resource set. The legacy CPU-written
+BC readback omission is fixed and tested separately; `.6` packaging/install and
+device picture confirmation are pending. No claim of playable NFS follows.

@@ -79,8 +79,31 @@ static void binding_commands(void) {
 #undef API
 }
 
+// CPU-written BC storage must survive readback without a packaged-layout flag.
+// The Metal upload may transcode these blocks; only guest memory is lossless.
+static void cpu_texture_readback(void) {
+    tex_t t = {0}; t.magic=MAGIC('T','E','X',0); t.serial=nvn_new_serial();
+    t.d=(nvn_texdesc){0};
+    t.d.width=16; t.d.height=16; t.d.depth=2; t.d.levels=2;
+    t.d.target=NVN_TEXTURE_TARGET_2D_ARRAY; t.d.format=0x41;
+    nvn_tex_layout(&t.d, &t.L); t.mem=calloc(1,t.L.size);
+    mtl_tex_init(&t); mtl_tex_cpu_written(&t);
+    uint8_t src[128]; for(unsigned i=0;i<sizeof src;i++) src[i]=(uint8_t)(i*13+7);
+    CHECK(!nvn_swizzle(&t.d,1,1,src,16,t.mem), "CPU BC mip/layer storage is swizzled");
+    NVNcopyRegion r={.xoffset=4,.yoffset=0,.zoffset=0,.width=4,.height=8,.depth=1};
+    uint8_t out[32]; memset(out,0xcd,sizeof out);
+    mtl_read_texels(&t,1,1,&r,out,16,32);
+    CHECK(!memcmp(out,src+8,8) && !memcmp(out+16,src+24,8), "CPU-written BC subregion reads exact original blocks");
+    CHECK(out[8]==0xcd && out[15]==0xcd && out[24]==0xcd && out[31]==0xcd, "CPU BC strided read preserves padding");
+    // A second CPU write after first read must be visible, without a GPU upload.
+    src[8]^=0x5a; CHECK(!nvn_swizzle(&t.d,1,1,src,16,t.mem), "CPU BC second write is swizzled");
+    mtl_read_texels(&t,1,1,&r,out,16,32);
+    CHECK(!memcmp(out,src+8,8), "CPU BC read sees later writes without a draw");
+    mtl_tex_release(&t); free(t.mem);
+}
+
 int main(int argc, char **argv) { @autoreleasepool {
-    mtl_init(); binding_commands(); NSError *error = nil;
+    mtl_init(); binding_commands(); cpu_texture_readback(); NSError *error = nil;
     NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint i [[vertex_id]]) { return float4(i == 1 ? 3.0 : -1.0, i == 2 ? 3.0 : -1.0, 0, 1); }\n"
         "fragment float4 f() { return float4(.125,.25,.5,.375); }\n"
