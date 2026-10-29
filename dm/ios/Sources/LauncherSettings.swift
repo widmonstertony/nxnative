@@ -135,6 +135,7 @@ enum LauncherText {
         "30 fps": "30 帧/秒",
         "60 fps": "60 帧/秒",
         "120 fps": "120 帧/秒",
+        "Experimental engine timing target; actual performance and game speed need device testing.": "实验性帧率目标；实际帧率和游戏速度需要实机测试。",
         "Original 30 fps": "原版 30 帧/秒",
         "Removes the 30 fps limit with variable game timing. Actual frame rate depends on device performance.": "解除 30 帧限制，并按实际经过时间推进游戏。实际帧率取决于设备性能。",
         "Unavailable pending shader fix": "等待着色器修复，暂不可用",

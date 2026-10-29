@@ -13,7 +13,7 @@ installed on both iPads with exact code/version and saved-state readback.
 The user tests the game; a successful build or installation does not establish
 that every black-screen cause is resolved.
 
-Current: the user still reports a black scene on M2 with `20261029.5`.
+Earlier: the user reported a black scene on M2 with `20261029.5`.
 Its log contains ten missing stages and a BC texture readback returning zeroes;
 the shared compact-binding fix alone did not restore this title.
 
@@ -43,10 +43,38 @@ confirmation remain pending.
 
 ### Format-view consumer crash (2026-10-29)
 
-Current: both `.6` iPad logs reproduce SIGSEGV in `legacy_use_resource`
+Both `.6` iPad logs reproduced SIGSEGV in `legacy_use_resource`
 right after an integer-to-normalized format-view upgrade. The [ended consumer
 encoder](../../../docs/reference/rendering.md#legacy-format-view-copies-end-a-live-consumer-encoder)
 fix moves that copy before encoder selection and preserves the producer's GPU
 writes. `.7` will include this repair and automatic hardware-input overlay
 hiding. A black scene may have additional causes; installation does not certify
 picture recovery. GPU-written BC recompression remains open.
+
+### Further runtime coverage and engine frame limits (2026-10-29)
+
+M2 iPad version 20261029.7 reaches rendering after the ended-render-encoder
+repair, but the user reports another black screen after entering. The new log
+contains five unmapped runtime stages, including a vertex stage. Their complete
+control/code captures validate against their keys; rebuilding all 104 stages
+with chain `0cb0dfeacee3` succeeds. Rendering after packaging remains untested.
+
+The same log shows 120 Hz callbacks but 29.98 actual presents and interval two.
+The engine also busy-waits at `main+0x483588..0x4835a4`. The exact-build
+[FPSLocker configuration](https://github.com/masagrator/FPSLocker-Warehouse/blob/v4/SaltySD/plugins/FPSLocker/patches/010029B0118E8000/799D1061182C1302.yaml)
+removes that back-edge and changes the 60-fps-mode flag, 19.2-MHz timer target,
+timer tolerance and both 2D/3D time-step fields together. The host applies those
+same fields only to this build with the asserted instruction repair present.
+`DM_NFS_FPS` offers original 30, 30, 60 and experimental 120; display pacing
+must also ignore the game's interval-two request. Startup configures both the
+NVN pacing rate and its display-link mode, before Metal initialization. An unset target defaults to
+120. This is a target, not measured performance: actual gameplay speed,
+stability and frame rate at 120 still need the owner's testing.
+
+Candidate `20261029.9` passes a full minimum-16.1 host build and legacy resource
+audit. Its packaged fixup marker, five added libraries/reflection files,
+30/60/120 launcher choices and startup timing entry point were checked. Ten
+production timing/pacing cases and nine existing engine-limit cases pass, plus
+44 tool/docs/settings/shader-dump/chain tests. Automatic gameplay regression was
+not run: the owner explicitly handles gameplay tests. No measured FPS or
+corrected-picture claim is made from these build checks.

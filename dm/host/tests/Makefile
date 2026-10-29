@@ -150,6 +150,12 @@ $(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H)
 run: $(B)/t_fpslock
 $(B)/t_fpslock: t_fpslock.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wno-unused-function $(GINC) -o $@ t_fpslock.c
+$(B)/t_nfs_fpslock: t_nfs_fpslock.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function $(GINC) -o $@ t_nfs_fpslock.c
+.PHONY: nfs-fpslock
+nfs-fpslock: $(B)/t_nfs_fpslock
+	$(B)/t_nfs_fpslock
+run: nfs-fpslock
 $(B)/t_audio_recovery: t_audio_recovery.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_audio_recovery.c -framework AudioToolbox
 $(B)/t_audio_session_retry: t_audio_session_retry.c ../../ios/Sources/DmAudioRetry.h | $(B)

@@ -63,7 +63,56 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
 
 static int rd(uint64_t a, void *out, size_t n) { vm_size_t got = 0; return a >= 0x1000 && vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n; }
 
+// NFS 1.0.3 has two timer fields and separate 2D/3D frame-time consumers.
+// Writing just its 60-fps flag or changing display Hz leaves the engine cap.
+// Match FPSLocker's exact-build configuration; never apply these addresses to
+// another build, or without the rewriter's asserted busy-wait repair.
+static int nfs_init, nfs_target, nfs_logged; static uint8_t *nfs_base;
+void dm_nfs_timing_init(void) {
+    int *initialized = &nfs_init;
+    if (*initialized) return;
+    *initialized = 1;
+    uint8_t *base = NULL; int target;
+    for (int i = 0; i < g_nmod; i++)
+        if (!strcmp(g_mod[i].name, "main") && !strcmp(g_mod[i].build_id, "799d1061182c1302e08e706b84ce76e5")) base = g_mod[i].base;
+    if (!base) return;
+    uint32_t instruction;
+    if (!rd((uintptr_t)base + 0x4835a4, &instruction, 4) || instruction != 0xd503201f) {
+        LOG("[RED] NFS frame target requires the matching rewriter repair; leaving timing unchanged"); return;
+    }
+    const char *e = getenv("DM_NFS_FPS"); target = e ? atoi(e) : 120;
+    if (target != 0 && target != 30 && target != 60 && target != 120) {
+        LOG("[RED] DM_NFS_FPS must be 0, 30, 60 or 120; using original 30"); target = 30;
+    }
+    if (!target) target = 30;
+    nfs_base=base; nfs_target=target;
+    // Configure before the game initializes Metal/the display link. A 120-Hz
+    // screen request alone leaves NVN's independent default 60-Hz pacer active.
+    char hz[16]; snprintf(hz,sizeof hz,"%d",target);
+    setenv("DM_PRESENT_HZ",hz,1); setenv("DM_PRESENT_INTERVAL","display",1); setenv("DM_PRESENT_LINK","2",1);
+}
+static void nfs_fps_tick(void) {
+    dm_nfs_timing_init();
+    uint8_t *base=nfs_base; int target=nfs_target;
+    if (!base) return;
+    uint64_t timer, step;
+    if (!rd((uintptr_t)base + 0xed96a8, &timer, 8) || !timer ||
+        !rd((uintptr_t)base + 0xeffc60, &step, 8) || !step) return;
+    const uint64_t addresses[] = {(uintptr_t)base + 0xf0043c, timer + 0x30, timer + 0x28, step + 0x30, step + 0x50};
+    uint32_t old[5], want[5] = {target >= 60, 19200000u / target, 1920000u / target, 0, 0};
+    float seconds = 1.0f / target; memcpy(&want[3], &seconds, 4); want[4] = want[3];
+    // Validate every destination before changing any field. Null/uninitialized
+    // managers occur during loading; do not dereference or partially update them.
+    for (int i = 0; i < 5; i++) if (!rd(addresses[i], &old[i], 4)) return;
+    if (old[0] > 1) return;
+    for (int i = 0; i < 5; i++) if (old[i] != want[i]) {
+        uint32_t *p = (uint32_t *)(uintptr_t)addresses[i]; dm_guest_write_prepare(p, 4); __atomic_store_n(p, want[i], __ATOMIC_RELAXED);
+    }
+    if (!nfs_logged) { nfs_logged=1; LOG("main: NFS timer, tolerance and 2D/3D frame targets = %d fps (DM_NFS_FPS; actual performance unverified)", target); }
+}
+
 void dm_fps_lock_tick(void) {
+    nfs_fps_tick();
     static int state = -2, rows[NLOCKS], nrow, nlog[NLOCKS], target; static uint8_t *base; static const char *src;
     if (state == -1) return;
     if (state == -2) {
