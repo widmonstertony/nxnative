@@ -26,6 +26,16 @@ DIR_MODE = stat.S_IFDIR | 0o755   # a parent folder no source folder stands for 
 Entry = collections.namedtuple('Entry', 'name path st root')   # st None: a synthetic parent; root: the mapping's source folder
 
 
+def apple_double(path, st):
+    """exFAT stores macOS resource forks in sidecars; never ship those in an IPA.
+
+    Check both name and header so a game's ordinary ._ file remains content.
+    ditto restores these sidecars as resource forks, which codesign rejects.
+    """
+    if not os.path.basename(path).startswith('._') or not stat.S_ISREG(st.st_mode): return False
+    with open(path, 'rb') as f: return f.read(8) == b'\x00\x05\x16\x07\x00\x02\x00\x00'
+
+
 def entries(maps, skip, skip_suffix=()):
     """The archive's entries in order: for each mapping its parent folders (unless an earlier entry gave them), its root, then its tree depth first, sorted by name,
     without the skipped paths and without other mappings' roots (each adds its own). Parents needed before their mapping are synthetic folders with fixed metadata."""
@@ -40,6 +50,7 @@ def entries(maps, skip, skip_suffix=()):
             name = f'{arc}/{e.name}'
             if name in skip or name in roots or (skip_suffix and e.name.endswith(skip_suffix) and not e.is_dir(follow_symlinks=False)): continue
             st = e.stat(follow_symlinks=False)
+            if apple_double(e.path, st): continue
             if stat.S_ISDIR(st.st_mode): add(name + '/', e.path, st); walk(e.path, name)
             elif stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode): add(name, e.path, st)
             else: sys.exit(f'[RED] pack_ipa: neither a file, a folder nor a symlink: {e.path}')
@@ -50,6 +61,7 @@ def entries(maps, skip, skip_suffix=()):
             if p + '/' not in seen:
                 add(p + '/', None, None); parents.add(p + '/')
         source_stat = os.stat(src)
+        if apple_double(src, source_stat): continue
         if stat.S_ISREG(source_stat.st_mode): add(arc, src, source_stat)
         else: add(arc + '/', src, source_stat); walk(src, arc)
     return out

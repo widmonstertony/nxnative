@@ -9,7 +9,7 @@
 # Environment IOSOUT=dir: the same MSL also goes through dm/ios/tools/ios_metal.compile to produce an iphoneos metallib + reflection (chain_metal records the iOS compile convention)
 # Final summary: success / failure counts and the distribution of reasons; distribution of driver segment read offsets (those outside the range the replay layer can fill are listed separately)
 import ast, inspect, os, re, sys, json, struct, hashlib, shutil, subprocess, tempfile, collections, threading, concurrent.futures as cf
-import dmsh_geometry, dmsh_atomic
+import dmsh_geometry, dmsh_atomic, dmsh_legacy_atomic
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
@@ -210,7 +210,13 @@ def bf_cache_publish(digest, fmsl, maclib, ioslib, fmeta):
 
 def write_refl(key, refl):
     for target, d in (('mac', out),) + ((('ios', IOSOUT),) if IOSOUT else ()):
-        atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, refl))
+        record = refl
+        if target == 'ios' and any(b.get('atomic') for b in refl.get('bindings', [])):
+            source = open(os.path.join(out, key + '_b.metal')).read()
+            with open(os.path.join(d, key + '_b.metallib'), 'rb') as library:
+                digest = hashlib.file_digest(library, 'sha256').hexdigest()
+            record = dmsh_legacy_atomic.reflection(source, refl, digest)
+        atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, record))
 
 def fetch_finish(key, src, refl):
     if refl['stage'] != 'ps': return refl
@@ -600,7 +606,7 @@ def unfillable(dr):
 
 RULES = []   # MSL rewrite rules attached by shader name (function, applicability test); the former dark-range remap toe has been removed (back to the original Switch brightness)
 # The first-stage code fingerprint does not include dmsh_fetch.py; readable-tile variants get a separate second-stage cache keyed on the generated MSL.
-CODE_FP = hashlib.sha256(source_without_rule_bodies().encode() + b''.join(b'\0' + open(m.__file__, 'rb').read() for m in (dmsh_chain, dmsh_geometry, dmsh_atomic) + ((ios_metal,) if IOSOUT else ()))).hexdigest()
+CODE_FP = hashlib.sha256(source_without_rule_bodies().encode() + b''.join(b'\0' + open(m.__file__, 'rb').read() for m in (dmsh_chain, dmsh_geometry, dmsh_atomic, dmsh_legacy_atomic) + ((ios_metal,) if IOSOUT else ()))).hexdigest()
 TOOL_FP = tool_fingerprint().encode()
 
 _CAST = ('as_type<int>(', 'as_type<uint>(')
@@ -751,6 +757,22 @@ def vs_depth(src):
     gl = body.replace('return out;', 'out.gl_Position.z = fma(out.gl_Position.z, 0.5, out.gl_Position.w * 0.5);\n    return out;')
     single = src[:m.start()] + gl
     return single, single + '\n' + re.sub(r'\bmain0\s*\(', 'main0_z(', body, count=1)
+
+def fs_dual(src):
+    """Keep MRT output 1, and add a separate entry for NVN's secondary blend source.
+    A pipeline using SRC1 reads that value at color(0), index(1), not color(1).
+    Only the return structure changes; resources, constants and shader arithmetic stay identical.
+    """
+    m = re.search(r'^.*\bfragment\s+main0_out\s+main0\s*\(', src, re.M)
+    st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
+    if not m or not st: return None
+    mem = re.findall(r'^\s*(\w+)\s+(\w+)\s*(\[\[[^\]]*\]\])?;', st.group(1), re.M)
+    colors = {int(c.group(1)): ty for ty, _, at in mem if (c := re.search(r'color\((\d+)\)', at))}
+    if set(colors) != {0, 1} or any(not ty.startswith(('float', 'half')) for ty in colors.values()): return None
+    struct = 'struct main0_out_d\n{\n' + ''.join(f'    {ty} {nm} {at.replace("[[color(1)]]", "[[color(0), index(1)]]")};\n' for ty, nm, at in mem) + '};\n'
+    ret = 'return main0_out_d{' + ', '.join(f'out.{nm}' for _, nm, _ in mem) + '};'
+    body = re.sub(r'\bfragment\s+main0_out\s+main0\s*\(', 'fragment main0_out_d main0_d(', src[m.start():], count=1).replace('return out;', ret)
+    return '\n' + struct + body
 
 def fs_uint(src):
     """Integer colour targets. With no PC version the translator declares every fragment output float; a shader writes an integer as the float with its bits (as_type<float>(…)), and Metal
@@ -943,11 +965,20 @@ def finish(key, w, j, c1):
         full, lay = vs_layer_entry(full)   # layer entry points for a slice-writing geometry shader (see vs_layer_entry)
         open(msl, 'w').write(full)
     fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
-    if fu: plain = src; open(msl, 'w').write(fu)
+    fd = fs_dual(src) if j['stage'] == 'ps' else None
+    if fu or fd: plain = src + (fd or ''); open(msl, 'w').write((fu or src) + (fd or ''))
     def compile_targets():   # the selected targets from the same MSL (MSL identical to one compiled before takes that library, dmsh_mtlcache.py)
         if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
-        if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
+        if 'ios' in TARGETS and IOSOUT:
+            ios_source = msl
+            native = open(msl).read()
+            if dmsh_legacy_atomic.needed(native):
+                lowered, _proof = dmsh_legacy_atomic.lower(native)
+                ios_source = msl + '.legacy-ios.metal'
+                open(ios_source, 'w').write(lowered)
+            MTL.compile('ios', ios_source, os.path.join(IOSOUT, key + '_b.metallib'))
     try: compile_targets()
+    except ValueError as e: return 'legacy atomic lowering failed', str(e), None
     except subprocess.CalledProcessError as e:
         if not lay and not fu: return 'metal failed', str(e)[:160], None
         open(msl, 'w').write(plain); lay = fu = None   # the layer and integer-output entry points are extras: a library that does not build with them is built without
@@ -958,7 +989,7 @@ def finish(key, w, j, c1):
     dr = drv_reads(src)
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
             'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
-            **({'entry_discard': 'main0_discard'} if discard else {}),
+            **({'entry_discard': 'main0_discard'} if discard else {}), **({'entry_d': 'main0_d'} if fd else {}),
             **({'entry_tf': 'main0_tf', 'tf_strides': [e['stride'] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),

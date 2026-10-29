@@ -48,7 +48,7 @@ int nvn_deswz_gpu_encode(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> src, ui
     return 0;
 }
 
-#if TARGET_OS_OSX
+#if TARGET_OS_OSX || defined(DM_NVN_MODERN_RENDERER)
 int nvn_deswz_gpu_encode_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTable> table,
                             id<MTLBuffer> params, size_t params_off, id<MTLBuffer> src, uint64_t src_off,
                             const nvn_texdesc *d, unsigned level, unsigned layer,

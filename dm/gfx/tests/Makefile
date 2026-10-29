@@ -376,3 +376,23 @@ run: storage-access
 t_float_pad: t_float_pad.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_float_pad.m $(MTL_T_SRC) $(FW)
 run: t_float_pad
+
+# Image-based interpolation has its own GPU kernels, outside the game shader chain.
+t_framegen: t_framegen.m ../nvn/nvn_framegen.m ../nvn/nvn_framegen.h ../nvn/nvn_framegen_kernels.h
+	clang -O2 -g -Wall -fobjc-arc -o $@ t_framegen.m ../nvn/nvn_framegen.m -framework Metal -framework Foundation
+.PHONY: check_t_framegen
+check_t_framegen: t_framegen
+	MTL_DEBUG_LAYER=1 ./t_framegen
+	MTL_DEBUG_LAYER=1 ./t_framegen --bgra
+run: check_t_framegen
+
+t_framegen_present: t_framegen_present.m t_framegen_screen.c $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_framegen_present.m t_framegen_screen.c $(MTL_T_SRC) $(FW)
+.PHONY: check_t_framegen_present
+check_t_framegen_present: t_framegen_present
+	MTL_DEBUG_LAYER=1 ./t_framegen_present
+	DM_PRESENT_UPSCALE=metalfx MTL_DEBUG_LAYER=1 ./t_framegen_present
+run: check_t_framegen_present
+
+t_atomic_image: t_atomic_image.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_atomic_image.m $(MTL_T_SRC) $(FW)

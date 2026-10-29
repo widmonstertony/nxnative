@@ -51,7 +51,12 @@ def main():
                           '# KEY_PAGE_OFF 0x8000\n# KEY_PAGE_SIZE 0x4000\n')
         shutil.copyfile(fixups, tables / fixups.name)
 
+    renderer = os.environ.get('DM_IOS_RENDERER', 'legacy')
+    if renderer not in ('legacy', 'metal4'):
+        raise ValueError('DM_IOS_RENDERER must be legacy or metal4')
+    minimum_os = '26.0' if renderer == 'metal4' else '16.1'
     env = dict(os.environ, GAME=profile.id, DM_GAME=profile.id,
+               DM_IOS_DEPLOYMENT_TARGET=minimum_os,
                DM_BUNDLE_ID='org.nxnative.ci', DM_DISPLAY_NAME='CI build fixture',
                DM_APP_VERSION='1.0', DM_APP_CATEGORY=profile.get('app_category'),
                DM_TEAM_ID='', DM_SCHEME_NAME='DmIOS', DM_APPICON='',
@@ -89,6 +94,8 @@ def main():
 
     app = derived / 'Build/Products/Release-iphoneos/DmIOS.app'
     info = plistlib.loads((app / 'Info.plist').read_bytes())
+    if info.get('MinimumOSVersion') != minimum_os:
+        raise RuntimeError(f'Wrong deployment target: {info.get("MinimumOSVersion")} != {minimum_os}')
     executable = app / info['CFBundleExecutable']
     if not executable.is_file():
         raise RuntimeError(f'No linked executable: {executable}')

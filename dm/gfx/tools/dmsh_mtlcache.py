@@ -80,7 +80,7 @@ class Cache:
         stamp_file = os.path.join(self.root, 'filled.json')
         try: stamps = json.load(open(stamp_file))
         except (OSError, ValueError): stamps = {}
-        names = set(os.listdir(mac_dir)); stems = sorted(n[:-6] for n in names if n.endswith('_b.metal'))
+        names = set(os.listdir(mac_dir)); stems = sorted(n[:-6] for n in names if n.endswith('_b.metal') and not n.startswith('._'))
         todo, notes = {}, []
         for target, d in (('mac', mac_dir), ('ios', ios_dir)):
             if targets is not None and target not in targets: continue   # checking an earlier build compiles samples too

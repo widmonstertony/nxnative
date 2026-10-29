@@ -38,5 +38,11 @@ for s in srcs:
     flat = os.path.relpath(s, os.path.dirname(host)).replace('/', '__')   # Same-named files in different directories do not collide
     os.symlink(s, f'{gen}/src/{flat}')
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
+renderer = os.environ.get('DM_IOS_RENDERER', 'legacy')
+if renderer not in ('legacy', 'metal4'):
+    raise SystemExit('[RED] DM_IOS_RENDERER must be legacy or metal4')
+if renderer == 'metal4':
+    defs.append('-DDM_NVN_MODERN_RENDERER=1')
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
+print('IPHONEOS_DEPLOYMENT_TARGET = ' + ('26.0' if renderer == 'metal4' else '16.1'))
 print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))

@@ -728,7 +728,7 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 
 - **Cause:** SPIRV-Cross binds the push constant block at `buffer(0)`, where the first renumbered uniform buffer goes.
 - **Fix:** the translator moves it to the next free buffer slot (`p:0.0=<slot>` in the table) and the replay sets the recorded bytes there (`setVertexBytes` / `setFragmentBytes`, the pipeline layout's range).
-- **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md).
+- **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md).
 
 ### Descriptor arrays bound to consecutive slots
 
@@ -755,7 +755,7 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 
 - **Symptom:** Metal refuses the pipeline: "Fragment shader does not write to render target color(0), index(1)".
 - **Cause:** the GX shaders write the second blend source as an ordinary output at location 1 (no `Index` decoration), and pipelines blend with `SRC1` factors; NVIDIA's hardware feeds MRT 1 to source 1.
-- **Fix:** `vk_shaders.py` builds a variant `vk_<key>_d` with that output at `[[color(0), index(1)]]`, which the host takes for pipelines whose blend reads source 1.
+- **Fix:** `vk_shaders.py` builds a variant `vk_<key>_d` with that output at `[[color(0), index(1)]]`. NVN uses `dmsh_build.py` to append `main0_d` and records `entry_d`; `shader_load` retains its Metal 4 function descriptor and specializes its function constants. `pso_desc` selects it for an ordinary floating-point target-0 pipeline reading source 1, preserving `main0` for MRT draws. Metal disallows a dual-source pipeline with any additional color attachments. NVN keeps the guest targets bound but opens a physical pass with color 0 only, lands pending clears on other targets first, and reopens the full set when ordinary MRT draws return. Tile-fetch merge proofs reject dual-source draws; direct clears can reopen the full set. The secondary value is not also written to MRT 1. Tile-fetch variants are generated only from the original entry. No blending factors are zeroed when output 1 is present. A chain rebuild and matching host are required. `t_missing_src1` covers both compiler paths with actual pixel values, ordinary MRT preservation, and optional external Arceus shaders via `DM_TEST_DUAL_SHADER_DIR`.
 - **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md).
 
 ### Scaled and three-component vertex formats
@@ -806,6 +806,13 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 ## OpenGL layer
 
 Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.4.0) and Balatro (LÖVE 11.4, "love-nx", with SDL and LuaJIT) render with **NVIDIA's desktop OpenGL 4.5 core profile through EGL**, not NVN. The host implements GL itself on Metal (`dm/gfx/gl/hle_gl.m`), as it does Vulkan for Hades; NVIDIA's GL driver (`subsdk0`) is not loaded. Balatro's graphics module is LÖVE's own OpenGL backend, so its choices follow what the context reports.
+
+### EGL function lookup returns null for current-display queries
+
+- **Symptom:** run-time GL shader capture exits at a null `blr x0`, before any shaders are captured. Fate/stay night REMASTERED 1.4.2 calls `eglGetProcAddress("eglGetCurrentDisplay")` at `main+0x589bf4`, then calls its result without a null check.
+- **Cause:** the procedure resolver accepted only names starting with `gl`, and current display/context/surface queries were absent. The imported EGL entry points and the dynamic lookup path therefore disagreed.
+- **Fix:** resolve registered EGL names through the same import table, retaining big-stack wrappers. Current queries return the calling thread's actual `eglMakeCurrent` bindings, and unbinding/releasing a thread clears them. Unknown EGL names still return null. `make -C dm/gfx/tests GAME=010014E00DB56000 gl-imports` checks both procedure paths, missing names, distinct read/draw surfaces, invalid query errors and thread isolation in both diagnostic modes.
+- **Found on:** provisional Fate/stay night REMASTERED and Fate/hollow ataraxia REMASTERED capture attempts. Passing the import regression is not proof of successful capture or gameplay; further capture failures remain open.
 
 ### Games that render with desktop OpenGL through EGL
 
@@ -899,3 +906,25 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 ### GL movies decoded by the SDK's movie library
 
 - **Found on:** [Digimon Story Cyber Sleuth: Complete Edition](../../dm/games/010014E00DB56000/README.md): the USM movies' H.264 is decoded through the SDK's movie library (the host's decoder) into NV12 buffers (3,110,400 bytes a 1920x1080 frame); the game uploads the planes into a `GL_RED` and a `GL_RG` texture (two `glTexSubImage2D` a frame) and converts YUV in its own shader (in `main`, `SamplerY` / `SamplerUV`).
+
+
+### Experimental image optical-flow presentation
+
+- **Symptom:** A 120 Hz display request and final spatial scaling alone leave a costly 3D scene below 60 rendered frames per second. Interpolating with unrelated or placeholder depth/motion data produces invalid images.
+- **Cause:** Apple MetalFX frame interpolation requires matched game resources that are not yet identified for Arceus. This implementation does not use `MTLFXFrameInterpolator` and does not invent those inputs.
+- **Experimental alternative:** `DM_FRAMEGEN=opticalflow` copies the valid present crop into owned history, builds a three-level luminance pyramid, estimates bidirectional motion, and synthesizes the midpoint from warped images. Inconsistent/occluded pixels and detected cuts fall back to current pixels. UIKit controls are composed afterwards; the game's own HUD remains image-based and may show artifacts. First frames, pauses and suspend/resume reset history. The shader is a host module independent of DMSH_CHAIN.
+- **Scheduling:** A 120 Hz display-link tick submits the midpoint, the next submits the retained real image, then the next game frame is eligible. Guest texture ownership ends only after the real submission completes; allocator and parameter slots are fenced per drawable, not per guest ticket. Pending pairs are dropped safely on suspend or display-link loss. The exact Arceus timing adapter limits real work to 60 when the requested target is higher and interpolation is enabled, while preserving elapsed game time. The iOS front end also selects a 60 Hz real-frame pacer before guest startup for this combination; the display link still targets the screen's 120 Hz capability. This is a maximum target, not a measured rate. An inactive interpolation path displays real frames normally.
+- **Upscaling and measurement:** The exact-build launcher defaults to native handheld mode and MetalFX spatial scaling; saved choices still win. Generated and real images keep the same pixel format, avoiding a spatial-scaler rebuild on alternating frames. Actual render dimensions must be measured in the game. The overlay separates guest enqueues from actual presented drawables; GPU feedback logs separate real/upscale and flow/upscale costs. No sustained 120 fps, latency benefit or iOS 16/17 compatibility is established by the synthetic tests.
+- **Checks:** `check_t_framegen` reads back a moving object's generated midpoint and scene-cut output on a real GPU. `check_t_framegen_present` checks paired submission, texture release, suspend and watchdog handling. Existing crop/allocator tests, elapsed-clock tests, launcher tests and a complete iOS build also run. Air gameplay testing is delegated to the user.
+- **Found on:** [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md), experimental modern-Metal host. The separate exact-build Z-A snapshot also passes the production GPU pair/allocator tests and a complete iOS build with its original shader chain; its Air gameplay/performance validation remains open.
+
+
+The fullscreen HUD adapter now keeps the original logical canvas (including
+handheld sizes) and adapts only full-screen 16:9 rectangles. Unrelated menu
+panels retain their dimensions and origin. The image-only interpolator keeps
+stable real pixels and protects a narrow border around stable high-contrast
+strokes; output alpha comes from the current real frame. This reduces text and
+icon distortion without changing controller mappings. It is a conservative
+image heuristic, not a separate engine UI layer: moving or translucent UI still
+requires user evaluation. Regression covers docked/handheld canvases, panel
+rejection and stationary HUD strokes over a moving scene on the GPU.

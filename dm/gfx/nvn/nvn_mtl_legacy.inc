@@ -3536,6 +3536,7 @@ static _Atomic int g_depth_zero, g_vs_loaded;
 static NSString *nonpoint_digest(NSData *data);
 #include "nvn_layered_slices.h"
 #include "nvn_zero_image_library.h"
+#include "nvn_atomic_image_record.h"
 #include "nvn_sampler_limit.h"
 static id<MTLLibrary> bounded_atomic_library(NSString *key, NSError **error) {
     NSString *root = [g_msl_dir stringByAppendingPathComponent:@"atomic-v1"];
@@ -3565,9 +3566,17 @@ void mtl_set_depth_zero(int on) {
 static NvShader *shader_load(NSString *pc, int stage) {
     NSError *e = nil;
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
-    id<MTLLibrary> lib = lib_from_file(lp, &e);
     NSData *jd = [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.json", g_msl_dir, pc]];
     NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
+    if (j[@"legacy_image_atomic"]) {
+        NSData *bytes = [NSData dataWithContentsOfFile:lp options:NSDataReadingMappedIfSafe error:nil];
+        NSString *reason = nvn_atomic_image_record_error(j, nonpoint_digest(bytes));
+        if (stage != 1 || !bytes || reason) {
+            MLOG("[RED] Atomic-image library %s rejected before loading: %s", pc.UTF8String, reason.UTF8String ?: "wrong stage or missing library");
+            return nil;
+        }
+    }
+    id<MTLLibrary> lib = lib_from_file(lp, &e);
     if (!lib || !j) { MLOG("【红】加载着色器失败 %s：%s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "无反射 json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】着色器 %s 的翻译链版本 %s 与本宿主期望的 %s 不符", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
     NvShader *o = [NvShader new];
@@ -3591,6 +3600,12 @@ static NvShader *shader_load(NSString *pc, int stage) {
     }
     char err[160];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
+    if (j[@"legacy_image_atomic"]) {
+        NSDictionary *proof = j[@"legacy_image_atomic"];
+        o->zero_image_variant = 3; o->zero_image_aid = [proof[@"image_aid"] intValue];
+        o->zero_image_reg = [proof[@"image_reg"] intValue]; o->zero_image_format = MTLPixelFormatR32Uint;
+        o->specialized = 1;
+    }
     if (stage == 1 && !g_fragment_image_native) {
         int images = 0; for (int i = 0; i < o->rf.nb; i++) images += o->rf.b[i].kind == NVN_RB_IMG && o->rf.b[i].rw;
         if (images) {

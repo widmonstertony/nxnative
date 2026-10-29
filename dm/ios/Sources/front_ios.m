@@ -12,6 +12,11 @@
 #include "haptics_apple.h"
 #include "DmAudioRetry.h"
 #include "DmDisplayRefresh.h"
+#include <stdatomic.h>
+static _Atomic int g_ios_screen_hz=60;
+int front_screen_max_fps(void) { return atomic_load(&g_ios_screen_hz); }
+void mtl_framegen_counts(uint64_t *,uint64_t *,uint64_t *);
+int mtl_framegen_supported(void);
 #include "DmGraphicsCapabilities.h"
 
 UIView *dm_gamepad_view(CGRect frame);
@@ -19,11 +24,14 @@ void dm_gamepad_set_active(int active);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
 int dm_za_fullscreen_active(void);
+int dm_game_fullscreen_active(void);
 // Implemented by the iOS 16-compatible Swift launcher.
 bool dm_show_launcher(void *view_controller, void (*done)(void));
 
 static CAMetalLayer *g_layer;
 static void front_ios_power_watch(void);
+static void front_ios_display_refresh_start(UIView *view);
+static void front_ios_present_hz_clamp(UIView *view);
 static void front_ios_audio_watch(void);
 static UILabel *front_ios_fps_label(void);
 static void front_ios_display_refresh_start(UIView *view);
@@ -59,10 +67,12 @@ static void front_ios_present_hz_clamp(UIView *view);
 - (void)startGame;
 @end
 static DmRootVC *g_root;
-void front_za_fullscreen_ready(void) {
+void front_fullscreen_ready(void);
+void front_za_fullscreen_ready(void) { front_fullscreen_ready(); }
+int dm_game_fullscreen_active(void);
+void front_fullscreen_ready(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [g_root.view setNeedsLayout];
-        [g_root.view layoutIfNeeded];
+        [g_root.view setNeedsLayout]; [g_root.view layoutIfNeeded];
     });
 }
 static void launcher_done(void) { [g_root startGame]; }
@@ -83,14 +93,30 @@ static void launcher_done(void) { [g_root startGame]; }
 // The game view, the pad and the frame-rate counter are made once the launcher has set the switches they read (DM_SHOW_FPS, DM_METAL_HUD); the host's loading began at app launch (main.m)
 - (void)startGame {
     if (self.game) return;
-    const char *fullscreen = getenv("DM_ZA_FULLSCREEN"), *aspect = getenv("DM_ZA_ASPECT");
-    if (fullscreen && !strcmp(fullscreen, "1") && (!aspect || !strcmp(aspect, "auto"))) {
+    const char *gameAspect = getenv("DM_ASPECT");
+    if (!gameAspect || !strcmp(gameAspect, "auto")) {
+        CGSize size = self.view.bounds.size;
+        if (size.width >= size.height && size.height > 0) {
+            char value[96]; snprintf(value, sizeof value, "%.9g:%.9g", (double)size.width, (double)size.height);
+            setenv("DM_ASPECT", value, 1);
+        }
+    }
+    const char *fullscreen = getenv("DM_ZA_FULLSCREEN"), *za_aspect = getenv("DM_ZA_ASPECT");
+    if (fullscreen && !strcmp(fullscreen, "1") && (!za_aspect || !strcmp(za_aspect, "auto"))) {
         CGSize size = self.view.bounds.size;
         if (size.width >= size.height && size.height > 0) {
             char value[96];
             snprintf(value, sizeof value, "%.9g:%.9g", (double)size.width, (double)size.height);
             setenv("DM_ZA_ASPECT", value, 1);
             LOG("front end: Z-A fullscreen aspect %s from game window", value);
+        }
+    }
+    const char *aspect = getenv("DM_ASPECT");
+    if (!aspect || !strcmp(aspect, "auto")) {
+        CGSize size = self.view.bounds.size;
+        if (size.width >= size.height && size.height > 0) {
+            char value[96]; snprintf(value, sizeof value, "%.9g:%.9g", (double)size.width, (double)size.height);
+            setenv("DM_ASPECT", value, 1);
         }
     }
     front_hud_env();   // before the game view makes its device (an env file's DM_METAL_HUD sets it in main.m already)
@@ -105,23 +131,26 @@ static void launcher_done(void) { [g_root startGame]; }
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
     if (self.fps) [self.view addSubview:self.fps];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
-    front_ios_display_refresh_start(self.game);
-    front_ios_present_hz_clamp(self.game);
     UIApplication.sharedApplication.idleTimerDisabled = YES;
+    if (!mtl_framegen_supported() && getenv("DM_FRAMEGEN") && strcmp(getenv("DM_FRAMEGEN"), "off")) {
+        setenv("DM_FRAMEGEN", "off", 1);
+        LOG("frame generation unavailable on this renderer; retaining real-frame pacing");
+    }
+    front_ios_present_hz_clamp(self.game);
+    front_ios_display_refresh_start(self.game);
     front_ios_boot();
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
     CGFloat w = b.size.width, h = b.size.height;
-    const char *fullscreen = getenv("DM_ZA_FULLSCREEN");
-    if (!(fullscreen && !strcmp(fullscreen, "1") && dm_za_fullscreen_active())) {
+    if (!dm_za_fullscreen_active() && !dm_game_fullscreen_active()) {
         if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
     }
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
-        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), (getenv("DM_FRAMEGEN") && !strcmp(getenv("DM_FRAMEGEN"),"opticalflow"))?190:64, 22);
     }
 }
 - (void)viewDidAppear:(BOOL)a {
@@ -171,6 +200,8 @@ uint64_t mtl_present_count(void);
 - (void)tick:(CADisplayLink *)link;
 - (void)setActive:(BOOL)active;
 - (void)invalidate;
+- (void)activated:(NSNotification *)notification;
+- (void)deactivated:(NSNotification *)notification;
 @end
 @implementation DmDisplayRefreshObserver
 - (instancetype)initWithView:(UIView *)view requested:(int)requested {
@@ -179,6 +210,8 @@ uint64_t mtl_present_count(void);
         _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
         _link.paused = YES;
         [self configure];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(activated:) name:UIApplicationDidBecomeActiveNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(deactivated:) name:UIApplicationWillResignActiveNotification object:nil];
         [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
     return self;
@@ -186,6 +219,7 @@ uint64_t mtl_present_count(void);
 - (void)configure {
     UIScreen *screen = _view.window.screen ?: UIScreen.mainScreen;
     _supported = (int)screen.maximumFramesPerSecond;
+    atomic_store(&g_ios_screen_hz,_supported);
     _preferred = dm_display_hz_select(_requested, _supported);
     _link.preferredFrameRateRange = CAFrameRateRangeMake(MIN(60, _preferred), _preferred, _preferred);
     dm_display_probe_reset(&_probe);
@@ -207,7 +241,9 @@ uint64_t mtl_present_count(void);
             result.min_period_ms, result.max_period_ms, result.presented_fps,
             (unsigned long long)result.presented_frames, result.seconds);
 }
-- (void)invalidate { [_link invalidate]; _link = nil; }
+- (void)activated:(NSNotification *)notification { (void)notification; [self setActive:YES]; }
+- (void)deactivated:(NSNotification *)notification { (void)notification; [self setActive:NO]; }
+- (void)invalidate { [NSNotificationCenter.defaultCenter removeObserver:self]; [_link invalidate]; _link = nil; }
 @end
 static DmDisplayRefreshObserver *g_display_refresh;
 static void front_ios_display_refresh_start(UIView *view) {
@@ -224,6 +260,11 @@ static void front_ios_present_hz_clamp(UIView *view) {
     // NVN pacer has not cached its explicit environment request at this point.
     // Never turn the existing 60 Hz default into an implicit high-rate mode.
     int requested = dm_display_hz_parse(getenv("DM_PRESENT_HZ"));
+    const char *flow=getenv("DM_FRAMEGEN");
+    if(flow && !strcmp(flow,"opticalflow") && requested>60) {
+        setenv("DM_PRESENT_HZ","60",1); requested=60;
+        LOG("image optical flow: real-frame pacing 60, display link target 120; elapsed game clock retained");
+    }
     if (requested != 120) return;
     UIScreen *screen = view.window.screen ?: UIScreen.mainScreen;
     int supported = (int)screen.maximumFramesPerSecond;
@@ -240,10 +281,17 @@ static UILabel *front_ios_fps_label(void) {
     l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
     l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
     l.text = @"-- fps";
-    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
+    __block uint64_t n0 = mtl_present_count(), e0=0,d0=0,r0=0;
+    mtl_framegen_counts(&e0,&d0,&r0); __block double t0 = CACurrentMediaTime();
+    BOOL flow=getenv("DM_FRAMEGEN") && !strcmp(getenv("DM_FRAMEGEN"),"opticalflow");
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
         (void)t; uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
-        if (now - t0 < 1.5) l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];   // a longer span is the time in the background: no reading
+        uint64_t engine,shown,real; mtl_framegen_counts(&engine,&shown,&real);
+        if (now-t0<1.5 && now>t0) {
+            if(flow) l.text=[NSString stringWithFormat:@"渲染 %.0f · 显示 %.0f",(engine-e0)/(now-t0),(shown-d0)/(now-t0)];
+            else l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];
+        }
+        e0=engine; d0=shown; r0=real;   // a longer span is the time in the background: no reading
         n0 = n; t0 = now;
     }];
     LOG("front end: frame-rate counter on");
@@ -277,7 +325,7 @@ void front_progress(const char *title, long done, long total) {
     });
 }
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
-int front_screen_max_fps(void) { return (int)UIScreen.mainScreen.maximumFramesPerSecond; }
+
 void front_screen_match(int fps) { (void)fps; }   // iOS chooses the display mode; the Metal layer is paced separately.
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
 

@@ -11,6 +11,13 @@
 
 ## IPA archives
 
+### An exFAT-built IPA restores resource forks and cannot be signed
+
+- **Symptom:** after extracting an IPA with `ditto`, `codesign` rejects the app with `resource fork, Finder information, or similar detritus not allowed`.
+- **Cause:** exFAT keeps macOS extended metadata in AppleDouble `._` sidecars. The packer included these files, and extraction restored their resource forks onto the app's files.
+- **Fix:** `pack_ipa.py` excludes regular `._` files only when their first eight bytes identify an AppleDouble version 2 header, including explicitly mapped files. Ordinary game files with a `._` prefix or an unrelated filename containing those bytes remain packed. For an already extracted disposable app stage, remove its extended attributes before signing; do not modify source game files or device saves. Regression tests cover nested metadata, explicit mappings, retained game content and repeat packs.
+- **Found on:** the provisional Pokémon Legends: Arceus package, which contained 30,304 AppleDouble entries on an exFAT USB SSD; signing and device gameplay remain separate validation steps.
+
 ### A streamed file changes size and the IPA fails its CRC check
 
 - **Symptom:** packing succeeds, but `unzip -t` or Python's `ZipFile.testzip()` reports a bad CRC for a large deflated file.

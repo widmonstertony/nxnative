@@ -64,7 +64,8 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
     id<MTLTexture> texture = (__bridge id<MTLTexture>)view;
     NSUInteger bytes = 0; uint32_t layout[6];
     int valid = tid > 0 && tid < g_ntreg && g_treg[tid].ok &&
-        nvn_zero_image_layout(texture, layout, &bytes) && layout[2] >= 3 &&
+        (fragment->zero_image_variant == 3 ? nvn_atomic_2d_layout(texture, layout, &bytes) :
+            (nvn_zero_image_layout(texture, layout, &bytes) && layout[2] >= 3)) &&
         (!fragment->zero_image_format || texture.pixelFormat == (MTLPixelFormat)fragment->zero_image_format) &&
         texture.storageMode != MTLStorageModeMemoryless;
     const tex_t *destination = valid ? &g_treg[tid].t : NULL;
@@ -78,6 +79,34 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
             valid &= fragment->zero_image_variant == 2 && !fragment->rf.color_mask && !R.clear_c[i];
         }
         valid &= !zero_image_alias(destination, R.rt.depth);
+    }
+    // The atomic shadow must not hide writes from any shader read in the same
+    // draw. Dynamic/storage bindings are excluded by the recorded ABI. Constant
+    // buffers still refer to guest memory, so check their ranges as well as
+    // sampled texture views and attachments before capturing the image.
+    if (valid && fragment->zero_image_variant == 3) {
+        for (int i = 0; i < fragment->rf.nb && valid; i++) {
+            const nvn_rbind *b = &fragment->rf.b[i];
+            if (b->kind == NVN_RB_TEX) {
+                if (b->reg >= NTEX) { valid = 0; break; }
+                int read_tid = (int)(S.tex[1][b->reg] & 0xfffff);
+                if (!read_tid) continue; // The existing argument encoder supplies a zero texture.
+                valid = read_tid > 0 && read_tid < g_ntreg && g_treg[read_tid].ok &&
+                    !zero_image_alias(destination, &g_treg[read_tid].t);
+            } else if (b->kind == NVN_RB_CBUF) {
+                if (b->reg >= 16) { valid = 0; break; }
+                const p_bind_buf *u = &S.ubo[1][b->reg];
+                if (!u->addr || !u->size) continue;
+                uint64_t dp = (uintptr_t)destination->mem, dn = destination->L.size;
+                valid = dp && dn && !(dp <= u->addr ? u->addr - dp < dn : dp - u->addr < u->size);
+            } else if (b->kind == NVN_RB_IMGA) {
+                valid = b->aid == fragment->zero_image_aid && b->reg == fragment->zero_image_reg && b->n <= 1;
+            } else {
+                valid = b->kind == NVN_RB_SUPPORT || b->kind == NVN_RB_C1 ||
+                    b->kind == NVN_RB_DRV0 || b->kind == NVN_RB_DRV2 ||
+                    b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPI;
+            }
+        }
     }
     uint64_t serial = valid ? g_treg[tid].t.serial : 0;
     pthread_mutex_unlock(&g_rmu);

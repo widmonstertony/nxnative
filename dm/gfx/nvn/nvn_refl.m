@@ -1,5 +1,6 @@
 // Shader reflection json (B: produced by translating the original Switch shaders, output of tools/dmsh_build.py) → fixed-length C arrays (nvn_refl.h)
 #import "nvn_refl.h"
+#include "nvn_atomic_image_record.h"
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +35,10 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     memset(o, 0, sizeof *o);
     #define FAIL(...) do { free(o->c1); o->c1 = NULL; snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("not a B reflection (route ≠ B; route A / PC-chain reflection is retired)");
+    if (j[@"legacy_image_atomic"]) {
+        NSString *reason = nvn_atomic_image_record_error(j, nil);
+        if (reason) FAIL("%s", reason.UTF8String);
+    }
     {   // Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
         NSArray *bs = j[@"bindings"];
         if (![bs isKindOfClass:[NSArray class]]) FAIL("missing bindings");
@@ -70,6 +75,11 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 if (n < 1 || n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n);
                 r->kind = [k isEqualToString:@"tex_c2a"] ? NVN_RB_TEXA : NVN_RB_SAMPA; r->n = (uint8_t)n; r->off = (uint16_t)[b[@"off"] intValue];
                 if (r->kind == NVN_RB_TEXA) dummy_kind(el, &r->dtt, &r->dpf);
+            }
+            else if ([k isEqualToString:@"img_atomic_2d"]) {
+                NSString *reason = nvn_atomic_image_record_error(j, nil);
+                if (reason) FAIL("%s", reason.UTF8String);
+                r->kind = NVN_RB_IMGA; r->rw = 1; r->dtt = MTLTextureType2D; r->dpf = NVN_DPF_UINT;
             }
             else if ([k isEqualToString:@"img"]) { r->kind = NVN_RB_IMG; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf);   // rw: the shader writes it (access::write / read_write; a load-only view of the slot is not)
                 r->rw = [ty isKindOfClass:[NSString class]] && ([ty containsString:@"access::write"] || [ty containsString:@"access::read_write"]); r->atom = [b[@"atomic"] boolValue]; }

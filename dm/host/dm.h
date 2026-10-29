@@ -91,18 +91,25 @@ void *guest_sym(const char *name);
 module_t *module_of(const void *p);
 // Gate dispatch: rewritten svc / timer reads come in through the common entry, ret_addr = the return point of that gate block, regs points to the saved x0..x30
 uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
-// Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): read-only callbacks, called on a gate hit once attached
+// Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): callbacks of the saved frame, called on a gate hit once attached
 // IDs 19 / 20 belonged to the removed movie request-ring workaround. Old rewritten modules may still contain them; without callbacks those gates are harmless passes through.
 enum { OBS_UE_MALLOC = 21,                                       // DRAGON QUEST VII Reimagined 1.2.0: Unreal's allocator object just made (hle_uemalloc.c)
        OBS_REGION_ASK = 22, OBS_REGION_GOT = 23, OBS_REGION_FREE = 24,   // the SDK's address regions, gates the rewriter places by symbol in every sdk (patch_nso.py "Address regions", hle_svc.c)
        OBS_STDALLOC_INIT = 25,                                         // StandardAllocator::Initialize's entry, the same way: the one gate whose callback writes a register (hle_svc.c)
        OBS_ZA_CLOCK_DELTA = 26, OBS_ZA_INTERVAL = 27,                  // Pokemon Legends: Z-A 2.0.2 timing diagnostics / optional interval experiment
        OBS_ZA_SKILL_VISIBILITY = 28, OBS_ZA_SKILL_DESTROY = 29,       // Read-only observation of the actual move layout lifetime
-       OBS_ZA_HUD_RECT = 30, OBS_MAX = 31 };
+       OBS_ZA_HUD_RECT = 30,
+       OBS_ARCEUS_ASPECT = 31, OBS_ARCEUS_HUD = 32,
+       OBS_VIOLET_CAMERA = 33, OBS_VIOLET_HUD = 34,
+       OBS_ARCEUS_TIMING = 35,
+       OBS_MAX = 36 };
+
 // A gate number's bits from 8 up are a parameter for its callback (OBS_REGION_GOT: the register that holds the address). Callbacks read the registers; a write to x0–x29 takes
-// effect when the gate returns (entry.S restores them from the frame), which only OBS_STDALLOC_INIT does
+// effect when the gate returns. Exact-build display callbacks may also adjust selected saved values; gate_frame.h describes scalar SIMD lanes.
 void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param));
 int gate_obs_present(int id);
+int dm_game_fullscreen_active(void);
+void dm_game_fullscreen_activate(void);
 uint64_t now_ns(void);
 uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance while frozen, guest_clock_freeze)
 int dm_detclock_enabled(void);

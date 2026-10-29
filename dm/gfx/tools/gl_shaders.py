@@ -66,7 +66,9 @@ def sources(roots):
                         st = 'vert' if nm.endswith('_vp.shad') else 'frag' if nm.endswith('_fp.shad') else None
                         yield text_of(a.read(nm)), st, f'/{os.path.relpath(p, r)}:{nm}'
                 elif fn.endswith(('.vert', '.frag')):
-                    with open(p, 'rb') as f: source = text_of(f.read())
+                    with open(p, 'rb') as f: data = f.read()
+                    if fn.startswith('._') and data[:8] == b'\x00\x05\x16\x07\x00\x02\x00\x00': continue
+                    source = text_of(data)
                     yield source, fn.rsplit('.', 1)[1], '/' + os.path.relpath(p, r)
 
 # NVIDIA's GLSL compiler accepts more than the GLSL ES 3.20 specification, and glslang does not; these fix-ups run on the preprocessed text (glslang -E, so macros are expanded):
@@ -103,13 +105,34 @@ def fixups(t):
 def glsl_type(t, refl):
     return refl['types'][t]['name'] if t in refl.get('types', {}) else t
 
+def legacy_interface(pre, stage):
+    """Lower GLSL 1.10/1.20 interfaces to their equivalent explicit form.
+
+    A source without #version is a legacy source, not an empty string. Keep
+    the original source hash; this changes only the compiler input dialect.
+    Other unsupported legacy built-ins are left for the compiler to reject.
+    """
+    version = re.search(r'^\s*#version\s+(\d+)\b[^\n]*', pre, re.M)
+    if version and int(version[1]) > 120: return pre
+    if version: pre = pre[:version.start()] + pre[version.end():]
+    if stage == 'vert': pre = re.sub(r'\battribute\b', 'in', pre)
+    pre = re.sub(r'\bvarying\b', 'out' if stage == 'vert' else 'in', pre)
+    declaration = ''
+    if stage == 'frag' and re.search(r'\bgl_FragColor\b', pre):
+        name = 'dm_legacy_fragment_color'
+        while re.search(r'\b' + name + r'\b', pre): name += '_'
+        pre = re.sub(r'\bgl_FragColor\b', name, pre)
+        declaration = 'layout(location=0) out vec4 ' + name + ';\n'
+    return '#version 450\n' + declaration + pre
+
 def translate(src, stage, key, tmp):
     """GLSL → MSL; returns (msl path, table fields) or an error string"""
     g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')
     open(g + '.in', 'wb').write(src)
     r = subprocess.run(['glslangValidator', '-E', '-S', stage, g + '.in'], capture_output=True, text=True)
     if r.returncode: return 'glslang -E: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
-    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first
+    at = r.stdout.find('#version')
+    pre = legacy_interface(r.stdout[at:] if at >= 0 else r.stdout, stage)
     open(g, 'w').write(fixups(pre))
     r = subprocess.run(['glslangValidator', '-V', '-R', '--aml', '--amb', '-S', stage, g, '-o', spv], capture_output=True, text=True)
     if r.returncode: return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]

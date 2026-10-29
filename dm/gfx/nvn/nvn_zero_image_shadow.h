@@ -18,9 +18,9 @@ static NSUInteger nvn_zero_image_bytes(MTLPixelFormat format) {
     }
 }
 // ABI: width, height, layers, words/pixel, words/row, words/image.
-static int nvn_zero_image_layout(id<MTLTexture> texture, uint32_t layout[6], NSUInteger *bytes) {
+static int nvn_image_shadow_layout(id<MTLTexture> texture, uint32_t layout[6], NSUInteger *bytes) {
     NSUInteger pixel = nvn_zero_image_bytes(texture.pixelFormat), w = texture.width, h = texture.height, n = texture.arrayLength;
-    if (!texture || texture.textureType != MTLTextureType2DArray || texture.sampleCount != 1 ||
+    if (!texture || (texture.textureType != MTLTextureType2DArray && texture.textureType != MTLTextureType2D) || texture.sampleCount != 1 ||
         !pixel || !w || !h || !n || w > UINT32_MAX || h > UINT32_MAX || n > UINT32_MAX ||
         w > (NSUIntegerMax - 255) / pixel) return 0;
     NSUInteger row = (w * pixel + 255) & ~(NSUInteger)255;
@@ -31,6 +31,15 @@ static int nvn_zero_image_layout(id<MTLTexture> texture, uint32_t layout[6], NSU
     layout[3] = (uint32_t)(pixel / 4); layout[4] = (uint32_t)(row / 4); layout[5] = (uint32_t)(image / 4);
     *bytes = image * n;
     return 1;
+}
+// Keep the established multi-layer zero-write contract unchanged. A separate
+// entry point exposes the single-layer R32Uint layout to atomic-max lowering.
+static int nvn_zero_image_layout(id<MTLTexture> texture, uint32_t layout[6], NSUInteger *bytes) {
+    return texture.textureType == MTLTextureType2DArray && nvn_image_shadow_layout(texture, layout, bytes);
+}
+static int nvn_atomic_2d_layout(id<MTLTexture> texture, uint32_t layout[6], NSUInteger *bytes) {
+    return texture.textureType == MTLTextureType2D && texture.pixelFormat == MTLPixelFormatR32Uint &&
+        texture.arrayLength == 1 && nvn_image_shadow_layout(texture, layout, bytes);
 }
 static void nvn_zero_image_copy(id<MTLBlitCommandEncoder> blit, id<MTLTexture> texture,
         id<MTLBuffer> buffer, const uint32_t layout[6], BOOL to_texture) {

@@ -8,6 +8,8 @@ DM_AOC_DIR	path	Folder of add-on content: one numbered subfolder per DLC index h
 DM_AOC_OWNED	switch	`0` reports no add-on content even when `DM_AOC_DIR` has some, for runs without the DLC
 DM_APPICON	path	Xcode asset-catalog app-icon name written by `build_ipa.sh` and reused by generated iOS/tvOS project settings
 DM_APP_VERSION	switch	Overrides the IPA's version in `build_ipa.sh`; by default it is the packed game's display version from its control data (the update's when one is packed)
+DM_ARCEUS_FPS	player	Exact supported Arceus build: native 0 or elapsed-clock target 30/60/120; optical-flow mode limits real work to 60
+DM_ASPECT	player	Requested game camera aspect ratio for the available exact-build display adapter
 DM_AUDIO	switch	`1` plays audio through Core Audio, `0` uses the silent sink; real output is the default on iOS, the silent sink on the Mac (the Mac launcher sets `1`)
 DM_AUDIO_DUMP	diagnostic	`=<file>` writes every PCM block the game appends as is (16-bit, 48 kHz, channel count as in the OpenAudioOut log), to judge whether a sound played
 DM_AUDIO_MUTE	switch	`=1` runs the real Core Audio output path (callback pacing, background take-over) with the output silenced, for lifecycle tests on the Mac without noise
@@ -35,6 +37,7 @@ DM_FORCE_STRICT	diagnostic	`=1` makes the loader fail on forced-hook entries no 
 DM_FPS	switch	`30` or `60` pins the frame rate the display link and frame pacing aim for; otherwise it follows the game's present interval (60, or 30 when the game asks for 30)
 DM_FPS_HOLD	player	`on` / `off` overrides the profile's `fps_hold`: whether late frames may raise the hold above the frame cap's vsyncs (on by default)
 DM_FPS_TARGET	player	Frame-rate cap: `30` or `60`, or `0` for the game's own limit; overrides the profile's `fps_target`
+DM_FRAMEGEN	player	`off` or experimental `opticalflow`: paired image-based GPU intermediate/real pictures on a 120Hz display link; not Apple MetalFX frame interpolation; Arceus exact-build settings default to optical flow, other games stay off
 DM_FS	diagnostic	When set, logs file opens, paths not found or not mounted, and a read summary every 64 MiB or 1000 reads
 DM_FSLOG	diagnostic	`=<file>` writes one TSV line per ReadFile: seconds since boot, guest path, offset, length and guest buffer address
 DM_FSLOG_HASH	diagnostic	With `DM_FSLOG`, adds a column with the FNV-1a 64 hash of the bytes read
@@ -58,12 +61,16 @@ DM_HITCH_DUMP	diagnostic	`=<ms>[:<s>]`: when no frame has been presented for tha
 DM_HLECOUNT	diagnostic	`=<file>` (`%d` = process ID) writes at exit a TSV of how many times the guest called each HLE function, zero counts included
 DM_ICON	path	`=<image>` gives `build_ipa.sh` another app icon (default the `icon.jpg` beside the RomFS)
 DM_IMPORTS	diagnostic	When set, logs each import the loader binds to a host function and each forced takeover
+DM_IOS_BUILD_LOCK_OWNER	path	Internal shared iOS packaging lock owner passed to nested build steps
+DM_IOS_RENDERER	switch	Build target: legacy (iOS16.1 default) or metal4 (iOS26.0); selects the renderer, API definitions and deployment floor together
 DM_KBD	switch	`=<text>`: the system keyboard returns that text as OK without showing an input box; unset with no window, it returns cancel
 DM_KBD_PLAYER	switch	`own` makes the Mac keyboard player 1 on its own, with controllers from player 2 on (by default the first controller shares player 1 with the keyboard)
 DM_KEYS	switch	Scripted input: `<seconds or f<frame>>:<key>[+key][~hold][*count/interval],…` presses buttons, sticks and `Shake` at those times
 DM_KEY_ENTER_A	test	`1` makes Return/Enter publish native A in the iOS keyboard mapping fixture; normal keyboard play leaves Enter unbound
 DM_LANG	player	Game language as a language code (default `en-US`; the iOS app sets the one the IPA was packed with)
 DM_LAUNCHER	switch	`0` skips the iOS settings screen or the Mac settings window and starts the game at once, with the saved choices (on the Mac also `--no-launcher`)
+DM_LEGACY_MSL_CACHE	path	Source MSL cache used to generate and validate chain-matched legacy shader companions before packaging
+DM_LEGACY_TARGET	switch	Legacy resource audit target: a10x (strict older-GPU companions) or m2 (documented Apple8 native layer/sampler support)
 DM_LINK_VTICK	switch	`0` keeps the system's display-link rate on 144 or 165 Hz Mac screens; by default the link counts only the refreshes nearest a steady 1/60 s clock
 DM_LOADHASH	diagnostic	`=1` logs an address-independent SHA-256 per module after loading
 DM_LONGFRAME	diagnostic	`0` turns off the long-frame log (on by default), a line for a frame over 20 ms or with GPU time over 16.7 ms that is clearly above recent frames
@@ -309,6 +316,7 @@ DM_TEMP	path	Temporary storage folder (default `$DM_ROOT/run/platform/temp`); st
 DM_TEST_ARCHIVE_CONSTANTS	test	Use optional function constants in the synthetic pipeline archive restart fixture
 DM_TEST_ARCHIVE_MIXED	test	Mix a newly compiled shader function with compacted bases in the archive restart fixture
 DM_TEST_BUILD	test	Build folder of `dm/host/tests` whose `t_svc_memory` `test_memory_profile.py` runs (default `build`; `make asan` sets `build/asan`)
+DM_TEST_DUAL_SHADER_DIR	test	External compiled shader directory for the real dual-source GPU regression
 DM_TEST_FS_FAIL	diagnostic	`=write:<n>[:<errno>]` makes the nth save write fail with that errno (default ENOSPC), which refuses the save transaction's commit
 DM_TEST_FS_FAILAT	diagnostic	`=<point>[:<count>][,…]` makes steps of the save transaction (`mountclone`, `reclone`, `guestname`, `renameback`) fail with ENOSPC
 DM_TEST_GEOMETRY	test	Path of the native `t_geometry` executable; `test_dmsh_geometry.py` runs its native geometry emitter checks only when it is set
@@ -330,6 +338,7 @@ DM_TEST_UP_LOST	diagnostic	`=<batch index>` treats that batch of uploads as drop
 DM_THERMAL_CAP	switch	`0` turns off the thermal cap, which holds the frame step at 30 fps while iOS reports a serious or critical thermal state (on by default)
 DM_THR	diagnostic	`=1` logs each SVC (except `SleepThread`) with its first four arguments, and each `CreateThread` with entry, stack, priority and core
 DM_THRCPU	diagnostic	`=<tsv path>[,<seconds>]` writes each thread's CPU time (100% = one core) and the total every interval (default 10 s); on iOS a relative path is under `Documents`
+DM_THROW_ZR	player	Show a momentary left-side Throw alias of native ZR, allowing an independent right camera finger
 DM_TOUCH_DIAG	diagnostic	`1` logs iOS virtual-controller ownership, press, release and layout decisions
 DM_TOUCH_HAPTICS	player	`0` turns off the light haptic tap when a touch control is pressed (on by default); launcher setting
 DM_TOUCH_LOG	diagnostic	`=1` logs each touch-screen read with touch points (sample, finger, position, attributes) and each gesture entry, up to 500 lines
@@ -350,7 +359,9 @@ DM_XCODE_OUTPUT_ROOT	path	Derived-data root shared by generated Xcode settings a
 DM_XCODE_PROJECT_DIR	path	Folder of the per-game Xcode project that `build_ipa.sh --prepare-xcode` makes (default `$W/xcode`); the NSP script sets it
 DM_XV_FILE	path	File where the attachment validity ledger keeps the keys it disabled after a violation, read at the next launch
 DM_YIELD_BACKOFF	switch	`0` turns off the yield back-off; `=<cap µs>[:<start µs>]` sets its sleep cap and the run of yields after which it starts (default 250:2000)
+DM_ZA_ASPECT	player	Exact-build Z-A camera/HUD aspect width:height; auto derives the landscape game window
 DM_ZA_FPS_MODE	player	Pokémon Z-A timing mode: `game`, `static60`, `adaptive60` or `dynamic60`; live changes require validated gates and `DM_ZA_TIMING=1`
+DM_ZA_FULLSCREEN	player	Enable exact-build Z-A fullscreen only after original camera constant and HUD gate guards pass
 DM_ZA_SKILL_DIAG	diagnostic	`1` logs audited Waza-layout visibility transitions used by the virtual face-button geometry
 DM_ZA_SKILL_LAYOUT	player	`1` changes only the iOS virtual face-button geometry while the audited Z-A Waza layout is visible; native A/B/X/Y meanings do not change
 DM_ZA_TIMING	switch	`1` enables audited Pokémon Z-A timing gates, diagnostics and controlled live `DM_ZA_FPS_MODE` changes

@@ -141,6 +141,29 @@ class PackIpa(unittest.TestCase):
         self.maps.insert(0, f'Payload/DmIOS.app/romfs/deep={extra}')
         self.run_pack(); self.run_pack(); self.assertEqual(self.reused, 7); self.same_as_fresh()
 
+    def test_apple_double_excluded_without_losing_game_content(self):
+        header = b'\x00\x05\x16\x07\x00\x02\x00\x00'
+        (self.app / '._exe').write_bytes(header + b'resource fork')
+        (self.rom / 'déjà/._empty').write_bytes(header + b'macOS metadata')
+        (self.rom / '._game-data').write_bytes(b'ordinary game content')
+        (self.rom / 'header.bin').write_bytes(header + b'ordinary named file')
+        self.run_pack()
+        with zipfile.ZipFile(self.out) as z:
+            self.assertNotIn('Payload/DmIOS.app/._exe', z.namelist())
+            self.assertNotIn('Payload/DmIOS.app/romfs/déjà/._empty', z.namelist())
+            self.assertEqual(z.read('Payload/DmIOS.app/romfs/._game-data'), b'ordinary game content')
+            self.assertEqual(z.read('Payload/DmIOS.app/romfs/header.bin'), header + b'ordinary named file')
+            self.assertIsNone(z.testzip())
+        self.run_pack(); self.same_as_fresh()
+
+    def test_explicit_apple_double_mapping_is_not_shipped(self):
+        sidecar = self.tmp / '._metadata'
+        sidecar.write_bytes(b'\x00\x05\x16\x07\x00\x02\x00\x00' + b'resource fork')
+        self.maps.append(f'Payload/DmIOS.app/._metadata={sidecar}')
+        self.run_pack()
+        with zipfile.ZipFile(self.out) as z:
+            self.assertNotIn('Payload/DmIOS.app/._metadata', z.namelist())
+
     def test_clone_failure_copies_compressed(self):
         self.run_pack()
         with patch.object(pack, 'clone', return_value=False), patch.object(pack, 'load', side_effect=AssertionError('recompressed')):

@@ -118,6 +118,10 @@ final class LauncherModel: ObservableObject {
 enum LauncherText {
     static let simplifiedChinese: [String: String] = [
         "Game": "游戏",
+        "Frame generation": "插帧",
+        "Off": "关闭",
+        "Optical flow (experimental)": "光流插帧（实验性）",
+        "Generates one intermediate picture per real frame. Uses image optical flow, not the MetalFX frame interpolator. Real target is at most 60 for 120 Hz output; fast HUD motion may show artifacts.": "每两个真实帧之间生成一张中间画面。此模式使用图像光流，不是 Apple MetalFX 原生插帧；开启时真实目标最高 60 帧，争取 120Hz 显示。快速移动的文字、界面可能变形。",
         "Controls": "操作",
         "Performance": "性能",
         "Version": "版本",
@@ -131,6 +135,10 @@ enum LauncherText {
         "30 fps": "30 帧/秒",
         "60 fps": "60 帧/秒",
         "120 fps": "120 帧/秒",
+        "Original 30 fps": "原版 30 帧/秒",
+        "Removes the 30 fps limit with variable game timing. Actual frame rate depends on device performance.": "解除 30 帧限制，并按实际经过时间推进游戏。实际帧率取决于设备性能。",
+        "Unavailable pending shader fix": "等待着色器修复，暂不可用",
+        "This game needs a dual-source shader variant before Metal 4 pipelines can be enabled.": "此游戏的双源混合着色器仍需修复，暂时使用已能运行的标准渲染管线。",
         "Dynamic resolution": "动态分辨率",
         "Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.": "根据负载在 70% 至 100% 之间调整分辨率。关闭后使用所选主机模式的完整分辨率。",
         "Render scale": "内部渲染比例",

@@ -1848,9 +1848,20 @@ static void frame_end(void) {
     dm_guest_frame_tick();
 }
 EGL(eglGetDisplay, EGLDisplay, void *native) { (void)native; dev_init(); return (EGLDisplay)&g_egl; }
+// EGL current bindings belong to the calling thread, including an unbound
+// thread. Keep the handles from MakeCurrent rather than inventing a display.
+static _Thread_local struct { EGLDisplay display; EGLContext context; EGLSurface draw, read; } g_egl_current;
+static _Thread_local EGLint g_egl_error;
+EGL(eglGetCurrentDisplay, EGLDisplay, void) { return g_egl_current.display; }
+EGL(eglGetCurrentContext, EGLContext, void) { return g_egl_current.context; }
+EGL(eglGetCurrentSurface, EGLSurface, EGLint which) {
+    if (which == 0x3059) return g_egl_current.draw;   // EGL_DRAW
+    if (which == 0x305a) return g_egl_current.read;   // EGL_READ
+    g_egl_error = 0x300c; return NULL;               // EGL_BAD_PARAMETER
+}
 EGL(eglInitialize, EGLBoolean, EGLDisplay d, EGLint *major, EGLint *minor) { (void)d; dev_init(); g_egl.init = 1; if (major) *major = 1; if (minor) *minor = 5; return EGL_TRUE; }
 EGL(eglTerminate, EGLBoolean, EGLDisplay d) { (void)d; return EGL_TRUE; }
-EGL(eglReleaseThread, EGLBoolean, void) { return EGL_TRUE; }
+EGL(eglReleaseThread, EGLBoolean, void) { memset(&g_egl_current, 0, sizeof g_egl_current); g_egl_error = 0; return EGL_TRUE; }
 // SDL binds 0 (its API before it has chosen one) when it makes the window again (Balatro's love.window.setMode): nothing to change
 EGL(eglBindAPI, EGLBoolean, EGLenum api) { if (api && api != 0x30a2) RED1("eglBindAPI(%#x): only desktop OpenGL (0x30a2) is implemented", api); return EGL_TRUE; }
 // One configuration: RGBA8, depth 24 (32F here), stencil 8, a window surface, desktop OpenGL; it matches the game's attributes
@@ -1883,7 +1894,7 @@ EGL(eglQueryString, const char *, EGLDisplay d, EGLint name) {
     switch (name) { case 0x3053: return "NVIDIA"; case 0x3054: return "1.5"; case 0x3055: return "EGL_KHR_create_context"; case 0x308d: return "OpenGL"; }   // VENDOR, VERSION, EXTENSIONS, CLIENT_APIS
     return NULL;
 }
-EGL(eglGetError, EGLint, void) { return 0x3000; }   // SUCCESS
+EGL(eglGetError, EGLint, void) { EGLint error = g_egl_error; g_egl_error = 0; return error ? error : 0x3000; }   // SUCCESS
 EGL(eglQueryAPI, EGLenum, void) { return 0x30a2; }   // OPENGL_API
 EGL(eglWaitNative, EGLBoolean, EGLint engine) { (void)engine; return EGL_TRUE; }
 EGL(eglWaitGL, EGLBoolean, void) { return EGL_TRUE; }
@@ -1907,7 +1918,8 @@ EGL(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig cfg, void *win, 
 }
 EGL(eglDestroySurface, EGLBoolean, EGLDisplay d, EGLSurface s) { (void)d; (void)s; return EGL_TRUE; }
 EGL(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface dr, EGLSurface rd, EGLContext c) {
-    (void)d; (void)rd;
+    g_egl_current.display = c ? d : NULL; g_egl_current.context = c;
+    g_egl_current.draw = c ? dr : NULL; g_egl_current.read = c ? rd : NULL;
     static pthread_t th; static int known, sized;
     if (c && dr) { pthread_t me = pthread_self(); if (!known || !pthread_equal(th, me)) { th = me; known = 1; OLOG("context current on a new thread"); } }
     // a context's viewport and scissor box start as its first drawable's size (LÖVE reads them back at start)
@@ -1940,7 +1952,8 @@ EGL(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface s) {
     frame_end();
     return EGL_TRUE;
 }
-// eglGetProcAddress: GL names from the same table as direct imports; anything else is null (the game's loader asks for every GL name it knows)
+// EGL 1.5 resolves implemented EGL and client API functions through the same
+// table as direct imports. Unknown names remain null (not generic stubs).
 static void *gl_lookup(const char *name) {
     static const hle_ent *sec; static unsigned long sz;
     if (!sec) sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
@@ -1966,7 +1979,7 @@ static void *gl_stub(const char *name) {
 }
 EGL(eglGetProcAddress, void *, const char *name) {
     static int asked, found; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    void *fn = name && !strncmp(name, "gl", 2) ? gl_lookup(name) : NULL;
+    void *fn = name && (!strncmp(name, "gl", 2) || !strncmp(name, "egl", 3)) ? gl_lookup(name) : NULL;
     pthread_mutex_lock(&mu);
     asked++; if (fn) found++;
     if (asked % 500 == 0 || (fn && g_log)) GLOG("eglGetProcAddress: %d names asked, %d implemented (last %s)", asked, found, name);

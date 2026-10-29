@@ -188,6 +188,7 @@ static __weak DmGamepad *g_view;
     unsigned _hapticSticks;
     CAShapeLayer *_run; CATextLayer *_runLabel; BOOL _runHeld;
     CAShapeLayer *_aim; CATextLayer *_aimLabel; BOOL _aimHeld, _aimLatched;
+    CAShapeLayer *_throw; CATextLayer *_throwLabel; BOOL _throwEnabled;
     BOOL _stickShown;                              // the left stick was held at the last refresh
     BOOL _full, _tap;                              // the 3D layout / the Tap layout is current
     CALayer *_controls;                            // holds every control layer; the default external-input policy may hide it while the view stays active for game touches
@@ -246,8 +247,14 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
         _run = shape(_controls); _runLabel = label(_run, @"奔跑");
         const char *aim = getenv("DM_AIM_ZL"); g_aim_button = aim && atoi(aim) ? DM_BTN_ZL : 0;
         _aim = shape(_controls); _aimLabel = label(_aim, @"瞄准");
+        // A left-hand alias of the native right trigger. Unlike the ZL focus
+        // toggle this is momentary: left hold prepares, right drag aims, left
+        // release throws. It shares C_BTN ownership with the original ZR.
+        _throwEnabled = pad_env_on("DM_THROW_ZR");
+        _throw = shape(_controls); _throwLabel = label(_throw, @"投掷");
         if (g_run_button) LOG("front end: Run touch button and either Shift alias native %s independently of visible face labels", run);
         if (g_aim_button) LOG("front end: tap Aim toggles ZL; hold either Command to aim; release/focus loss clears modifier input");
+        if (_throwEnabled) LOG("front end: left Throw holds native ZR; right camera drag stays independent; release throws");
         LOG("front end: native A/B/X/Y unchanged; virtual face geometry alone can follow the original battle skill HUD");
         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
         int l = saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
@@ -321,6 +328,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
     _ring.hidden = _knob.hidden = _tap;
     _run.hidden = _tap || !g_run_button;
     _aim.hidden = _tap || !g_aim_button;
+    _throw.hidden = _tap || !_throwEnabled;
     _swapLabel.string = _tap ? @"Tap" : _full ? @"3D" : @"2D";
     [CATransaction commit];
 }
@@ -355,6 +363,12 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
 - (CGPoint)stickHome { CGRect s = self.corner; return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u); }   // the left stick's ring centre
 - (CGPoint)runCenter { CGPoint c = self.stickHome; return CGPointMake(c.x, c.y - 145 * self.u); }
 - (CGPoint)aimCenter { CGPoint c = self.runCenter; return CGPointMake(c.x + 70 * self.u, c.y); }
+- (CGPoint)throwCenter {
+    CGPoint c = self.runCenter;
+    // Reuse the closest free shortcut slot above the left stick.
+    if (g_run_button) c.x += (g_aim_button ? 140 : 70) * self.u;
+    return c;
+}
 - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
 - (CGFloat)stickR:(int)i { return (i ? K_RSTICK_R : K_STICK_R) * self.u; }
 - (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_RSWIPE; }
@@ -491,6 +505,9 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (_padOff) { game |= [self gameBegin:t]; continue; }
         CGPoint p = [t locationInView:self]; int hit = _tap ? -1 : [self btnAt:p];
         if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
+        if (!_tap && _throwEnabled && dist(p, self.throwCenter) <= 34 * self.u) {
+            [_owner setObject:@(C_BTN | (uint64_t)B_ZR << 8) forKey:t]; continue;
+        }
         if (!_tap && g_run_button && dist(p, self.runCenter) <= 28 * self.u) { [_owner setObject:@(C_RUN) forKey:t]; continue; }
         if (!_tap && g_aim_button && dist(p, self.aimCenter) <= 28 * self.u) { [_owner setObject:@(C_AIM) forKey:t]; continue; }
         if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }
@@ -604,6 +621,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     _controls.frame = self.layer.bounds;
     setPath(_run, circlePath(self.runCenter, 25 * u)); placeLabel(_runLabel, self.runCenter, 14 * u);
     setPath(_aim, circlePath(self.aimCenter, 25 * u)); placeLabel(_aimLabel, self.aimCenter, 14 * u);
+    setPath(_throw, circlePath(self.throwCenter, 30 * u)); placeLabel(_throwLabel, self.throwCenter, 14 * u);
     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (isDrop(b)) {
@@ -637,6 +655,8 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     _run.fillColor = (_runHeld ? k_on : k_idle).CGColor; _runLabel.foregroundColor = (_runHeld ? k_textOn : k_text).CGColor;
     BOOL aim = _aimHeld || _aimLatched;
     _aim.fillColor = (aim ? k_on : k_idle).CGColor; _aimLabel.foregroundColor = (aim ? k_textOn : k_text).CGColor;
+    BOOL throwing = (all & DM_BTN_ZR) != 0;
+    _throw.fillColor = (throwing ? k_on : k_idle).CGColor; _throwLabel.foregroundColor = (throwing ? k_textOn : k_text).CGColor;
     CGPoint h = self.stickHome, o = [self knobOffset:0];
     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_on : k_idle).CGColor;
     [CATransaction commit];

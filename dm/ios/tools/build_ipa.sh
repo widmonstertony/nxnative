@@ -19,7 +19,17 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 IOS_SOURCE=$PWD; IOS=$PWD; DM=$(cd .. && pwd)
+# Shader builds can run in parallel, but IPA mode mutates this checkout's Gen/.
+# Hold the lock across Xcode and packing so another title cannot replace it.
+if [ "${1:-}" != --prepare-xcode ] && [ "${DM_IOS_BUILD_LOCK_OWNER:-}" != "$$" ]; then
+  exec python3 "$IOS_SOURCE/tools/build_lock.py" "$IOS_SOURCE" /bin/bash "$IOS_SOURCE/tools/build_ipa.sh" "$@"
+fi
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
+case "${DM_IOS_RENDERER:-legacy}" in
+  legacy) export DM_IOS_DEPLOYMENT_TARGET=16.1 ;;
+  metal4) export DM_IOS_DEPLOYMENT_TARGET=26.0 ;;
+  *) die "DM_IOS_RENDERER must be legacy or metal4" ;;
+esac
 [ -n "${GAME:-}" ] || die "GAME is not set: GAME=<base game title ID> $0; profiles: $(python3 "$DM/games/game.py" list | awk -F'\t' '{printf "%s (%s)  ", $1, $3}')"
 export GAME; GD=$(python3 "$DM/games/game.py" dir "$GAME") || die "no game profile $GAME"   # dm/games/<id>, or a profile in DM_GAMES_DIR (the NSP script's provisional one); the make that gen_build.py runs uses the same GAME
 gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }   # read a key of the game profile
@@ -69,6 +79,12 @@ else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || 
   grep -qxF "$(printf 'game\t%s' "$GAME")" "$MSL_IOS/b-$V/inputs.tsv" 2> /dev/null && grep -qxF "$(printf 'inputs\t%s' "$IN")" "$MSL_IOS/b-$V/inputs.tsv" ||
     die "the iOS shader libraries $MSL_IOS/b-$V are not a full build from this profile's current tables (inputs $IN; their stamp: $([ -f "$MSL_IOS/b-$V/inputs.tsv" ] && grep -v '^#' "$MSL_IOS/b-$V/inputs.tsv" | tr '\n\t' '  ' || echo none)): build them again (IOSOUT=$MSL_IOS dmsh_build.py ...)"
   head -1 "$GD/c1_full.tsv" 2> /dev/null | grep -q "^# chain b-$V inputs $IN " || die "$GD/c1_full.tsv is missing or not made from these libraries (chain $V, inputs $IN): a full dmsh_build.py run makes it and cb_extent.tsv"
+  # Every legacy resource must match both the host chain and the compiled ABI.
+  if [ "${DM_IOS_RENDERER:-legacy}" = legacy ]; then
+    LEGACY_MSL_CACHE=${DM_LEGACY_MSL_CACHE:-$MSL_IOS/../cache}
+    python3 "$IOS_SOURCE/tools/prepare_legacy_resources.py" "$DM/.." "$LEGACY_MSL_CACHE/b-$V" "$MSL_IOS/b-$V" "$W/legacy-resource-audit.json" ||
+      die "legacy GPU resource audit failed; preserve diagnostics before signing or installation"
+  fi
   COMPANION_REQUIREMENTS=$(python3 "$DM/games/game.py" "$GAME" ios_companions 2> /dev/null || :)
   if [ -n "$COMPANION_REQUIREMENTS" ]; then
     [ -f "$GD/$COMPANION_REQUIREMENTS" ] || die "profile companion requirements are missing: $GD/$COMPANION_REQUIREMENTS"

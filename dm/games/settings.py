@@ -71,7 +71,7 @@ def build(gid, patched, control):
     def shown(cond, n):
         if cond == 'always': return True
         if cond == 'languages>1': return len(langs) > 1
-        if cond.startswith('fixups:'): return cond[7:] in keys
+        if cond.startswith('fixups:'): return bool(set(cond[7:].split('|')) & keys)
         if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
         if cond.startswith('platform:'): return platform == cond[9:]
         m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
@@ -103,6 +103,19 @@ def build(gid, patched, control):
             can = table[need]
             if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: needs a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
         if not shown(cond, n): continue
+        if var == 'DM_FRAMEGEN' and platform == 'ios' and os.environ.get('DM_IOS_RENDERER', 'legacy') != 'metal4':
+            continue   # This implementation needs the modern command-buffer path.
+        if var == 'DM_PSO_MTL4' and 'MTL4_DUAL_SOURCE_UNAVAILABLE' in keys:
+            # Open translator limitation: the secondary blend output is still
+            # emitted as MRT1; Metal 4's compiler aborts on the resulting PSO.
+            kind, values, default = 'choice', '0=Unavailable pending shader fix', '0'
+            note = 'This game needs a dual-source shader variant before Metal 4 pipelines can be enabled.'
+        # Opt-in elapsed-clock builds start with native handheld rendering and a
+        # real MetalFX upscale. This lowers game work instead of only sharpening
+        # an unchanged 1080p picture. Existing saved choices still take priority.
+        if keys & {'ARCEUS_TIMING', 'ZA_TIMING'}:
+            if var == 'DM_OPMODE': default = '0'
+            elif var == 'DM_PRESENT_UPSCALE': default = 'metalfx'
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
         if kind == 'choice':

@@ -29,6 +29,13 @@ static void *import(const char *name) {
     assert(!strcmp(wrap_kind, "HLE"));
     return fn;
 }
+static void *unbound_thread(void *unused) {
+    (void)unused;
+    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext());
+    assert(!h_eglGetCurrentSurface(0x3059) && !h_eglGetCurrentSurface(0x305a));
+    assert(h_eglGetError() == 0x3000);
+    return NULL;
+}
 
 int main(int argc, char **argv) {
     (void)argv;
@@ -57,7 +64,7 @@ int main(int argc, char **argv) {
     const hle_ent *sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
     unsigned count = 0;
     for (unsigned long i = 0; i < sz / sizeof *sec; i++)
-        if (!strncmp(sec[i].name, "gl", 2)) {
+        if (!strncmp(sec[i].name, "gl", 2) || !strncmp(sec[i].name, "egl", 3)) {
             assert(import(sec[i].name) == sec[i].fn);
             assert(h_eglGetProcAddress(sec[i].name) == sec[i].fn); count++;
         }
@@ -65,6 +72,20 @@ int main(int argc, char **argv) {
     assert((void *)resolve_import(NULL, "eglGetProcAddress") == (void *)h_eglGetProcAddress_bs);
     assert(!h_eglGetProcAddress(NULL));
     assert(!h_eglGetProcAddress("not_a_GL_function"));
+    assert(!h_eglGetProcAddress("eglMissingFunctionForTest"));
+    assert(import("eglGetCurrentDisplay") == (void *)h_eglGetCurrentDisplay_bs);
+    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext());
+    EGLDisplay d = (EGLDisplay)(uintptr_t)1; EGLContext c = (EGLContext)(uintptr_t)2;
+    EGLSurface draw = (EGLSurface)(uintptr_t)3, read = (EGLSurface)(uintptr_t)4;
+    assert(h_eglMakeCurrent(d, draw, read, c));
+    assert(h_eglGetCurrentDisplay() == d && h_eglGetCurrentContext() == c);
+    assert(h_eglGetCurrentSurface(0x3059) == draw && h_eglGetCurrentSurface(0x305a) == read);
+    assert(!h_eglGetCurrentSurface(0) && h_eglGetError() == 0x300c && h_eglGetError() == 0x3000);
+    pthread_t thread; assert(!pthread_create(&thread, NULL, unbound_thread, NULL)); assert(!pthread_join(thread, NULL));
+    assert(h_eglGetCurrentDisplay() == d);
+    assert(h_eglMakeCurrent(d, NULL, NULL, NULL) && !h_eglGetCurrentDisplay());
+    assert(h_eglMakeCurrent(d, draw, read, c) && h_eglReleaseThread());
+    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext() && !h_eglGetCurrentSurface(0x3059));
     const char *missing = "glMissingFunctionForTest";
     assert(!hle_implements(missing));
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);

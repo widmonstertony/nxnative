@@ -209,6 +209,13 @@ class MetalPrefill(unittest.TestCase):
         self.cache.fill(str(self.old))
         self.assertEqual(self.cache.stats['mac', 'filled'], 3)
 
+    def test_appledouble_sidecars_do_not_disqualify_real_libraries(self):
+        self.earlier_libraries(self.cache.ident['mac'].hex())
+        (self.old / 'key2_b.metallib').write_bytes(b'TESTED MSL 2')
+        for f in list(self.old.iterdir()): (self.old / ('._' + f.name)).write_bytes(b'AppleDouble metadata')
+        self.cache.fill(str(self.old))
+        self.assertEqual(self.cache.stats['mac', 'filled'], 3)
+
     def test_unrequested_target_is_not_sample_compiled(self):
         self.earlier_libraries(self.cache.ident['mac'].hex())
         with mock.patch.object(self.cache, '_compile') as compile_sample:
