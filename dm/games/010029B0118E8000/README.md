@@ -27,3 +27,5 @@ recorder/replay regression passes 252 checks; the old host fails all 112 compact
 binding checks. Minimum-16.1 build `20261029.5` includes the shared host repair
 without changing the frozen shader chain. Packaging and device installation are
 in progress; this does not establish a corrected picture or gameplay.
+
+Delivery update: M2 `20261029.5` is now installed with exact executable/code-section and saved-state hashes verified; user picture confirmation is pending. The A10X installer returned `installApplication returned NO` for the same verified upload, then its MCP briefly disconnected. Readback after reconnection confirms `.2` remains installed. The new upload and diagnostics are preserved; no uninstall or blind retry was performed. The old iPad was running an unrelated game, so further installation diagnostics wait for the user to return to MCP.

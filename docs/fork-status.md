@@ -44,12 +44,12 @@ new chain. A successful host compile is not a matching resource build.
 
 | Game / target | Confirmed result | Open work |
 |---|---|---|
-| Arceus / M2, iPadOS 16.1 | `20261029.2` installed, code/version and saved-state readback passed | User still reports gray screen; native depth/SRC1 compiler errors are gone, but a render-target setup failure remains under investigation |
+| Arceus / M2, iPadOS 16.1 | Compact binding repair `20261029.5` installed, code/version and saved-state readback passed | User picture confirmation pending; the earlier `.2` gray scene and render-target failure are not presumed resolved |
 | Arceus / A10X, iPadOS 17.7 | Not installed | Two layered and eighteen sampler-limit paths fail the strict resource audit |
 | Pokken / both iPads | `20261029.5` installed on both; user confirms M2 picture restored | Full gameplay/performance and A10X picture remain unverified. Five further exact runtime captures compile in a matching 163-stage set; a later host/package is still required |
-| Need for Speed / both iPads | Repair `20261029.2` installed, code/version and saved-state readback passed | M2 still black; ten missing runtime stages and unsupported BC readback need investigation. A10X gameplay is unverified |
-| Animal Crossing / A10X | Shader compilation completed | Eleven unsupported-resource paths block packaging |
-| Witcher 3 US / A10X | Shader compilation completed | Eighteen unsupported-resource paths block packaging |
+| Need for Speed / both iPads | M2 `20261029.5` installed and verified; A10X retains `.2` after installer rejected `.5` | M2 user retest pending; missing runtime stages and BC readback remain open. A10X upload is preserved for installation diagnostics |
+| Animal Crossing / A10X and M2 | Shader compilation completed; M2 host build in progress | Eleven paths block A10X; M2 native capability audit and installation remain pending |
+| Witcher 3 US / A10X and M2 | Shader compilation completed; M2 host build queued | Eighteen layered paths block A10X; M2 native capability audit and installation remain pending |
 
 The shared legacy recorder/replay mismatch is now reproduced: compact uniform
 and single-vertex bindings were silently ignored. The fixed real-producer test

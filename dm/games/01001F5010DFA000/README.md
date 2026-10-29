@@ -105,3 +105,5 @@ recorder/replay regression passes 252 checks; the old host fails all 112 compact
 binding checks. Minimum-16.1 build `20261029.5` includes the shared host repair
 without changing the frozen shader chain. Packaging and device installation are
 in progress; this does not establish a corrected picture or gameplay.
+
+Delivery update: M2 `20261029.5` is now installed with exact executable/code-section and saved-state hashes verified. The user tests whether its gray scene is repaired. A10X remains uninstalled; its strict resource blockers are unchanged.
