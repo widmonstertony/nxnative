@@ -12,7 +12,7 @@
 //     then the camera for an unclaimed touch in the right half. Ownership stays with its original control until release/cancellation; sliding a camera finger over ABXY never presses a skill.
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
 //   Touches no control takes go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode). Tap layout keeps direct game touches everywhere except its layout selector.
-//   Controllers and keyboards hide the pad by default. DM_PAD_KEEP_TOUCH=1 keeps the complete touch layer visible and usable beside them. Mouse input follows the same policy; without the switch a direct finger can reclaim touch controls when no controller/keyboard is present. Physical controllers map by position: bottom = B, right = A, left = Y, top = X.
+//   Controllers always hide the pad. DM_PAD_KEEP_TOUCH=1 keeps touch visible beside keyboards and mice only. Mouse input follows the same policy; without the switch a direct finger can reclaim touch controls when no controller/keyboard is present. Backbone maps by printed letters; other physical controllers retain Nintendo positional mapping.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
@@ -28,6 +28,7 @@
 #include "motion_fusion.h"
 #include <stdatomic.h>
 #include "DmFaceLayout.h"
+#include "DmControllerPolicy.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
 enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME, C_RUN, C_AIM };
@@ -647,7 +648,10 @@ static void read_pad(GCExtendedGamepad *g) {
     dm_haptics_apple_controller(0, g.controller);
     uint64_t m = 0;
     #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
-    K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
+    int backbone = dm_controller_is_backbone(g.controller.vendorName.UTF8String) ||
+        dm_controller_is_backbone(g.controller.productCategory.UTF8String);
+    m |= dm_controller_face_buttons(g.buttonA.isPressed, g.buttonB.isPressed,
+        g.buttonX.isPressed, g.buttonY.isPressed, backbone);
     K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
     K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
     if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
@@ -779,6 +783,9 @@ static void clear_mouse(void) {
         controller = YES;
         if (c.motion.hasRotationRate) motion = 1;
         if (controllerEvent) {
+            LOG("front end: controller vendor=%s category=%s face buttons=%s",
+                c.vendorName.UTF8String ?: "unknown", c.productCategory.UTF8String ?: "unknown",
+                (dm_controller_is_backbone(c.vendorName.UTF8String) || dm_controller_is_backbone(c.productCategory.UTF8String)) ? "Backbone printed ABXY" : "Nintendo positions");
             c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
             dm_motion_attach(c, 0);   // all controllers are player 1 on iOS
         }
@@ -805,7 +812,7 @@ static void clear_mouse(void) {
     }
     if (!mouse) clear_mouse();
     BOOL keepTouch = pad_keep_touch();
-    BOOL any = !keepTouch && (_controllerOrKeyboard || (mouse && !_touchPreferred));
+    BOOL any = dm_controller_hides_touch(controller, hasKeyboard, mouse, _touchPreferred, keepTouch);
     LOG("front end: input devices controller=%d keyboard=%d mouse=%d; touch controls %s; blank right-half camera %s", controller, hasKeyboard, mouse, any ? "hidden" : "visible", !any && !_tap ? "enabled" : "disabled");
     BOOL changed = _padOff != any;
     _padOff = any; _controls.hidden = any;

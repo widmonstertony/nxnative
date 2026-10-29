@@ -91,3 +91,7 @@ General host changes first needed here; each applies to every game:
 The iOS 16/17 frontend derives the target camera/HUD aspect from the actual landscape window (`DM_ZA_ASPECT=auto`). The renderer only fills the canvas after the exact-build HUD gate, module layout, original camera constant and RW/non-executable mapping guards succeed. Unsupported builds retain aspect fitting. The camera/HUD callback tests pass at 76:35, 683:512 and 4:3; the iOS executable compiles. Physical iPad HUD/scene validation and matching shader resources remain pending. Native face-button semantics are unchanged.
 
 MetalFX capability logging reports spatial/temporal/frame-interpolator support. Actual interpolation and internal-resolution upscaling integration remain open.
+
+### iOS Backbone input update
+
+See [Backbone button letters and automatic touch visibility](../../../docs/reference/services.md#backbone-button-letters-and-automatic-touch-visibility). The host preserves touch layout and keyboard semantics; device button testing remains with the user.

@@ -707,3 +707,11 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** code that calls fixed module addresses. d2r-mobile's 3D render scale read a renderer pointer at `main+0x31e0848` and called `main+0x8582f0`; in Mario v0 that is the middle of a static initializer and only did nothing because the pointer happened to read 0.
 - **Fix:** such code checks `module_t.build_id` now (written into `fixups.tsv` by the rewriter) and stays off on other builds.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) (v0, code inherited from d2r-mobile).
+
+### Backbone button letters and automatic touch visibility
+
+- **Symptom:** Backbone A/B and X/Y invoke the opposite game letters; virtual buttons remain visible after connecting a controller.
+- **Cause:** the iOS adapter always used Nintendo positional mapping, while `DM_PAD_KEEP_TOUCH=1` also overrode controller-driven hiding.
+- **Fix:** recognized Backbone vendor/category names select printed-letter ABXY mapping. Other controllers keep their established Nintendo positional mapping. A connected extended gamepad always hides the touch layer, including when keep-touch is enabled; disconnect restores the keyboard/mouse/touch policy. Touch geometry, battle layout, keyboard J=A/K=B/U=X/I=Y, and native trigger bits are unchanged.
+- **Checks:** the actual C policy is tested over every face-button combination and connection/keyboard/mouse/preference state; existing keyboard and face-layout regressions remain enabled. Physical Backbone gameplay is left to the user after installation.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md), iPhone Air; the shared policy is also used by the separate Arceus build.
