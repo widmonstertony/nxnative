@@ -5430,7 +5430,12 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         if (b->kind == NVN_RB_CBUF) {
             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
             void *mb; uint64_t mo, gpu;
-            if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
+            if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) {
+                // Match the modern path: an unbound NVN uniform slot reads zero.
+                // A null argument-buffer pointer faults the entire legacy GPU queue.
+                RED_ONCE(16, "stage %d cb%d has no uniform buffer bound", nvn_stage, reg);
+                slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); continue;
+            }
             use_rec("buf", u->addr, u->size, 0, NULL);
             if (g_nubd && ubd_hits(u->addr, u->addr + u->size)) {   // inline updates deferred in this pass (see mtl_sub_update); ubd_conflict made sure they cover the binding
                 if (ubd_covers(u->addr, u->addr + u->size)) {

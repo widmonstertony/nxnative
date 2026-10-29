@@ -647,8 +647,9 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 - **Symptom:** `stage 0 cb5 has no uniform buffer bound`.
 - **Cause:** the argument buffer kept a null pointer for the unbound slot.
-- **Fix:** the slot now reads the all-zero bank, as an unbound texture slot reads the zero texture.
+- **Fix:** the slot now reads the all-zero bank, as an unbound texture slot reads the zero texture. The legacy Metal encoder follows the same rule and declares the indirect zero-bank resource with `useResource`; its fallback must not leave the argument pointer null or share a buffer that image/storage writes can modify.
 - **Found on:** [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) (at the title).
+- **Legacy observation (2026-10-29):** the provisional Need for Speed Hot Pursuit Remastered 1.0.3 export on an A10X reported unbound vertex `cb0` before the first 32×32 draw (`c10b455d282e10ab` / `5f3cbd583adf6168`). That vertex shader dereferences its constant argument; the old fallback left it null, and fence 3 faulted with a GPU address error, poisoning subsequent submissions. The modern zero-bank fallback is now also used by the legacy encoder. A separate depth-writing pipeline rejection remains under investigation; no complete gameplay-fix claim follows from this change. Full iOS16.1 host compilation passed, and an explicit argument-encoder GPU probe checked all 16,384 words through zero/nonzero/zero bindings (49,152 checks) on an M4; A10X execution of the revised game remains pending.
 
 ### Compute dispatches share the copy encoder
 
