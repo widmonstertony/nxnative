@@ -46,7 +46,7 @@ new chain. A successful host compile is not a matching resource build.
 |---|---|---|
 | Arceus / M2, iPadOS 16.1 | `20261029.2` installed, code/version and saved-state readback passed | User still reports gray screen; native depth/SRC1 compiler errors are gone, but a render-target setup failure remains under investigation |
 | Arceus / A10X, iPadOS 17.7 | Not installed | Two layered and eighteen sampler-limit paths fail the strict resource audit |
-| Pokken / both iPads | Augmented 158-stage `20261029.3` installed on both; user still reports black screen on M2 | Four missing-stage errors are gone. Compact buffer binding loss is repaired in source; `20261029.5` is packaging, with device picture confirmation pending |
+| Pokken / both iPads | `20261029.5` installed on both; user confirms M2 picture restored | Full gameplay/performance and A10X picture remain unverified. Five further exact runtime captures compile in a matching 163-stage set; a later host/package is still required |
 | Need for Speed / both iPads | Repair `20261029.2` installed, code/version and saved-state readback passed | M2 still black; ten missing runtime stages and unsupported BC readback need investigation. A10X gameplay is unverified |
 | Animal Crossing / A10X | Shader compilation completed | Eleven unsupported-resource paths block packaging |
 | Witcher 3 US / A10X | Shader compilation completed | Eighteen unsupported-resource paths block packaging |
@@ -55,8 +55,8 @@ The shared legacy recorder/replay mismatch is now reproduced: compact uniform
 and single-vertex bindings were silently ignored. The fixed real-producer test
 passes 252 checks; reverting the four replay changes fails exactly 112 binding
 checks. Version `20261029.5` rebuilds all three affected hosts with the repair,
-retaining each existing shader chain. These builds are not yet device-confirmed
-rendering fixes. Full game-route tests remain with the user; no five-game smoke
+retaining each existing shader chain. M2 Pokken's restored picture is user-confirmed; the other target/game pictures remain
+unconfirmed. Full game-route tests remain with the user; no five-game smoke
 or performance result is claimed.
 
 Air Arceus `20261029.9` and Z-A `20261029.124` were installed with version and

@@ -19,3 +19,13 @@ recorder/replay regression passes 252 checks; the old host fails all 112 compact
 binding checks. Minimum-16.1 build `20261029.5` includes the shared host repair
 without changing the frozen shader chain. Packaging and device installation are
 in progress; this does not establish a corrected picture or gameplay.
+
+Device confirmation: both iPads have `20261029.5` installed with code/version
+and saved-state readback. The user confirmed that M2's picture is restored after
+relaunch and Start. This confirms the compact binding repair for that scene;
+full gameplay, A10X rendering and performance remain unverified. The next M2 log
+still exposes additional runtime stages, so coverage is not complete. Five
+additional exact captures were saved and validated outside the repository. The
+expanded matching 163-stage macOS/iOS set compiles successfully; a later host
+rebuild and package must carry it. The installed `.5` still contains 158 stages,
+and the user's current game was not interrupted.

@@ -46,5 +46,26 @@ class CaptureTests(unittest.TestCase):
             self.assertIn(key, (root / "out/shader_map.tsv").read_text())
             with self.assertRaises(FileExistsError): PACK.pack(dumps, root / "out")
 
+    def test_later_batches_cannot_change_existing_package_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            packages = {}
+            for number, stage in enumerate((1, 5, 1)):
+                dumps = root / f"dumps{number}"; dumps.mkdir()
+                _, ctl, original = self.capture(stage)
+                code = bytearray(original); code[-1] = number
+                key = hashlib.sha256(ctl[:0x848] + code).hexdigest()[:16]
+                (dumps / (key + ".ctl")).write_bytes(ctl)
+                (dumps / (key + ".code")).write_bytes(code)
+                output = root / f"out{number}"
+                PACK.pack(dumps, output)
+                row = (output / "shader_map.tsv").read_text().splitlines()[1].split("\t")
+                self.assertEqual(row[1], "0")
+                self.assertEqual(row[3], key)
+                name = row[0]
+                self.assertNotIn(name, packages)
+                packages[name] = (output / name).read_bytes()
+                self.assertEqual(packages[name][0x38:], code + ctl)
+
 
 if __name__ == "__main__": unittest.main()

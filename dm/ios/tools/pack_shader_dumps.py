@@ -49,15 +49,14 @@ def pack(dumps, output):
     # Validation finishes before creating any output; never overwrite a build.
     output.mkdir(parents=True, exist_ok=False)
     rows = ["package\tindex\tstage\tdm_ctl_sha16\tsource"]
-    groups = {"vs": [], "ps": []}
     evidence = []
     for key, stage, record in captures:
-        index = len(groups[stage]); groups[stage].append(record)
-        rows.append(f"{stage}_capture.bin\t{index}\t{'vertex' if stage == 'vs' else 'pixel'}\t{key}\truntime-capture/{key}")
+        # A later capture batch must not overwrite an earlier batch's package
+        # or shift the indices still referenced by its profile rows.
+        name = f"{stage}_capture_{key}.bin"
+        (output / name).write_bytes(record)
+        rows.append(f"{name}\t0\t{'vertex' if stage == 'vs' else 'pixel'}\t{key}\truntime-capture/{key}")
         evidence.append({"key": key, "stage": stage, "record_sha256": hashlib.sha256(record).hexdigest()})
-    for stage, records in groups.items():
-        if records:
-            (output / (stage + "_capture.bin")).write_bytes(b"".join(records))
     (output / "shader_map.tsv").write_text("\n".join(rows) + "\n")
     (output / "capture-proof.json").write_text(json.dumps(evidence, indent=2) + "\n")
     return len(captures)
