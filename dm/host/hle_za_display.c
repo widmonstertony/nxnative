@@ -60,4 +60,4 @@ static void za_hud_rect(uint64_t *regs, int param) {
     if (!dm_display_hud_rect(original, g_za_hud_aspect, shadow.rect)) return;
     regs[9] = (uint64_t)(uintptr_t)&shadow;
 }
-__attribute__((constructor)) static void za_display_gates(void) { gate_obs_mutable_set(OBS_ZA_HUD_RECT, za_hud_rect); }
+__attribute__((constructor)) static void za_display_gates(void) { gate_obs_set(OBS_ZA_HUD_RECT, za_hud_rect); }

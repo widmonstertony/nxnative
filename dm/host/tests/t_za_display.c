@@ -42,11 +42,20 @@ int main(int argc, char **argv) {
     float aspect; memcpy(&aspect, p, sizeof aspect); assert(fabs(aspect - width / height) < 1e-6);
     uint64_t regs[31], saved[31];
     for (int i = 0; i < 31; i++) regs[i] = saved[i] = 0x123000 + i;
+    struct { uint32_t unused; float rect[4]; } native = {0, {0, 0, 1920, 1080}};
+    regs[9] = saved[9] = (uint64_t)(uintptr_t)&native;
     hud_callback(regs, 0);
     for (int i = 0; i < 31; i++) if (i != 9) assert(regs[i] == saved[i]);
     memcpy(r, (char *)(uintptr_t)regs[9] + 4, sizeof r);
     assert(fabs((r[2] / 1920) * width / height - 16.0 / 9) < 1e-6);
     assert(fabs(r[0] - (1920 - r[2]) * .5) < .001 && r[1] == 0 && r[3] == 1080);
+    native.rect[2] = 1280; native.rect[3] = 720;
+    regs[9] = saved[9]; hud_callback(regs, 0);
+    memcpy(r, (char *)(uintptr_t)regs[9] + 4, sizeof r);
+    assert(fabs((r[2] / 1280) * width / height - 16.0 / 9) < 1e-6 && r[3] == 720);
+    native.rect[2] = 500; native.rect[3] = 300;
+    regs[9] = saved[9]; hud_callback(regs, 0);
+    assert(regs[9] == saved[9] && native.rect[2] == 500 && native.rect[3] == 300);
     assert(vm_deallocate(mach_task_self(), addr, len) == KERN_SUCCESS);
     printf("PASS: %s camera/HUD geometry, build/byte/protection guards and saved-x9 callback\n", ratio);
 }
