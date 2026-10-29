@@ -21,8 +21,8 @@ static inline uint64_t dm_controller_face_buttons(int a, int b, int x, int y, in
            (x ? (backbone ? DM_BTN_X : DM_BTN_Y) : 0) |
            (y ? (backbone ? DM_BTN_Y : DM_BTN_X) : 0);
 }
-// A connected physical gamepad always takes precedence over keep-touch. The
-// latter still applies to keyboards and mice when no controller is present.
+// A connected keyboard or physical gamepad always hides the touch overlay.
+// Keep-touch only controls the optional mouse-only policy.
 static inline int dm_controller_hides_touch(int controller, int keyboard, int mouse, int touch_preferred, int keep_touch) {
-    return controller || (!keep_touch && (keyboard || (mouse && !touch_preferred)));
+    return controller || keyboard || (!keep_touch && mouse && !touch_preferred);
 }

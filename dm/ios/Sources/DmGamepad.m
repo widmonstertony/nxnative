@@ -12,7 +12,7 @@
 //     then the camera for an unclaimed touch in the right half. Ownership stays with its original control until release/cancellation; sliding a camera finger over ABXY never presses a skill.
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
 //   Touches no control takes go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode). Tap layout keeps direct game touches everywhere except its layout selector.
-//   Controllers always hide the pad. DM_PAD_KEEP_TOUCH=1 keeps touch visible beside keyboards and mice only. Mouse input follows the same policy; without the switch a direct finger can reclaim touch controls when no controller/keyboard is present. Backbone maps by printed letters; other physical controllers retain Nintendo positional mapping.
+//   Controllers and keyboards always hide the pad. DM_PAD_KEEP_TOUCH=1 keeps touch visible beside a mouse only. Mouse input follows the same policy; without the switch a direct finger can reclaim touch controls when no controller/keyboard is present. Backbone maps by printed letters; other physical controllers retain Nintendo positional mapping.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>

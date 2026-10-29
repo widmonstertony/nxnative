@@ -61,7 +61,7 @@ int main(void) {
         self.assertIn("kind = C_DPAD", began)
         self.assertNotIn("if (_full) { CGFloat d = dist(p, self.dpadCenter)", began)
 
-    def test_game_profiles_force_complete_touch_surface_beside_external_input(self):
+    def test_game_profiles_preserve_complete_touch_surface_without_external_input(self):
         source = (ROOT / "dm/ios/Sources/DmGamepad.m").read_text()
         for title_id in ("0100F43008C44000", "0100152000022000"):
             with self.subTest(title_id=title_id):

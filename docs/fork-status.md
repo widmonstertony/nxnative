@@ -94,3 +94,12 @@ read back without another installation. Ten exact runtime stages are now
 translated in a complete 99-stage matching resource set. The legacy CPU-written
 BC readback omission is fixed and tested separately; `.6` packaging/install and
 device picture confirmation are pending. No claim of playable NFS follows.
+
+### Shared external-input visibility (2026-10-29)
+
+The user confirms Animal Crossing M2 `20261029.1` plays. All iPhone/iPad
+hosts now give both physical keyboards and extended controllers precedence
+over keep-touch, without changing touch geometry or native button bits.
+The policy truth table, keyboard mappings and face-layout tests pass. Frozen
+frontends and future batch sources have the same header; existing installed
+binaries still need their host update. Game compilation continues separately.

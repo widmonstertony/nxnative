@@ -23,14 +23,19 @@ int main(void) {
  for(int bits=0;bits<32;bits++) {
   int controller=bits&1,keyboard=bits&2,mouse=bits&4,touch=bits&8,keep=bits&16;
   int hidden=dm_controller_hides_touch(controller,keyboard,mouse,touch,keep);
-  if(controller) assert(hidden);
+  if(controller || keyboard) assert(hidden);
   else if(keep) assert(!hidden);
   else assert(hidden==!!(keyboard||(mouse&&!touch)));
  }
- // Already attached, unplugged, and reattached while keep-touch is enabled.
+ // Startup-attached devices, unplugging, switching devices and reconnecting.
  assert(dm_controller_hides_touch(1,0,0,0,1));
  assert(!dm_controller_hides_touch(0,0,0,0,1));
  assert(dm_controller_hides_touch(1,0,0,1,1));
+ assert(dm_controller_hides_touch(0,1,0,0,1));
+ assert(dm_controller_hides_touch(0,1,0,1,1));
+ assert(dm_controller_hides_touch(1,1,0,0,1));
+ assert(dm_controller_hides_touch(0,1,0,0,1));
+ assert(!dm_controller_hides_touch(0,0,0,1,1));
  return 0;
 }
 '''
