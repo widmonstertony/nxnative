@@ -341,6 +341,8 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 
 ## Rendering
 
+- games present black or gray frames while video/audio and frame counters advance. Logs report `stage 0 cb1 has no uniform buffer bound` despite the game recording a uniform binding; vertex streams can also remain empty. → [Compact buffer bindings lost by legacy replay](../reference/rendering.md#compact-buffer-bindings-lost-by-legacy-replay)
+- `Fragment shader writes to depth, but pipeline's depth attachment pixel format is not set` persists even for later descriptors with a valid depth format; games show black or gray scenes. Separate SRC1 blend failures reject otherwise valid draws. → [Legacy depth prediction and secondary blend sources](../reference/rendering.md#legacy-depth-prediction-and-secondary-blend-sources)
 - clang reports null dereferences in `nvnWindowInitialize` and `clear_tex`; clearing a null texture crashes with `DM_NVN_PASSDUMP=1`. → [Null textures in diagnostic logs](../reference/rendering.md#null-textures-in-diagnostic-logs)
 - Metal aborts on a texture descriptor with an absurd size (`height (1869367126) greater than … 16384`). → [Texture objects copied into command records](../reference/rendering.md#texture-objects-copied-into-command-records)
 - a decoded movie stays black even though its YUV textures contain the picture; disabling its depth test makes it visible. → [New textures start as zero](../reference/rendering.md#new-textures-start-as-zero)

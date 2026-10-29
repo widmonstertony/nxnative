@@ -1,6 +1,8 @@
 # Rendering
 
-## Compact buffer bindings lost by legacy replay
+## Legacy replay
+
+### Compact buffer bindings lost by legacy replay
 
 - **Symptom:** games present black or gray frames while video/audio and frame counters advance. Logs report `stage 0 cb1 has no uniform buffer bound` despite the game recording a uniform binding; vertex streams can also remain empty.
 - **Cause:** the recorder emits `OP_BIND_UBO_SMALL` for bounded uniform ranges and `OP_BIND_VBUF1` for a single vertex range. The legacy dispatch and state replay accepted only their wide equivalents and silently dropped both compact records. The zero uniform fallback prevents a fault but cannot recover the missing transforms or vertex addresses.
@@ -8,7 +10,7 @@
 - **Checks:** `t_legacy_pipeline` records through the real NVN bootstrap API, replays all six stages' sixteen uniform slots and sixteen vertex streams, and checks wide-range compatibility. Combined with the pipeline tests, 252 checks pass on M4; reverting only this fix makes exactly 112 binding checks fail. This proves producer/replay agreement, not a device gameplay result.
 - **Found on:** [Pokken](../../dm/games/0100B3F000BE2000/README.md), [Arceus](../../dm/games/01001F5010DFA000/README.md), and [Need for Speed](../../dm/games/010029B0118E8000/README.md). Their frozen legacy hosts contained the same incompatible recorder/replay pair. Device confirmation remains open.
 
-## Legacy depth prediction and secondary blend sources
+### Legacy depth prediction and secondary blend sources
 
 - **Symptom:** `Fragment shader writes to depth, but pipeline's depth attachment pixel format is not set` persists even for later descriptors with a valid depth format; games show black or gray scenes. Separate SRC1 blend failures reject otherwise valid draws.
 - **Cause:** speculative legacy pipeline prediction tried the depth-less format before the valid depth-attached draw. A native Metal reproduction showed the first invalid compilation poisoning subsequent depth-format variants of the same functions. In addition, older shader libraries expose output 1 as MRT color 1, while SRC1 blending requires color 0, index 1 and a single physical color attachment.
