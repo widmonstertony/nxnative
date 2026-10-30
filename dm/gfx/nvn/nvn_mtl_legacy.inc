@@ -2348,9 +2348,41 @@ static id<MTLTexture> tex_linear(const tex_t *t) {
 // CPU-written block-linear textures (WriteTexels): the game gave no packaged layout and changes the content from the CPU each frame (Engage's movie frames: a Y plane R8 + a UV plane RG8, WriteTexels every frame).
 // Only packaged textures used to be uploaded from guest memory, so such a texture became a GPU-only texture whose content stayed 0. Their serials are recorded and they resolve through the packaged path (upload + re-upload on dirty pages)
 static pthread_mutex_t g_cpu_tex_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableSetRef g_cpu_tex;
+// A texture descriptor being render-target / shader-write capable does not mean
+// that the guest GPU has written its contents.  In particular, the no-BC path
+// gives every decompressed BC texture ShaderWrite usage for the host's decode
+// kernel.  Treating that implementation detail as guest ownership made
+// ReadTexels return zero blocks for textures which had only ever been filled in
+// their CPU-visible NVN pool (NFS Hot Pursuit's 256x256 BC cache is one).
+//
+// Record actual guest-visible writes instead.  Serial numbers are monotonic, so
+// retired snapshot metadata may safely remain until process exit; command-list
+// snapshots can still refer to a texture after the API object is finalized.
+static pthread_mutex_t g_gpu_tex_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableSetRef g_gpu_tex;
+static uint64_t h_ser(uint64_t h);
+static void gpu_tex_mark(uint64_t serial) {
+    if (!serial) return;
+    pthread_mutex_lock(&g_gpu_tex_mu);
+    if (!g_gpu_tex) g_gpu_tex = CFSetCreateMutable(NULL, 0, NULL);
+    CFSetAddValue(g_gpu_tex, (const void *)(uintptr_t)serial);
+    pthread_mutex_unlock(&g_gpu_tex_mu);
+}
+static void gpu_tex_clear(uint64_t serial) {
+    if (!serial) return;
+    pthread_mutex_lock(&g_gpu_tex_mu);
+    if (g_gpu_tex) CFSetRemoveValue(g_gpu_tex, (const void *)(uintptr_t)serial);
+    pthread_mutex_unlock(&g_gpu_tex_mu);
+}
+static int gpu_tex_written(uint64_t serial) {
+    pthread_mutex_lock(&g_gpu_tex_mu);
+    int r = g_gpu_tex && CFSetContainsValue(g_gpu_tex, (const void *)(uintptr_t)serial);
+    pthread_mutex_unlock(&g_gpu_tex_mu);
+    return r;
+}
 void mtl_tex_cpu_written(const tex_t *t) {
     uint64_t serial = t->serial;
     if (!serial) return;
+    gpu_tex_clear(serial);   // guest storage is authoritative again
     pthread_mutex_lock(&g_cpu_tex_mu);
     if (!g_cpu_tex) g_cpu_tex = CFSetCreateMutable(NULL, 0, NULL);
     int added = 0;
@@ -3157,6 +3189,7 @@ static id<MTLRenderCommandEncoder> rp_begin_ex_(int clear_only) {
         any = 1;
         pd.colorAttachments[i].loadAction = R.clear_c[i] ? MTLLoadActionClear : MTLLoadActionLoad;
         pd.colorAttachments[i].clearColor = R.cc[i];
+        if (R.clear_c[i]) gpu_tex_mark(R.rt.color[i]->serial);
         if (R.clear_c[i]) PD("C %llu c%d 清成 %g,%g,%g,%g", g_stat_pass + 1, i, R.cc[i].red, R.cc[i].green, R.cc[i].blue, R.cc[i].alpha);
         int cov = tbdr_on() && !R.clear_c[i] && (g_fd_dw || g_fd_di) && fz_load_covers(i, pd.colorAttachments[i].texture, pd.colorAttachments[i].level);
         if (!R.clear_c[i] && (g_fd_dw || g_fd_di) && !cov) PD("Q %llu c%d 读入不可省 why=%d", g_stat_pass + 1, i, g_fd_why);
@@ -3205,6 +3238,7 @@ static id<MTLRenderCommandEncoder> rp_begin_ex_(int clear_only) {
             any = 1;
             pd.depthAttachment.loadAction = R.clear_d ? MTLLoadActionClear : MTLLoadActionLoad;
             pd.depthAttachment.clearDepth = R.cd; pd.depthAttachment.storeAction = MTLStoreActionStore;
+            if (R.clear_d || R.clear_s) gpu_tex_mark(R.rt.depth->serial);
             MTLPixelFormat pf = pd.depthAttachment.texture.pixelFormat;
             if (clear_only != 4 && (pf == MTLPixelFormatDepth32Float_Stencil8 || pf == MTLPixelFormatStencil8)) {   // 4: depth only
                 pd.stencilAttachment.texture = pd.depthAttachment.texture; pd.stencilAttachment.level = pd.depthAttachment.level;
@@ -4212,7 +4246,23 @@ static void bind_vbufs(id<MTLRenderCommandEncoder> en) {
     if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     legacy_bind_buffer(en, 0, 30, zero, 0);
 }
+static void gpu_tex_mark_program_images(NvProg *pr) {
+    if (!pr) return;
+    for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_IMG && sh->rf.b[i].rw && sh->rf.b[i].reg < 32)
+            gpu_tex_mark(h_ser(S.img[st][sh->rf.b[i].reg]));
+    }
+}
 static void udc_note_draw(NvProg *pr) {
+    // Conservatively count every encoded draw as a write to its bound
+    // attachments.  A zero-count draw can only cause a false GPU-owned result,
+    // never stale guest storage to be returned.  Writable images are marked
+    // from reflection and the currently bound image handle.
+    if (R.has_rt) {
+        for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) gpu_tex_mark(R.rt.color[i]->serial);
+        if (R.rt.depth) gpu_tex_mark(R.rt.depth->serial);
+    }
+    gpu_tex_mark_program_images(pr);
     if (!tbdr_on()) {   // without the TBDR set only the duplicate-slot report below is live (the zero-source skip and the unwritten-attachment store are part of the set): skip the per-draw scans
         uint32_t cm = pr && pr->sh[1] ? pr->sh[1]->rf.color_mask : 0;
         if (R.has_rt && cm >> 1) for (int i = 1; i < R.rt.n && i < 8; i++)
@@ -8214,7 +8264,8 @@ static id<MTLComputePipelineState> compute_pipeline(NvShader *cs, id<MTLFunction
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
     if (!S.prog) { RED_ONCE(27, "compute dispatch has no bound program"); return; }
-    NvShader *cs = prog_get(S.prog)->sh[5];
+    NvProg *pr = prog_get(S.prog);
+    NvShader *cs = pr->sh[5];
     if (!cs) { RED_ONCE(28, "dispatched program has no mapped compute shader"); return; }
     int min_cs = min_reduction_candidate(cs);
     id<MTLComputePipelineState> ps = min_cs ? nil : compute_pipeline(cs, cs->fn);
@@ -8238,6 +8289,7 @@ static void dispatch(const p_dispatch *dp) {
         return;
     }
     prepare_argument_textures(cs, 5);
+    gpu_tex_mark_program_images(pr);
     const uint16_t *tg = cs->rf.tg;
     if (!tg[0]) { RED_ONCE(29, "计算着色器缺线程组大小反射"); return; }
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -8296,7 +8348,9 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     // even when the uploaded Metal texture uses ASTC or decompressed storage.
     // Match the modern path, including a dirty texture read before first draw.
     int nvn_ft_written(const tex_t *);
-    if ((t->has_layout || tex_cpu_written(t->serial) || (DM_GAME_TEX_DIRTY_UPLOAD && nvn_ft_written(t))) && t->mem) {
+    int pool_cpu_storage = t->mem && t->pool && !(t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL))
+        && t->d.samples <= 1 && t->d.target != NVN_TEXTURE_TARGET_BUFFER && !(t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && !gpu_tex_written(t->serial);
+    if ((t->has_layout || tex_cpu_written(t->serial) || (DM_GAME_TEX_DIRTY_UPLOAD && nvn_ft_written(t)) || pool_cpu_storage) && t->mem) {
         uint32_t lw = MAX(t->d.width >> level, 1u), lh = MAX(t->d.height >> level, 1u), lz = is3d ? MAX(t->d.depth >> level, 1u) : 1;
         size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
         uint8_t *lin = malloc(lp * lr * lz);
@@ -8351,6 +8405,7 @@ static void copy_b2t(const p_copy_b2t *c) {
     int is3d = c->tex->d.target == 2, nz = c->r.depth ? c->r.depth : 1;
     void *mb; uint64_t mo;
     if (!mtl_addr(c->src, img * nz, &mb, &mo)) { RED_ONCE(23, "缓冲→贴图拷贝的源不在内存池里"); return; }
+    gpu_tex_mark(c->tex->serial);
     uint32_t upf; int ubpp;
     if (is_astc4(t.pixelFormat) && nvn_fmt_bc((uint32_t)c->tex->d.format)) {
         const uint8_t *src = [(__bridge id<MTLBuffer>)mb contents];
@@ -8507,6 +8562,7 @@ static void copy_t2t(const p_copy_t2t *c) {
     id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !d) return;
+    gpu_tex_mark(c->dst->serial);
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
     if (c->flags & DM_COPY_RESOLVE) {   // Downsample: multisample resolve into the single-sample destination (depth takes sample 0); with equal sample counts it is a plain whole copy
@@ -8583,6 +8639,7 @@ static void clear_tex(const p_clear_tex *c) {
     PD("X ser=%llu 视图格式 %#x 区域 %d,%d,%d %dx%dx%d 掩码 %#x %s %g,%g,%g,%g", c->tex->serial, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
        c->is_uint ? "ui" : "f", c->is_uint ? (double)c->c.u[0] : c->c.f[0], c->is_uint ? (double)c->c.u[1] : c->c.f[1], c->is_uint ? (double)c->c.u[2] : c->c.f[2], c->is_uint ? (double)c->c.u[3] : c->c.f[3]);
     if (!t) return;
+    gpu_tex_mark(c->tex->serial);
     unsigned lv = c->has_view && c->view.set_levels ? c->view.base_level : 0, l0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     NSUInteger w = MAX(t.width >> lv, 1u), h = MAX(t.height >> lv, 1u);
     int is3d = t.textureType == MTLTextureType3D, nz = c->r.depth ? c->r.depth : 1;

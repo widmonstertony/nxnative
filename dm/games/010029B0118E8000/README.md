@@ -33,7 +33,7 @@ control/code hashes: five vertex and five fragment programs. Stable per-key
 packages extend the external profile; the complete matching 99-stage Mac/iOS
 resource build succeeds. Captures and translated game assets remain outside Git.
 
-[Legacy CPU-written BC readback](../../../docs/reference/nvn-objects.md#legacy-cpu-written-bc-textures-return-zero-blocks)
+[Legacy CPU-owned BC readback](../../../docs/reference/nvn-objects.md#legacy-cpu-owned-bc-textures-return-zero-blocks)
 also lacked the modern path's ownership check. Its exact no-BC regression now
 passes, with a failing pre-fix control. This is separate from recompressing a
 truly GPU-written BC image, which remains unsupported. The device log alone
@@ -89,3 +89,19 @@ The next diagnostic host records bounded descriptor/ownership metadata with
 `DM_NVN_PASSDUMP_EVERY=600`. These switches are opt-in and do not change storage
 ownership, recompress textures, or establish that the BC warning causes the
 black screen. The owner drives the reproduction; no automatic game launch.
+
+Version `.11` reproduced the same black scene through frame 46,200. The main
+1920x1080 scene target was cleared to black with no world draw before the
+post-process chain, while UI draws continued at about 119.9 presents/s. The
+first concrete data loss occurs at frame 218: a 256x256 BC texture has 26,396
+non-zero bytes in its CPU-visible pool, but `ReadTexels` classifies it as having
+no CPU content and returns 32,768 zero bytes. The descriptor has no image flag
+and no guest GPU write precedes the read; its Metal `ShaderWrite` usage belongs
+only to the no-BC decode kernel.
+
+[Legacy CPU-owned BC readback](../../../docs/reference/nvn-objects.md#legacy-cpu-owned-bc-textures-return-zero-blocks)
+now records actual guest GPU writes rather than inferring ownership from Metal
+usage. A focused regression preserves all 32,768 original blocks and verifies
+the GPU-to-CPU ownership transitions. This is the first candidate that repairs
+the observed frame-218 data loss; a successful build is not yet a corrected
+picture claim, which still requires the owner's device test.

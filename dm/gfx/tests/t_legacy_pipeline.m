@@ -102,6 +102,25 @@ static void cpu_texture_readback(void) {
     mtl_tex_release(&t); free(t.mem);
 }
 
+// A texture initialized over a CPU-visible pool already contains valid NVN
+// blocks even when WriteTexels was never called and no packaged-layout flag was
+// supplied. Host ShaderWrite usage for BC decoding is not a guest GPU write.
+static void cpu_pool_bc_readback(void) {
+    pool_t pool = {.flags=NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    tex_t t = {0}; t.magic=MAGIC('T','E','X',0); t.serial=nvn_new_serial(); t.pool=&pool;
+    t.d=(nvn_texdesc){.width=256,.height=256,.depth=1,.levels=1,.target=NVN_TEXTURE_TARGET_2D,.format=0x42};
+    nvn_tex_layout(&t.d, &t.L); t.mem=calloc(1,t.L.size); pool.mem=t.mem; pool.size=t.L.size;
+    uint8_t *src=malloc(32768); for(unsigned i=0;i<32768;i++) src[i]=(uint8_t)(i*29+11);
+    CHECK(!nvn_swizzle(&t.d,0,0,src,512,t.mem), "CPU-visible pool BC blocks are swizzled");
+    mtl_tex_init(&t);
+    NVNcopyRegion r={.width=256,.height=256,.depth=1}; uint8_t *out=calloc(1,32768);
+    mtl_read_texels(&t,0,0,&r,out,512,32768);
+    CHECK(!memcmp(out,src,32768), "unwritten CPU-visible pool reads exact original BC blocks");
+    gpu_tex_mark(t.serial); CHECK(gpu_tex_written(t.serial), "actual guest GPU write takes ownership");
+    mtl_tex_cpu_written(&t); CHECK(!gpu_tex_written(t.serial), "later CPU write returns ownership to guest storage");
+    mtl_tex_release(&t); free(out); free(src); free(t.mem);
+}
+
 // A lazy format-view copy must precede the consumer's encoder. NFS changes
 // an integer target to a normalized sampled view in the first scene after its splash.
 static void format_view_draw(id<MTLFunction> vertex) {
@@ -148,7 +167,12 @@ static void format_view_draw(id<MTLFunction> vertex) {
 }
 
 int main(int argc, char **argv) { @autoreleasepool {
-    mtl_init(); binding_commands(); cpu_texture_readback(); NSError *error = nil;
+    if (argc > 1 && !strcmp(argv[1], "--cpu-only")) {
+        cpu_pool_bc_readback();
+        printf("legacy CPU pool readback: %d checks, %d failures\n", checks, failed);
+        return failed != 0;
+    }
+    mtl_init(); binding_commands(); cpu_texture_readback(); cpu_pool_bc_readback(); NSError *error = nil;
     NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint i [[vertex_id]]) { return float4(i == 1 ? 3.0 : -1.0, i == 2 ? 3.0 : -1.0, 0, 1); }\n"
         "fragment float4 f() { return float4(.125,.25,.5,.375); }\n"

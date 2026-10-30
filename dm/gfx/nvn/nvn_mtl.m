@@ -81,6 +81,8 @@ unsigned mtl_cpu_tex_count(void) {
     return count;
 }
 
+int mtl_tex_gpu_owned(uint64_t serial) { return gpu_tex_written(serial); }
+
 uint64_t mtl_pkg_edge_skips(void) { return 0; }
 
 void mtl_reg_image(int tid, const tex_t *t, const view_t *v) {
