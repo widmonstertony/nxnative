@@ -78,3 +78,14 @@ production timing/pacing cases and nine existing engine-limit cases pass, plus
 44 tool/docs/settings/shader-dump/chain tests. Automatic gameplay regression was
 not run: the owner explicitly handles gameplay tests. No measured FPS or
 corrected-picture claim is made from these build checks.
+
+The owner's `.9` retry still goes black after entering. Its actual device log
+now records 119.93 drawable presents/s and no unmapped-stage warnings, so neither
+the old 30-fps engine wait nor the five missing stages explains the remaining
+picture failure. The BC readback warning persists, but its previous wording
+incorrectly inferred a GPU write solely from the absence of a known CPU upload.
+The next diagnostic host records bounded descriptor/ownership metadata with
+`DM_NVN_BC_READBACK_TRACE=1`, and one pass/binding snapshot every 600 frames with
+`DM_NVN_PASSDUMP_EVERY=600`. These switches are opt-in and do not change storage
+ownership, recompress textures, or establish that the BC warning causes the
+black screen. The owner drives the reproduction; no automatic game launch.

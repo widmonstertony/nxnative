@@ -2647,6 +2647,11 @@ static int passdump(void) {
         if (frame >= start && frame - start < count) return 1;
     }
     static long a0 = -2, a1; if (a0 == -2) { const char *e = getenv("DM_NVN_PASSDUMP"); a0 = e ? atol(e) : -1; a1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : a0; }
+    // Sparse snapshots follow user-driven scene changes without guessing their
+    // frame number or recording every frame. Opt-in; at most one frame/period.
+    static long every = -1;
+    if (every < 0) { const char *e = getenv("DM_NVN_PASSDUMP_EVERY"); every = e ? atol(e) : 0; if (every < 60) every = 0; }
+    if (every && atomic_load(&g_cur_frame) % (uint64_t)every == 0) return 1;
     long f = (long)atomic_load(&g_cur_frame); return a0 >= 0 && f >= a0 && f <= a1;
 }
 #define PD(...) do { if (passdump()) { fprintf(stderr, "[pass] F%llu ", (unsigned long long)atomic_load(&g_cur_frame)); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
@@ -8309,7 +8314,20 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     @autoreleasepool {
     id<MTLTexture> mt = tex_mtl(t);
     if (!mt) { memset(dst, 0, img * nz); return; }
-    if (nvn_fmt_bc((uint32_t)t->d.format) && !is_native_bc(mt.pixelFormat)) { RED_ONCE(51, "a GPU-written BC texture stored decompressed or as ASTC cannot be read back as original BC blocks; returning zeroes"); memset(dst, 0, img * nz); return; }
+    if (nvn_fmt_bc((uint32_t)t->d.format) && !is_native_bc(mt.pixelFormat)) {
+        // This path's absence of a known CPU upload is not proof of a GPU
+        // write. Record bounded ownership metadata before choosing a repair;
+        // never substitute possibly stale guest storage for the GPU's result.
+        static _Atomic unsigned reports;
+        if (getenv("DM_NVN_BC_READBACK_TRACE") && atomic_fetch_add(&reports, 1) < 8)
+            MLOG("BC readback unsupported: serial=%llu nvn=%#x metal=%lu size=%ux%ux%u level=%u layer=%u flags=%#x pool_flags=%#x has_layout=%d cpu_written=%d has_storage=%d region=%d,%d,%d+%d,%d,%d row=%zu image=%zu",
+                (unsigned long long)t->serial, t->d.format, (unsigned long)mt.pixelFormat,
+                t->d.width, t->d.height, t->d.depth, level, layer0, t->d.flags,
+                t->pool ? t->pool->flags : 0, t->has_layout, tex_cpu_written(t->serial), t->mem != NULL,
+                r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, row, img);
+        RED_ONCE(51, "a BC texture without known CPU content cannot be read back as original BC blocks from decompressed or ASTC storage; returning zeroes");
+        memset(dst, 0, img * nz); return;
+    }
     mtl_finish_gpu();
     id<MTLBuffer> buf = [g_dev newBufferWithLength:wb * hb * nz options:MTLResourceStorageModeShared];
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = enc_b_begin(cb);
