@@ -8,6 +8,7 @@
 #import "LibraryRoot.h"
 #ifdef DM_LIBRARY_HOST
 #include "game_profile_runtime.h"
+#include "dmsh_chain.h"
 // The library picks a card before the game front end is created. The standalone
 // Swift launcher is per IPA and has no active game until that selection.
 bool dm_show_launcher(void *view_controller, void (*done)(void)) {
@@ -123,6 +124,10 @@ static NSSet<NSString *> *availableGames(NSArray<NSDictionary *> *catalog){
         NSString *resources=resourceRootForTitle(root,title);
         if(!resources)continue;
         NSString *tables=[resources stringByAppendingPathComponent:@"dm"];
+        NSString *chain=[resources stringByAppendingPathComponent:[NSString stringWithFormat:@"msl/b-%s",DMSH_CHAIN]];
+        NSString *stamp=[NSString stringWithContentsOfFile:[chain stringByAppendingPathComponent:@"inputs.tsv"] encoding:NSUTF8StringEncoding error:nil];
+        NSString *gameRow=[NSString stringWithFormat:@"game\t%@",title.uppercaseString];
+        if(![[stamp componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] containsObject:gameRow])continue;
         BOOL isDir=NO;
         NSString *user=[[root stringByAppendingPathComponent:title] stringByAppendingPathComponent:@"UserData"];
         BOOL bundled=[resources hasPrefix:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources/"]];
