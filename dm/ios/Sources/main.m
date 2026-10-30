@@ -74,12 +74,22 @@ static int library_slot_paths(NSString **doc, NSString **res) {
     NSString *resources = [root stringByAppendingPathComponent:@"Resources"];
     BOOL isDir = NO;
     NSFileManager *fm = NSFileManager.defaultManager;
-    if (![fm fileExistsAtPath:user isDirectory:&isDir] || !isDir ||
-        ![fm fileExistsAtPath:resources isDirectory:&isDir] || !isDir ||
+    NSString *bundled = [[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources"] stringByAppendingPathComponent:title];
+    if (![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"dm/shader_map.tsv"]] &&
+        [fm fileExistsAtPath:[bundled stringByAppendingPathComponent:@"dm/shader_map.tsv"]])
+        resources = bundled;
+    if (![fm fileExistsAtPath:resources isDirectory:&isDir] || !isDir ||
         ![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"dm"] isDirectory:&isDir] || !isDir ||
         ![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"msl"] isDirectory:&isDir] || !isDir ||
         ![fm fileExistsAtPath:[[resources stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"shader_map.tsv"]]) {
         fprintf(stderr, "[RED] boot: library slot %s is incomplete\n", title.UTF8String); return 0;
+    }
+    NSString *legacyTitle=[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLibraryLegacyTitleID"];
+    if([legacyTitle isKindOfClass:NSString.class]&&[legacyTitle.lowercaseString isEqualToString:title]&&
+       [fm fileExistsAtPath:[*doc stringByAppendingPathComponent:@"save"]])
+        user=*doc; // An in-place update of a single-game app keeps its existing save path.
+    else if(![fm createDirectoryAtPath:user withIntermediateDirectories:YES attributes:nil error:nil]){
+        fprintf(stderr, "[RED] boot: library slot user data is unavailable\n"); return 0;
     }
     *doc = user; *res = resources;
     fprintf(stderr, "boot: library slot %s\n", title.UTF8String);

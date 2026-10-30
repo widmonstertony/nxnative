@@ -62,6 +62,20 @@ static NSArray<NSDictionary *> *games(void){NSArray *builtIn=@[
     return all;
 }
 static NSString *bundleForGame(NSDictionary *g){return g[@"bundle"] ?: [@"org.nxnative." stringByAppendingString:g[@"id"]];}
+#ifdef DM_LIBRARY_HOST
+static NSString *resourceRootForTitle(NSString *gamesRoot, NSString *title){
+    NSFileManager *fm=NSFileManager.defaultManager;
+    NSString *documents=[[gamesRoot stringByAppendingPathComponent:title] stringByAppendingPathComponent:@"Resources"];
+    NSString *bundled=[[[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources"] stringByAppendingPathComponent:title] stringByStandardizingPath];
+    for(NSString *candidate in @[documents,bundled]){
+        BOOL isDir=NO;
+        if([fm fileExistsAtPath:[candidate stringByAppendingPathComponent:@"dm/shader_map.tsv"]] &&
+           [fm fileExistsAtPath:[candidate stringByAppendingPathComponent:@"msl"] isDirectory:&isDir]&&isDir)
+            return candidate;
+    }
+    return nil;
+}
+#endif
 static NSSet<NSString *> *availableGames(void){
 #ifdef DM_LIBRARY_HOST
     NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
@@ -71,16 +85,21 @@ static NSSet<NSString *> *availableGames(void){
         NSString *title=g[@"id"];
         const dm_game_profile *profile=dm_profile_find(title.UTF8String);
         if(!profile)continue;
-        NSString *tables=[[[root stringByAppendingPathComponent:title] stringByAppendingPathComponent:@"Resources"] stringByAppendingPathComponent:@"dm"];
+        NSString *resources=resourceRootForTitle(root,title);
+        if(!resources)continue;
+        NSString *tables=[resources stringByAppendingPathComponent:@"dm"];
         BOOL isDir=NO;
-        NSString *resources=[[root stringByAppendingPathComponent:title] stringByAppendingPathComponent:@"Resources"];
         NSString *user=[[root stringByAppendingPathComponent:title] stringByAppendingPathComponent:@"UserData"];
+        BOOL bundled=[resources hasPrefix:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources/"]];
+        BOOL userIsDir=NO;
+        BOOL haveUser=[NSFileManager.defaultManager fileExistsAtPath:user isDirectory:&userIsDir]&&userIsDir;
         NSString *marker=[NSString stringWithUTF8String:profile->romfs_marker];
         BOOL romfs=[NSFileManager.defaultManager fileExistsAtPath:[resources stringByAppendingPathComponent:@"romfs.img"]] ||
             [NSFileManager.defaultManager fileExistsAtPath:[user stringByAppendingPathComponent:@"romfs.img"]] ||
             [NSFileManager.defaultManager fileExistsAtPath:[[resources stringByAppendingPathComponent:@"romfs"] stringByAppendingPathComponent:marker]] ||
             [NSFileManager.defaultManager fileExistsAtPath:[[user stringByAppendingPathComponent:@"romfs"] stringByAppendingPathComponent:marker]];
-        if([NSFileManager.defaultManager fileExistsAtPath:tables isDirectory:&isDir]&&isDir&&
+        if((bundled||haveUser)&&
+           [NSFileManager.defaultManager fileExistsAtPath:tables isDirectory:&isDir]&&isDir&&
            [NSFileManager.defaultManager fileExistsAtPath:[resources stringByAppendingPathComponent:@"msl"] isDirectory:&isDir]&&isDir&&
            [NSFileManager.defaultManager fileExistsAtPath:[tables stringByAppendingPathComponent:@"shader_map.tsv"]]&&
            romfs)
