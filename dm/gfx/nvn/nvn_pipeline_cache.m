@@ -46,7 +46,7 @@ static void cache_init(id<MTLDevice> device) {
     if (!dm) { stats.disabled = 1; return; }
     char osbuild[128] = {0}; size_t size = sizeof osbuild;
     sysctlbyname("kern.osversion", osbuild, &size, NULL, 0);
-    NSMutableArray *identity = [NSMutableArray arrayWithArray:@[@CACHE_ABI, @DM_GAME_ID, @DMSH_CHAIN,
+    NSMutableArray *identity = [NSMutableArray arrayWithArray:@[@CACHE_ABI, [NSString stringWithUTF8String:DM_GAME_ID], @DMSH_CHAIN,
         device.name ?: @"unknown", @(device.registryID), @(osbuild),
         NSProcessInfo.processInfo.operatingSystemVersionString]];
     NSArray *files = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dm error:nil] sortedArrayUsingSelector:@selector(compare:)];
@@ -62,7 +62,7 @@ static void cache_init(id<MTLDevice> device) {
 #endif
     NSString *key = digest([NSJSONSerialization dataWithJSONObject:identity options:0 error:nil]);
     NSString *root = override ? @(override) : [[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject] stringByAppendingPathComponent:@"NXPipelineCache"];
-    NSString *dir = [[root stringByAppendingPathComponent:@DM_GAME_ID] stringByAppendingPathComponent:key];
+    NSString *dir = [[root stringByAppendingPathComponent:[NSString stringWithUTF8String:DM_GAME_ID]] stringByAppendingPathComponent:key];
     NSError *error = nil;
     if (![NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&error]) {
         stats.disabled = stats.write_failed = 1; PCLOG("directory unavailable: %s", error.localizedDescription.UTF8String); return;

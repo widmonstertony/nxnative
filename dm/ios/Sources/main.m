@@ -10,6 +10,9 @@
 #include "game_profile.h"   // game profile constants (the RomFS marker path)
 #include "front.h"
 #include "romfs_image.h"
+#ifdef DM_LIBRARY_HOST
+#import "../LibraryApp/Sources/LibraryRoot.h"
+#endif
 
 extern char **environ;
 
@@ -28,11 +31,12 @@ static int romfs_image_complete(NSString *path) {
     }
     romfs_image_close(m); return 1;
 }
-static NSString *romfs_locate(void) {
+static NSString *romfs_locate(NSString *doc, NSString *res) {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    NSString *marker = [NSString stringWithUTF8String:DM_GAME_ROMFS_MARKER];
     NSString *img = [doc stringByAppendingPathComponent:@"romfs.img"];
     if (romfs_image_complete(img)) {
+#ifndef DM_LIBRARY_HOST
         // A folder copy from before images is now dead weight of up to many GB (often cut off partway). Deleting its 300,000 files here took longer than iOS allows an app to start
         // (Tears of the Kingdom: killed on a black screen), so it is moved aside at once and deleted in the background, leftovers of an interrupted delete included
         NSString *old = [doc stringByAppendingPathComponent:@"romfs"], *tmp = NSTemporaryDirectory();
@@ -42,15 +46,44 @@ static NSString *romfs_locate(void) {
             NSFileManager *bfm = [NSFileManager new];
             for (NSString *n in [bfm contentsOfDirectoryAtPath:tmp error:nil]) if ([n hasPrefix:@"romfs-old-"]) [bfm removeItemAtPath:[tmp stringByAppendingPathComponent:n] error:nil];
         });
+#endif
         return img;
     }
-    NSString *bundledImage = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.img"];
+    NSString *bundledImage = [res stringByAppendingPathComponent:@"romfs.img"];
     NSString *documentFolder = [doc stringByAppendingPathComponent:@"romfs"];
-    if ([fm fileExistsAtPath:[documentFolder stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER]]) return documentFolder;
+    if ([fm fileExistsAtPath:[documentFolder stringByAppendingPathComponent:marker]]) return documentFolder;
     if (romfs_image_complete(bundledImage)) return bundledImage;
-    for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs"]])
-        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
+    for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [res stringByAppendingPathComponent:@"romfs"]])
+        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:marker]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
     return nil;
+}
+
+// The shared library keeps each game's read-only resources and writable data
+// under one title-ID directory. A slot is selected before host preload; the
+// single-game app continues to use its existing paths when no slot is set.
+static int library_slot_paths(NSString **doc, NSString **res) {
+    const char *raw = getenv("DM_LIBRARY_GAME_ID");
+    if (!raw || !*raw) return 1;
+    NSString *title = [[NSString stringWithUTF8String:raw] lowercaseString];
+    NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
+    if (title.length != 16 || [title rangeOfCharacterFromSet:other].location != NSNotFound) {
+        fprintf(stderr, "[RED] boot: invalid library title ID\n"); return 0;
+    }
+    NSString *root = [[*doc stringByAppendingPathComponent:@"Games"] stringByAppendingPathComponent:title];
+    NSString *user = [root stringByAppendingPathComponent:@"UserData"];
+    NSString *resources = [root stringByAppendingPathComponent:@"Resources"];
+    BOOL isDir = NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:user isDirectory:&isDir] || !isDir ||
+        ![fm fileExistsAtPath:resources isDirectory:&isDir] || !isDir ||
+        ![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"dm"] isDirectory:&isDir] || !isDir ||
+        ![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"msl"] isDirectory:&isDir] || !isDir ||
+        ![fm fileExistsAtPath:[[resources stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"shader_map.tsv"]]) {
+        fprintf(stderr, "[RED] boot: library slot %s is incomplete\n", title.UTF8String); return 0;
+    }
+    *doc = user; *res = resources;
+    fprintf(stderr, "boot: library slot %s\n", title.UTF8String);
+    return 1;
 }
 
 // Boot prerequisites (done before UIApplicationMain): directories / environment variables / log -- the host's early load reads these
@@ -58,6 +91,13 @@ static int boot_env(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
     NSString *res = NSBundle.mainBundle.resourcePath;
+#ifdef DM_MULTI_GAME
+    const char *selected = getenv("DM_LIBRARY_GAME_ID");
+    if (!dm_profile_select(selected)) { fprintf(stderr, "[RED] boot: no registered library game selected\n"); return 0; }
+#endif
+    if (!library_slot_paths(&doc, &res)) return 0;
+    NSString *romfs = romfs_locate(doc, res);
+    if (!romfs) { fprintf(stderr, "[RED] boot: selected game files not found or incomplete\n"); return 0; }
     for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
     // Keep game files and scratch data out of device backups (Documents is backed up by default; a RomFS placed there is many GB). Saves, logs and the pipeline list stay in the backup
     for (NSString *d in @[@"romfs", @"romfs.img", @"temp"]) {
@@ -102,8 +142,6 @@ static int boot_env(void) {
     NSString *lang = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLanguage"];
     if (!getenv("DM_LANG") && [lang isKindOfClass:NSString.class] && lang.length) setenv("DM_LANG", lang.UTF8String, 0);
     fprintf(stderr, "boot: game language %s\n", getenv("DM_LANG") ?: "en-US");
-    NSString *romfs = romfs_locate();
-    if (!romfs) { fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
@@ -159,7 +197,23 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+#ifdef DM_LIBRARY_HOST
+    __weak SceneDelegate *weakSelf=self;
+    self.window.rootViewController=TonTonLibraryController(^(NSString *titleID){
+        SceneDelegate *owner=weakSelf;
+        if(!owner||g_boot_ok)return;
+        setenv("DM_LIBRARY_GAME_ID",titleID.UTF8String,1);
+        if(!boot_env()){
+            UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"卡带暂时无法启动" message:@"请检查该游戏的资源是否已完整移入游戏匣。" preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+            [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];return;
+        }
+        g_boot_ok=1;
+        owner.window.rootViewController=front_ios_root();
+    });
+#else
     self.window.rootViewController = front_ios_root();
+#endif
     [self.window makeKeyAndVisible];
 }
 - (void)sceneWillResignActive:(UIScene *)s { front_ios_focus_event(0); }
@@ -169,6 +223,8 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 @end
 
 int main(int argc, char **argv) {
+#ifndef DM_LIBRARY_HOST
     @autoreleasepool { g_boot_ok = boot_env(); }
+#endif
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(App.class)); }
 }

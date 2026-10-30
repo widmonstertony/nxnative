@@ -65,6 +65,9 @@ static pthread_key_t g_race_keys[512];
 static unsigned g_race_n, g_race_want;
 static void *keyrace_thread(void *unused);
 static void host_preload(int argc, char **argv) {
+#ifdef DM_MULTI_GAME
+    if (!dm_profile_select(getenv("DM_LIBRARY_GAME_ID"))) die("select a registered DM_LIBRARY_GAME_ID before host loading");
+#endif
     g_t0_ns = proc_start_mono_ns();
     flags_init();
     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- game arguments...]");
@@ -97,7 +100,14 @@ static void host_preload(int argc, char **argv) {
         for (char *t = strtok(s, " "); t && g_argc < 63; t = strtok(NULL, " ")) g_argv[g_argc++] = t;
         LOG("game arguments from the game profile: %s", DM_GAME_ARGS);
     }
-    if (!n) { static const char *def[] = DM_GAME_MODULES; for (int k = 0; k < DM_GAME_NMOD; k++) names[n++] = def[k]; }   // default module list from the game profile's modules (Mario: main sdk)
+    if (!n) {
+#ifdef DM_MULTI_GAME
+        for (size_t k = 0; k < DM_GAME_NMOD; k++) names[n++] = dm_profile_current()->modules[k];
+#else
+        static const char *def[] = DM_GAME_MODULES;
+        for (int k = 0; k < DM_GAME_NMOD; k++) names[n++] = def[k];
+#endif
+    }   // default module list from the selected game's profile
     load_modules(argv[1], names, n);
     dm_sdk_major();   // logs the SDK version, which SDK-dependent behaviour follows (loader.c)
     uint64_t ta = now_ns();

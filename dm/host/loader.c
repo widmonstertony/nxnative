@@ -534,11 +534,15 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
 }
 static void map_image(module_t *m, const char *dir) {
     (void)dir;
+    const char *ns = "";
+#ifdef DM_MULTI_GAME
+    ns = dm_profile_current()->embed_ns;
+#endif
 #if TARGET_OS_TV
     char sx0[17], sx1[17], sd[17];
-    snprintf(sx0, sizeof sx0, "__dm%sx0", m->name);
-    snprintf(sx1, sizeof sx1, "__dm%sx1", m->name);
-    snprintf(sd, sizeof sd, "__DM%sD", m->name);
+    snprintf(sx0, sizeof sx0, "__dm%s%sx0", ns, m->name);
+    snprintf(sx1, sizeof sx1, "__dm%s%sx1", ns, m->name);
+    snprintf(sd, sizeof sd, "__DM%s%sD", ns, m->name);
     unsigned long z0, z1, zw;
     const uint8_t *x0 = tv_guest_section(sx0, &z0), *x1 = tv_guest_section(sx1, &z1);
     const uint8_t *w = getsectiondata(IMAGE_MH, sd, "__data", &zw);
@@ -552,13 +556,13 @@ static void map_image(module_t *m, const char *dir) {
     LOG("%s using static signed tvOS RX/RW/RX segments; no TEXT protection change", m->name);
     return;
 #else
-    char sw[17]; snprintf(sw, sizeof sw, "__DM%sW", m->name);
+    char sw[17]; snprintf(sw, sizeof sw, "__DM%s%sW", ns, m->name);
     unsigned long zw; const uint8_t *w = getsectiondata(IMAGE_MH, sw, "__img", &zw);
     if (!w) die("embedded section %s missing", sw);
     uint64_t z0 = (m->text_end + 0x3FFF) & ~0x3FFFull;
 
     if (m->patch_off >= 0) {
-        char si[17]; snprintf(si, sizeof si, "__dm%simg", m->name);
+        char si[17]; snprintf(si, sizeof si, "__dm%s%simg", ns, m->name);
         unsigned long zi; const uint8_t *img = getsectiondata(IMAGE_MH, "__TEXT", si, &zi);
         if (!img) die("embedded section __TEXT,%s missing", si);
         if (z0 + zw != (uint64_t)m->patch_off || (zi & 0x3FFF) || ((uintptr_t)img & 0x3FFF) || ((uintptr_t)w & 0x3FFF))
@@ -574,7 +578,7 @@ static void map_image(module_t *m, const char *dir) {
     }
 
     // Negative PATCH_OFF builds retain the older three-piece representation.
-    char sx0[17], sx1[17]; snprintf(sx0, sizeof sx0, "__dm%sx0", m->name); snprintf(sx1, sizeof sx1, "__dm%sx1", m->name);
+    char sx0[17], sx1[17]; snprintf(sx0, sizeof sx0, "__dm%s%sx0", ns, m->name); snprintf(sx1, sizeof sx1, "__dm%s%sx1", ns, m->name);
     unsigned long zx0, zx1;
     const uint8_t *x0 = getsectiondata(IMAGE_MH, "__TEXT", sx0, &zx0), *x1 = getsectiondata(IMAGE_MH, "__TEXT", sx1, &zx1);
     if (!x0 || !x1 || zx0 + zw != m->file_image_len || (zx0 & 0x3FFF) || (zw & 0x3FFF) || (zx1 & 0x3FFF))
