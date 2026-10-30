@@ -32,7 +32,11 @@ typedef struct {
     uint8_t n;               // TEXD / SAMPD, and TEXU / SAMPU arrays (element k = the handle at byte 8k of the uniform buffer): array length (argument buffer entries aid .. aid + n - 1)
     uint8_t f1d;             // TEX: read by 1D integer fetches as 2D rows of 16384 texels (dmsh_build.py "fetch1d"): a buffer texture here is bound as such rows (nvn_mtl.m tbuf_as_2d)
     uint8_t atom;            // IMG: the shader runs image atomics on it (dmsh_build.py "atomic"): the texture must allow Metal's texture atomics (nvn_mtl.m dummy_img_atomic)
+    uint8_t samp_raw;        // SAMPU: SeparateSamplerId stores an unshifted 12-bit ID.
 } nvn_rbind;
+static inline unsigned nvn_refl_sampler_id(const nvn_rbind *b, uint32_t word) {
+    return (word >> (b->samp_raw ? 0 : 20)) & 0xfff;
+}
 typedef struct {
     int nb, abi, nv;         // Binding count, argument buffer slot, vertex input count
     nvn_rbind b[NVN_REFL_MAXB];

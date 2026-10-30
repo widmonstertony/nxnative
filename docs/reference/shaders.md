@@ -876,3 +876,36 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Cause:** that run compiled its Metal libraries and pipelines on first use (cold cache). With a warm cache the title is up after about 15 s; what looked like a 40-second wait in the read log (`DM_FSLOG`) was the title screen itself, which reads nothing.
 - **Check:** screenshots every few seconds (`ctl.sh snap` from a script) told the two apart.
 - **Found on:** [Bayonetta 3](../../dm/games/01004A4010FEA000/README.md) (SDK 13.3.2).
+
+
+### Mixed driver texture and raw guest sampler IDs
+
+- **Symptom:** Witcher 3 has all shader keys but a black movie/composite, with `B binding fp_t_cb720898_2000005ASmplr has no resolved slot number`.
+
+The Witcher 3 can resolve all runtime shader keys and still draw a black movie
+or composite. Route-B names such as `fp_t_cb720898_2000005ASmplr` encode a
+`SeparateSamplerId` (type 2): the texture comes from driver bank c2, whereas the
+unshifted sampler ID comes from c10 word 0. The older reflection builder records
+that texture as slot 128 but leaves its sampler slot null; rejecting the whole
+fragment program removes the blit, depth, and final-color programs. Treating the
+raw value as a combined handle and shifting it by 20 instead selects sampler 0.
+
+The host recovers this older reflection layout only when the name has type 2,
+the second bank is a guest uniform bank c3 through c16, the first offset names a
+valid driver texture slot, and a matching resolved texture binding is present.
+It reads the sampler word from guest uniform slot `bank - 3`, masks its low 12
+bits, and applies the bound descriptor pool base and existing lifetime handling.
+The legacy replay now retains sampler-pool changes instead of ignoring their
+commands; combined handles read from guest uniforms use that base too. Invalid or other
+unresolved layouts still fail. The modern renderer and legacy renderer both
+understand the flag; normal combined handles keep their upper-12-bit semantics.
+This is host interpretation of existing metadata, without changing shader code,
+reflection files, or the shader chain identifier.
+
+`t_refl` covers both raw offsets, paired texture validation, invalid banks,
+other handle types and existing combined handles. `t_legacy_pipeline` exercises
+production reflection, uniform reads, sampler registration, argument encoding
+and four GPU draws: changing the same guest word selects nearest, linear, then
+nearest filtering, followed by a draw using a different descriptor pool. The real
+recorder test also switches between two pools in both directions. These host tests establish the binding fix, not a device
+playability result.

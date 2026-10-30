@@ -4209,6 +4209,7 @@ static struct {
     NVNbufferRange vbuf[16];
     p_bind_buf ubo[6][16], ssbo[6][16];
     uint64_t tex[6][NTEX], samp[6][128], img[6][32];
+    int samp_base; // descriptor-pool base for sampler IDs read from guest uniforms
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp, depth_clamp;
     float blend_color[4]; int64_t copy_stride, copy_img_stride;
@@ -5287,6 +5288,9 @@ static uint32_t ubo_handle(int stage, int reg, int off) {
     if (!mtl_addr(u->addr + off, 4, &mb, &mo) || !(base = [(__bridge id<MTLBuffer>)mb contents])) return 0;
     uint32_t h; memcpy(&h, base + mo, 4); return h;
 }
+static int ubo_samp_id(const nvn_rbind *b, uint32_t h) {
+    int sid = (int)nvn_refl_sampler_id(b, h); return sid ? sid + S.samp_base : 0;
+}
 // Opt-in Z-A geometry diagnostics. An empty trigger file is inert; changing a
 // non-empty file captures one frame. Limits keep live-device logging bounded.
 // No pixel reads, synchronization waits or rendering overrides are introduced.
@@ -5417,7 +5421,7 @@ static int color_diag_begin(NvShader *sh, int stage) {
     for (int i = 0; i < sh->rf.nb; i++) {
         const nvn_rbind *b = &sh->rf.b[i]; int reg = b->reg;
         if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPU) {
-            int sid = b->kind == NVN_RB_SAMPU ? (int)(ubo_handle(stage, reg, b->off) >> 20) :
+            int sid = b->kind == NVN_RB_SAMPU ? ubo_samp_id(b, ubo_handle(stage, reg, b->off)) :
                       b->kind == NVN_RB_SAMPT ? (reg < NTEX ? (int)(S.tex[stage][reg] >> 20) : 0) :
                       reg < 128 ? (int)(S.samp[stage][reg] >> 20) : 0;
             if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) {
@@ -5542,7 +5546,7 @@ static void sample_trace_args(NvShader *sh, int stage, const uint64_t *slots) {
                 [g_sub_sample_notes appendFormat:@" tid=%d ser=%llu pool=%p off=%#llx view=%p size=%lux%lu mips=%lu fmt=%lu type=%lu usage=%#lx parent=%p level=%lu", tid, (unsigned long long)r->t.serial, r->t.pool, (unsigned long long)r->t.off, (__bridge void *)t, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.mipmapLevelCount, (unsigned long)t.pixelFormat, (unsigned long)t.textureType, (unsigned long)t.usage, (__bridge void *)t.parentTexture, (unsigned long)t.parentRelativeLevel];
             }
         } else if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPU) {
-            int sid = b->kind == NVN_RB_SAMPU ? ubo_handle(stage, reg, b->off) >> 20 : b->kind == NVN_RB_SAMPT ? (reg < NTEX ? S.tex[stage][reg] >> 20 : 0) : reg < 128 ? S.samp[stage][reg] >> 20 : 0;
+            int sid = b->kind == NVN_RB_SAMPU ? ubo_samp_id(b, ubo_handle(stage, reg, b->off)) : b->kind == NVN_RB_SAMPT ? (reg < NTEX ? S.tex[stage][reg] >> 20 : 0) : reg < 128 ? S.samp[stage][reg] >> 20 : 0;
             if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) { samp_par p = g_sreg[sid]; [g_sub_sample_notes appendFormat:@" sid=%d lod=%g..%g bias=%g minmag=%u/%u refs=%lu", sid, p.lod_min, p.lod_max, p.lod_bias, p.minf, p.magf, (unsigned long)g_sub_samplers.count]; }
         } else if (b->kind == NVN_RB_C1) {
             NSUInteger off; id<MTLBuffer> buffer = legacy_buffer_at(slots[b->aid], &off);
@@ -5637,7 +5641,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             NSUInteger final_offset; id<MTLBuffer> final_buffer = legacy_buffer_at(gpu, &final_offset);
             if (final_buffer != (__bridge id<MTLBuffer>)mb) USE(final_buffer, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPU) {   // SAMPT: the sampler part of a combined handle (texture ID | sampler ID << 20); SAMPU: the same, with the handle in a uniform buffer
-            int sid = b->kind == NVN_RB_SAMPU ? (int)(ubo_handle(nvn_stage, reg, b->off) >> 20) :
+            int sid = b->kind == NVN_RB_SAMPU ? ubo_samp_id(b, ubo_handle(nvn_stage, reg, b->off)) :
                       b->kind == NVN_RB_SAMPT ? (reg < NTEX ? (int)(S.tex[nvn_stage][reg] >> 20) : 0) :
                       reg < 128 ? (int)(S.samp[nvn_stage][reg] >> 20) : 0;
             __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
@@ -6035,10 +6039,13 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
                      S.has_vp, vp, R.has_sc, sc, (long)MAX(t.width >> level, 1), (long)MAX(t.height >> level, 1));
 }
 
+int nvn_dpool_base(const void *pool, int tex);
 static int state_op(uint32_t op, const void *a) {
     p_bind_handles one;
     if (op == OP_BIND_TEX1) { a = bind_rec(op, a, &one); op = OP_BIND_TEX; }
     switch (op) {
+        case OP_SET_SAMP_POOL: { int base = nvn_dpool_base(((const p_set_pool *)a)->pool, 0);
+            if (base != S.samp_base) { S.samp_base = base; args_dirty_all(); } break; }
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
         case OP_BIND_PROGRAM: { const p_bind_program *bp_ = a; const prog_t *np = bind_stages(bp_->prog, bp_->stages); if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_dirty_all(); } break; }
         case OP_BIND_STATE: {
@@ -9175,7 +9182,8 @@ void mtl_exec(const uint8_t *p) {
                 }
                 break;
             }
-            case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: break;
+            case OP_SET_SAMP_POOL: state_op(h.op, a); break;
+            case OP_SET_TEX_POOL: break;
             default: break;
         }
         p += h.size;

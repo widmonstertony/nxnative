@@ -84,6 +84,30 @@ int main(void) { @autoreleasepool {
         check("B handle array: sampler kind", NVN_RB_SAMPU, r.b[3].kind); check("B handle array: sampler n", 32, r.b[3].n); check("B handle array: bindless", 1, r.bindless);
         printf("%-60s %s\n", "B array of 32 handles in uniform slot 11 (texture + sampler)", fail == f1 ? "✓" : "✗");
     }
+    {   // Mixed c2 texture + c10 raw sampler ID (Witcher movie/depth/composite).
+        for (unsigned offset=0;offset<2;offset++) {
+            NSString *base = [NSString stringWithFormat:@"fp_t_cb720898_%08X", 0x2000005a | (offset<<14)];
+            NSDictionary *tex = @{@"kind":@"tex",@"reg":@128,@"arg_id":@0,@"msl_name":base,@"msl_type":@"texture2d<float>"};
+            NSDictionary *samp = @{@"kind":@"samp",@"reg":[NSNull null],@"arg_id":@1,@"msl_name":[base stringByAppendingString:@"Smplr"],@"msl_type":@"sampler"};
+            NSDictionary *j = @{@"route":@"B",@"bindings":@[tex,samp]};
+            check("mixed sampler: conversion",0,nvn_refl_from_json(j,&r,err,sizeof err));
+            check("mixed sampler: UBO kind",NVN_RB_SAMPU,r.b[1].kind);
+            check("mixed sampler: c10 is guest slot7",7,r.b[1].reg);
+            check("mixed sampler: word offset",4*offset,r.b[1].off);
+            check("mixed sampler: bindless",1,r.bindless);
+            check("mixed sampler: raw ID",37,nvn_refl_sampler_id(&r.b[1],37));
+            check("mixed sampler: raw ID mask",37,nvn_refl_sampler_id(&r.b[1],0xa0000025));
+            nvn_rbind combined={0};
+            check("combined sampler keeps upper bits",37,nvn_refl_sampler_id(&combined,37u<<20|123));
+            check("mixed sampler: missing texture rejected",1,nvn_refl_from_json(@{@"route":@"B",@"bindings":@[samp]},&r,err,sizeof err)!=0);
+            NSMutableDictionary *bad=[tex mutableCopy];bad[@"reg"]=@129;
+            check("mixed sampler: wrong paired slot rejected",1,nvn_refl_from_json(@{@"route":@"B",@"bindings":@[bad,samp]},&r,err,sizeof err)!=0);
+            for (NSString *wrong in @[@"fp_t_cb720898_1000005ASmplr",@"fp_t_cb131074_2000005ASmplr",@"fp_t_cb1179650_2000005ASmplr",@"fp_t_cb720898_2000005BSmplr"]) {
+                NSMutableDictionary *invalid=[samp mutableCopy];invalid[@"msl_name"]=wrong;
+                check("mixed sampler: unsupported encoding rejected",1,nvn_refl_from_json(@{@"route":@"B",@"bindings":@[tex,invalid]},&r,err,sizeof err)!=0);
+            }
+        }
+    }
     {   int f1 = fail;
         NSDictionary *b1 = @{@"route": @"B", @"bindings": @[@{@"kind": @"foo", @"arg_id": @0, @"msl_name": @"x", @"msl_type": @"constant _16*"}]};
         NSDictionary *b2 = @{@"route": @"B", @"bindings": @[@{@"kind": @"tex", @"reg": [NSNull null], @"arg_id": @0, @"msl_name": @"fp_t_x", @"msl_type": @"texture2d<float>"}]};

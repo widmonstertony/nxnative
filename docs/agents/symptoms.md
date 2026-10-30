@@ -537,6 +537,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - the picture bright green and white from some scene on, in runs with pipelines compiled on demand (prewarm lists off or short) and in none with `DM_NVN_PREDICT=0`. → [The precompile look-ahead restores the scissor](../reference/shaders.md#the-precompile-look-ahead-restores-the-scissor)
 - a GPU frame capture (`DM_GPU_CAPTURE`, or Xcode with `MTL_CAPTURE_ENABLED=1`) fails with `Capturing Render pipeline specialization is not supported`, or the capture layer crashes on the pipeline archive; a capture of the `MTLDevice` is refused. → [GPU frame captures need pipelines built through the device](../reference/shaders.md#gpu-frame-captures-need-pipelines-built-through-the-device)
 - the first boot sat on the loading clock for about a minute, the CPU idle, with every file read done after 12 s. → [A cold Metal cache looks like a long load](../reference/shaders.md#a-cold-metal-cache-looks-like-a-long-load)
+- Witcher 3 has all shader keys but a black movie/composite, with `B binding fp_t_cb720898_2000005ASmplr has no resolved slot number`. → [Mixed driver texture and raw guest sampler IDs](../reference/shaders.md#mixed-driver-texture-and-raw-guest-sampler-ids)
 
 ## Game state
 

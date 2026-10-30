@@ -74,6 +74,15 @@ static void binding_commands(void) {
     CHECK(S.ubo[1][3].addr==0x987600000ull && S.ubo[1][3].size==UINT64_C(0x100000100), "wide uniform binding remains exact above 4GiB");
     CHECK(S.vbuf[4].address==ranges[0].address && S.vbuf[5].address==ranges[1].address && S.vbuf[5].size==256,
           "wide multi-stream vertex binding remains intact");
+    NVNsamplerPool pools[2];
+    CHECK(API(nvnSamplerPoolInitialize)(&pools[0],&pool,0,32), "first sampler pool initializes");
+    CHECK(API(nvnSamplerPoolInitialize)(&pools[1],&pool,1024,32), "second sampler pool initializes");
+    for(int i=1;i>=0;i--) {
+        API(nvnCommandBufferBeginRecording)(&commands);API(nvnCommandBufferSetSamplerPool)(&commands,&pools[i]);
+        handle=API(nvnCommandBufferEndRecording)(&commands);mtl_sub_begin();mtl_exec((const uint8_t *)(uintptr_t)handle);mtl_sub_commit();mtl_drain();
+        CHECK(S.samp_base==256*i,"recorded sampler pool updates replay base in both directions");
+    }
+    API(nvnSamplerPoolFinalize)(&pools[0]);API(nvnSamplerPoolFinalize)(&pools[1]);
     API(nvnCommandBufferFinalize)(&commands);API(nvnMemoryPoolFinalize)(&pool);
     state_reset();
 #undef API
@@ -166,6 +175,45 @@ static void format_view_draw(id<MTLFunction> vertex) {
     mtl_reg_tex(2,NULL,NULL);mtl_tex_release(&input);mtl_tex_release(&output);state_reset();memset(&R,0,sizeof R);
 }
 
+// Production replay: changing only a raw c10 sampler ID selects nearest/linear.
+static void guest_sampler_id_draw(id<MTLFunction> vertex) {
+    NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct A { texture2d<float> fp_t_cb720898_2000005A [[id(0)]]; sampler fp_t_cb720898_2000005ASmplr [[id(1)]]; };\n"
+        "fragment float4 sample_id(constant A &a [[buffer(0)]]) { return a.fp_t_cb720898_2000005A.sample(a.fp_t_cb720898_2000005ASmplr,float2(.5,.5),level(0)); }\n";
+    NSError *error=nil;id<MTLLibrary> lib=[g_dev newLibraryWithSource:source options:nil error:&error];
+    CHECK(lib!=nil,"raw sampler GPU shader compiles");if(!lib)return;
+    NvShader *vs=[NvShader new],*fs=[NvShader new];vs->fn=vertex;fs->fn=[lib newFunctionWithName:@"sample_id"];
+    NSDictionary *j=@{@"route":@"B",@"bindings":@[
+        @{@"kind":@"tex",@"reg":@128,@"arg_id":@0,@"msl_name":@"fp_t_cb720898_2000005A",@"msl_type":@"texture2d<float>"},
+        @{@"kind":@"samp",@"reg":[NSNull null],@"arg_id":@1,@"msl_name":@"fp_t_cb720898_2000005ASmplr",@"msl_type":@"sampler"}]};
+    char err[160];int bad=nvn_refl_from_json(j,&fs->rf,err,sizeof err);
+    CHECK(!bad,"raw sampler production reflection loads");if(bad)return;
+    fs->rf.color_known=fs->rf.color_mask=1;fs->ae=[fs->fn newArgumentEncoderWithBufferIndex:0];fs->arg_len=fs->ae.encodedLength;
+    tex_t input={0},output={0};input.magic=output.magic=MAGIC('T','E','X',0);input.serial=nvn_new_serial();output.serial=nvn_new_serial();
+    input.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=2,.height=1,.depth=1,.levels=1,.samples=1};
+    output.d=input.d;output.d.width=output.d.height=4;output.d.format=NVN_FORMAT_RGBA16F;
+    MTLTextureDescriptor *d=tex_desc(&input,0);d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageShaderRead;
+    id<MTLTexture> image=[g_dev newTextureWithDescriptor:d];uint8_t pix[8]={0,0,0,255,255,255,255,255};
+    [image replaceRegion:MTLRegionMake2D(0,0,2,1) mipmapLevel:0 withBytes:pix bytesPerRow:8];
+    res_add(image);mtl_tex_init(&input);serial_put(input.serial,image);mtl_reg_tex(3,&input,NULL);
+    d=tex_desc(&output,0);d.storageMode=MTLStorageModeShared;id<MTLTexture> target=[g_dev newTextureWithDescriptor:d];
+    res_add(target);mtl_tex_init(&output);serial_put(output.serial,target);
+    samp_par nearest={.ws=1,.wt=1,.wr=1,.minf=0,.magf=0,.lod_min=0,.lod_max=0};samp_par linear=nearest;linear.minf=linear.magf=1;
+    mtl_reg_samp(10,&nearest);mtl_reg_samp(11,&linear);mtl_reg_samp(266,&nearest);
+    uint32_t *words=aligned_alloc(16384,16384);memset(words,0,16384);mtl_pool_add(words,16384);
+    NvProg *program=[NvProg new];program->sh[0]=vs;program->sh[1]=fs;prog_t guest={.serial=nvn_new_serial()};serial_put(guest.serial,program);
+    state_reset();memset(&R,0,sizeof R);S.prog=&guest;S.chmask.mask=15;S.poly.mode=NVN_POLYGON_MODE_FILL;
+    S.tex[1][128]=3;S.ubo[1][7]=(p_bind_buf){.addr=(uintptr_t)words,.size=8};R.has_rt=1;R.rt.n=1;R.rt.color[0]=&output;
+    p_draw triangle={.prim=NVN_DRAW_PRIMITIVE_TRIANGLES,.count=3,.instances=1};
+    for(int i=0;i<4;i++) {
+        S.samp_base=i==3?256:0;words[0]=i==1?11:10;args_dirty_all();mtl_sub_begin();draw(&triangle,NULL);mtl_sub_commit();mtl_drain();
+        CHECK(!mtl_last_commit_error(),"raw sampler draw completes with Metal validation");
+        __fp16 out[4];[target getBytes:out bytesPerRow:32 fromRegion:MTLRegionMake2D(1,1,1,1) mipmapLevel:0];
+        CHECK(fabsf((float)out[0]-(i==1?.5f:1.f))<.01f,"raw sampler ID switches nearest/linear/nearest in production replay");
+    }
+    mtl_pool_del(words);free(words);mtl_reg_tex(3,NULL,NULL);mtl_tex_release(&input);mtl_tex_release(&output);state_reset();memset(&R,0,sizeof R);
+}
+
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc > 1 && !strcmp(argv[1], "--cpu-only")) {
         cpu_pool_bc_readback();
@@ -185,6 +233,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     fs->fn = [lib newFunctionWithName:@"f"];
     fs->rf.color_known = 1; fs->rf.color_mask = 1;
     format_view_draw(vs->fn);
+    guest_sampler_id_draw(vs->fn);
     pso_key k = {0}; k.samples = 1; k.chmask = 15; k.blend_en = 1; k.cfmt[0] = MTLPixelFormatRGBA16Float;
     int factors[] = {NVN_BLEND_FUNC_SRC1_COLOR, NVN_BLEND_FUNC_ONE_MINUS_SRC1_COLOR, NVN_BLEND_FUNC_SRC1_ALPHA, NVN_BLEND_FUNC_ONE_MINUS_SRC1_ALPHA};
     for (int i = 0; i < 4; i++) {

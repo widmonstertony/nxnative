@@ -31,6 +31,37 @@ static int arr_len(NSString *ty, NSString **el) {
 
 // Whether a storage buffer binding may be written: current B reflection carries the translator's write flag ("rw"); old samples without it fall back to SPIRV-Cross's const device qualifier.
 static int sbuf_rw(NSDictionary *b) { id rw = b[@"rw"]; if (rw) return [rw boolValue]; id ty = b[@"msl_type"]; return !([ty isKindOfClass:[NSString class]] && [ty hasPrefix:@"const "]); }
+
+// Old route-B resources leave mixed driver-texture / guest-sampler handles
+// unresolved. The translator's name retains the full TextureHandle encoding.
+// Recover only type 2 with a matching resolved texture, never a guessed slot 0.
+static int legacy_sampler_id(NSDictionary *b, NSArray *bindings, nvn_rbind *r) {
+    if (![b[@"kind"] isEqual:@"samp"] || ![b[@"msl_type"] isEqual:@"sampler"] ||
+        [b[@"reg"] isKindOfClass:[NSNumber class]]) return 0;
+    NSString *name = b[@"msl_name"];
+    if (![name isKindOfClass:[NSString class]]) return 0;
+    NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"^[a-z]+_t\\w*?_cb([0-9]+)_([0-9A-F]{1,8})Smplr$" options:0 error:nil];
+    NSTextCheckingResult *match = [pattern firstMatchInString:name options:0 range:NSMakeRange(0,name.length)];
+    if (!match) return 0;
+    unsigned long long banks = strtoull([[name substringWithRange:[match rangeAtIndex:1]] UTF8String], NULL, 10);
+    uint32_t h = (uint32_t)strtoul([[name substringWithRange:[match rangeAtIndex:2]] UTF8String], NULL, 16);
+    if (banks > UINT32_MAX || (banks & 0xffff) != 2 || h >> 28 != 2) return 0;
+    unsigned sb = (unsigned)(banks >> 16);
+    if (sb < 4 || sb > 17) return 0; // encoded second bank = c[3..16] + 1
+    unsigned byte = (h & 0x3fff) * 4, texture;
+    if (byte >= 0x168 && byte < 0x568 && !((byte - 0x168) & 7)) texture = 128 + (byte - 0x168) / 8;
+    else if (byte >= 0x20 && byte < 0x168 && !((byte - 0x20) & 7)) texture = (byte - 0x20) / 8;
+    else return 0;
+    NSString *texture_name = [name substringToIndex:name.length - 5];
+    for (NSDictionary *t in bindings) if ([t[@"msl_name"] isEqual:texture_name] &&
+        [t[@"kind"] isEqual:@"tex"] && [t[@"reg"] isKindOfClass:[NSNumber class]] &&
+        [t[@"reg"] unsignedIntValue] == texture && [t[@"msl_type"] hasPrefix:@"texture"]) {
+        r->kind = NVN_RB_SAMPU; r->reg = (uint16_t)(sb - 4);
+        r->off = (uint16_t)(((h >> 14) & 0x3fff) * 4); r->samp_raw = 1;
+        return 1;
+    }
+    return 0;
+}
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     memset(o, 0, sizeof *o);
     #define FAIL(...) do { free(o->c1); o->c1 = NULL; snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
@@ -49,6 +80,7 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             id rg = b[@"reg"]; int reg = [rg isKindOfClass:[NSNumber class]] ? [rg intValue] : -1, aid = [b[@"arg_id"] intValue];
             r->aid = (uint16_t)aid; r->reg = reg < 0 ? 0 : (uint16_t)reg;
             NSString *nm = b[@"msl_name"], *ty = b[@"msl_type"];
+            if (legacy_sampler_id(b, bs, r)) { o->bindless = 1; o->nb++; continue; }
             // Ryujinx's fallback for a handle it cannot trace to one slot (handle type 4: <stage>_<t|tb|s>_cb0_40000000, declared array<element, n>); the build leaves it without a slot
             // ('tbuf' / 'tex' with no reg, '?' for the samplers). Octopath Traveler 0's vertex shaders pick one of several c2 table slots at run time (61 shaders, slots 0-10)
             NSString *el; int n = arr_len(ty, &el);
