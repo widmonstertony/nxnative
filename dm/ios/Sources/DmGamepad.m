@@ -40,6 +40,7 @@ static uint64_t g_touch_btn, g_pad_btn, g_key_btn, g_shake_btn;
 static uint64_t g_touch_face, g_touch_native;
 static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry, g_key_lx, g_key_ly, g_key_rx, g_key_ry, g_mouse_rx, g_mouse_ry;
 static BOOL g_key_w, g_key_a, g_key_s, g_key_d, g_key_left, g_key_up, g_key_right, g_key_down;
+static BOOL g_key_j, g_key_enter, g_key_k, g_key_backspace;
 static BOOL g_shift_left, g_shift_right;
 static BOOL g_command_left, g_command_right;
 static uint64_t g_run_button, g_aim_button;   // native Npad shortcuts, independent of visible face letters
@@ -695,13 +696,9 @@ static uint64_t keyboard_button(GCKeyCode key) {
     if (key == GCKeyCodeKeyE) return DM_BTN_R;
     if (key == GCKeyCodeKeyZ) return DM_BTN_ZL;
     if (key == GCKeyCodeKeyC) return DM_BTN_ZR;
-    if (key == GCKeyCodeReturnOrEnter) {
-        // Device automation can inject Return but not letter keys. Keep the
-        // normal Plus mapping unless an on-device diagnostic explicitly asks
-        // for Return to act as the face A button.
-        const char *e = getenv("DM_KEY_ENTER_A");
-        return e && !strcmp(e, "1") ? DM_BTN_A : DM_BTN_PLUS;
-    }
+    if (key == GCKeyCodeReturnOrEnter) return DM_BTN_A;
+    if (key == GCKeyCodeDeleteOrBackspace) return DM_BTN_B;
+    if (key == GCKeyCodeEqualSign) return DM_BTN_PLUS;
     if (key == GCKeyCodeTab) return DM_BTN_MINUS;
     if (key == GCKeyCodeSpacebar) return DM_BTN_SHAKE;
     if (key == GCKeyCodeLeftArrow) return DM_BTN_LEFT;
@@ -721,7 +718,15 @@ static void read_key(GCKeyCode key, BOOL pressed) {
     else if (key == GCKeyCodeLeftGUI) g_command_left = pressed;
     else if (key == GCKeyCodeRightGUI) g_command_right = pressed;
     uint64_t bit = keyboard_button(key);
-    g_key_btn = pressed ? g_key_btn | bit : g_key_btn & ~bit;
+    if (key == GCKeyCodeKeyJ) g_key_j = pressed;
+    else if (key == GCKeyCodeReturnOrEnter) g_key_enter = pressed;
+    else if (key == GCKeyCodeKeyK) g_key_k = pressed;
+    else if (key == GCKeyCodeDeleteOrBackspace) g_key_backspace = pressed;
+    if (bit == DM_BTN_A || bit == DM_BTN_B) {
+        g_key_btn &= ~(DM_BTN_A | DM_BTN_B);
+        if (g_key_j || g_key_enter) g_key_btn |= DM_BTN_A;
+        if (g_key_k || g_key_backspace) g_key_btn |= DM_BTN_B;
+    } else g_key_btn = pressed ? g_key_btn | bit : g_key_btn & ~bit;
     g_key_lx = ((int)g_key_d - (int)g_key_a) * DM_STICK_MAX;
     g_key_ly = ((int)g_key_w - (int)g_key_s) * DM_STICK_MAX;
     // Arrow keys are the four digital directions. Camera input remains on the
@@ -734,6 +739,7 @@ static void clear_keyboard(void) {
     pthread_mutex_lock(&g_mu);
     g_key_btn = 0; g_key_lx = g_key_ly = g_key_rx = g_key_ry = 0;
     g_key_w = g_key_a = g_key_s = g_key_d = g_key_left = g_key_up = g_key_right = g_key_down = NO;
+    g_key_j = g_key_enter = g_key_k = g_key_backspace = NO;
     g_shift_left = g_shift_right = NO;
     g_command_left = g_command_right = NO;
     pthread_mutex_unlock(&g_mu);
@@ -847,6 +853,7 @@ static void clear_input_locked(void) {
     g_touch_lx = g_touch_ly = g_touch_rx = g_touch_ry = g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = g_key_lx = g_key_ly = g_key_rx = g_key_ry = g_mouse_rx = g_mouse_ry = 0;
     g_mouse_deadline = g_raw_mouse_time = 0;
     g_key_w = g_key_a = g_key_s = g_key_d = g_key_left = g_key_up = g_key_right = g_key_down = NO;
+    g_key_j = g_key_enter = g_key_k = g_key_backspace = NO;
     g_shift_left = g_shift_right = NO;
     g_command_left = g_command_right = NO;
 }

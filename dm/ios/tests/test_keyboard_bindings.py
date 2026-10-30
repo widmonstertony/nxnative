@@ -20,7 +20,6 @@ class KeyboardBindings(unittest.TestCase):
 #include "dm_input.h"
 """ + code + """
 int main(void) {
-    unsetenv("DM_KEY_ENTER_A");
     assert(keyboard_button(GCKeyCodeKeyJ) == DM_BTN_A);
     assert(keyboard_button(GCKeyCodeKeyK) == DM_BTN_B);
     assert(keyboard_button(GCKeyCodeKeyU) == DM_BTN_X);
@@ -31,9 +30,9 @@ int main(void) {
     assert(keyboard_button(GCKeyCodeKeyE) == DM_BTN_R);
     assert(keyboard_button(GCKeyCodeKeyZ) == DM_BTN_ZL);
     assert(keyboard_button(GCKeyCodeKeyC) == DM_BTN_ZR);
-    assert(keyboard_button(GCKeyCodeReturnOrEnter) == DM_BTN_PLUS);
-    setenv("DM_KEY_ENTER_A", "1", 1);
     assert(keyboard_button(GCKeyCodeReturnOrEnter) == DM_BTN_A);
+    assert(keyboard_button(GCKeyCodeDeleteOrBackspace) == DM_BTN_B);
+    assert(keyboard_button(GCKeyCodeEqualSign) == DM_BTN_PLUS);
     assert(keyboard_button(GCKeyCodeTab) == DM_BTN_MINUS);
     assert(keyboard_button(GCKeyCodeLeftArrow) == DM_BTN_LEFT);
     assert(keyboard_button(GCKeyCodeUpArrow) == DM_BTN_UP);
@@ -53,6 +52,9 @@ int main(void) {
         self.assertIn("g_touch_native = g_touch_face | g_touch_btn;", publish)
         self.assertIn("uint64_t keyboard = g_key_btn;", publish)
         self.assertIn("g_key_rx = g_key_ry = 0;", source)
+        self.assertIn("g_key_j || g_key_enter", source)
+        self.assertIn("g_key_k || g_key_backspace", source)
+        self.assertIn("g_key_j = g_key_enter = g_key_k = g_key_backspace = NO;", source)
 
     def test_touch_dpad_is_available_in_simple_and_full_layouts(self):
         source = (ROOT / "dm/ios/Sources/DmGamepad.m").read_text()

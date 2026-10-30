@@ -1,0 +1,19 @@
+name: NXGameLibrary
+options:
+  deploymentTarget:
+    iOS: '16.1'
+targets:
+  NXGameLibrary:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - LocalCovers
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tonytan.nxgamelibrary
+        TARGETED_DEVICE_FAMILY: '1,2'
+        CODE_SIGNING_ALLOWED: 'NO'
+        INFOPLIST_FILE: Sources/Info.plist
+        GENERATE_INFOPLIST_FILE: 'NO'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
