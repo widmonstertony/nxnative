@@ -2,27 +2,31 @@
 #import "GameOpen.h"
 static UIColor *C(int r,int g,int b){return [UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1];}
 static NSArray<NSDictionary *> *games(void){return @[
-@{@"name":@"极品飞车：热力追踪",@"id":@"010029b0118e8000"},
-@{@"name":@"集合啦！动物森友会",@"id":@"01006f8002326000"},
-@{@"name":@"宝可梦铁拳 DX",@"id":@"0100b3f000be2000"},
-@{@"name":@"魔法使之夜",@"id":@"0100751018dba000"},
-@{@"name":@"宝可梦传说：阿尔宙斯",@"id":@"01001f5010dfa000"},
-@{@"name":@"宝可梦传说：Z-A",@"id":@"0100f43008c44000"},
-@{@"name":@"巫师 3",@"id":@"0100e67012924000"}];}
+@{@"name":@"极品飞车：热力追踪",@"id":@"010029b0118e8000",@"size":@"7.53 GB",@"version":@"更新 1.0.3"},
+@{@"name":@"集合啦！动物森友会",@"id":@"01006f8002326000",@"size":@"10.42 GB",@"version":@"更新 3.0.3 · 3 DLC"},
+@{@"name":@"宝可梦铁拳 DX",@"id":@"0100b3f000be2000",@"size":@"3.67 GB",@"version":@"版本 1.3.3"},
+@{@"name":@"魔法使之夜",@"id":@"0100751018dba000",@"size":@"21.32 GB",@"version":@"更新 1.0.3"},
+@{@"name":@"宝可梦传说：阿尔宙斯",@"id":@"01001f5010dfa000",@"size":@"6.42 GB",@"version":@"更新 1.1.1"},
+@{@"name":@"宝可梦传说：Z-A",@"id":@"0100f43008c44000",@"size":@"5.99 GB",@"version":@"更新 2.0.2"},
+@{@"name":@"巫师 3",@"id":@"0100e67012924000",@"size":@"21.42 GB",@"version":@"更新 4.04b"}];}
 @interface CoverCard:UICollectionViewCell
 @property(nonatomic,strong)UIImageView *art;
-@property(nonatomic,strong)UILabel *title,*badge;
+@property(nonatomic,strong)UILabel *title,*sizeLabel,*versionLabel,*badge;
 @end
 @implementation CoverCard
 - (instancetype)initWithFrame:(CGRect)f{if(!(self=[super initWithFrame:f]))return nil;
 self.contentView.backgroundColor=UIColor.clearColor;
 _art=[UIImageView new];_art.contentMode=UIViewContentModeScaleAspectFill;_art.backgroundColor=UIColor.tertiarySystemBackgroundColor;_art.clipsToBounds=YES;_art.layer.cornerRadius=16;
 _title=[UILabel new];_title.font=[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];_title.textColor=UIColor.labelColor;_title.textAlignment=NSTextAlignmentCenter;_title.numberOfLines=2;
+_sizeLabel=[UILabel new];_sizeLabel.font=[UIFont systemFontOfSize:12];_sizeLabel.textColor=UIColor.secondaryLabelColor;_sizeLabel.textAlignment=NSTextAlignmentCenter;
+_versionLabel=[UILabel new];_versionLabel.font=[UIFont systemFontOfSize:11];_versionLabel.textColor=UIColor.tertiaryLabelColor;_versionLabel.textAlignment=NSTextAlignmentCenter;
 _badge=[UILabel new];_badge.font=[UIFont boldSystemFontOfSize:16];_badge.textAlignment=NSTextAlignmentCenter;_badge.layer.cornerRadius=17;_badge.layer.masksToBounds=YES;
-for(UIView *v in @[_art,_title,_badge]){v.translatesAutoresizingMaskIntoConstraints=NO;[self.contentView addSubview:v];}
+for(UIView *v in @[_art,_title,_sizeLabel,_versionLabel,_badge]){v.translatesAutoresizingMaskIntoConstraints=NO;[self.contentView addSubview:v];}
 [NSLayoutConstraint activateConstraints:@[
 [_art.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],[_art.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[_art.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],[_art.heightAnchor constraintEqualToAnchor:self.contentView.widthAnchor],
 [_title.topAnchor constraintEqualToAnchor:_art.bottomAnchor constant:8],[_title.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[_title.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+[_sizeLabel.topAnchor constraintEqualToAnchor:_title.bottomAnchor constant:3],[_sizeLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[_sizeLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+[_versionLabel.topAnchor constraintEqualToAnchor:_sizeLabel.bottomAnchor constant:3],[_versionLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[_versionLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
 [_badge.bottomAnchor constraintEqualToAnchor:_art.bottomAnchor constant:-10],[_badge.trailingAnchor constraintEqualToAnchor:_art.trailingAnchor constant:-10],[_badge.widthAnchor constraintEqualToConstant:34],[_badge.heightAnchor constraintEqualToConstant:34]]];return self;}
 @end
 @interface LibraryView:UIViewController<UICollectionViewDataSource,UICollectionViewDelegateFlowLayout>
@@ -47,8 +51,8 @@ UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
 [_grid.topAnchor constraintEqualToAnchor:_status.bottomAnchor constant:12],[_grid.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:28],[_grid.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-28],[_grid.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor]]];[self refresh];}
 - (void)refresh{self.status.text=@"正在读取已安装游戏…";dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{NSSet *ids=NXInstalledGames();dispatch_async(dispatch_get_main_queue(),^{self.installed=ids;NSUInteger n=0;for(NSDictionary *g in games())if([ids containsObject:[@"org.nxnative." stringByAppendingString:g[@"id"]]])n++;self.status.text=n?[NSString stringWithFormat:@"已安装 %lu 款 · 点封面启动",(unsigned long)n]:@"尚未读取到游戏；请保持 MCP 运行后刷新";[self.grid reloadData];});});}
 - (NSInteger)collectionView:(UICollectionView *)v numberOfItemsInSection:(NSInteger)s{(void)v;(void)s;return games().count;}
-- (UICollectionViewCell *)collectionView:(UICollectionView *)v cellForItemAtIndexPath:(NSIndexPath *)p{CoverCard *c=(CoverCard *)[v dequeueReusableCellWithReuseIdentifier:@"card" forIndexPath:p];NSDictionary *g=games()[p.item];NSString *b=[@"org.nxnative." stringByAppendingString:g[@"id"]];BOOL installed=[self.installed containsObject:b];c.art.image=[UIImage imageNamed:g[@"id"]];c.title.text=g[@"name"];c.badge.text=installed?@"▶":@"…";c.badge.backgroundColor=installed?[UIColor colorWithWhite:0 alpha:0.72]:[UIColor colorWithWhite:0 alpha:0.45];c.badge.textColor=UIColor.whiteColor;return c;}
-- (CGSize)collectionView:(UICollectionView *)v layout:(UICollectionViewLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)p{(void)l;(void)p;CGFloat w=v.bounds.size.width;NSInteger n=w>950?4:w>650?3:2;CGFloat side=floor((w-(n-1)*18)/n);return CGSizeMake(side,side+48);}
+- (UICollectionViewCell *)collectionView:(UICollectionView *)v cellForItemAtIndexPath:(NSIndexPath *)p{CoverCard *c=(CoverCard *)[v dequeueReusableCellWithReuseIdentifier:@"card" forIndexPath:p];NSDictionary *g=games()[p.item];NSString *b=[@"org.nxnative." stringByAppendingString:g[@"id"]];BOOL installed=[self.installed containsObject:b];c.art.image=[UIImage imageNamed:g[@"id"]];c.title.text=g[@"name"];c.sizeLabel.text=g[@"size"];c.versionLabel.text=g[@"version"];c.badge.text=installed?@"▶":@"…";c.badge.backgroundColor=installed?[UIColor colorWithWhite:0 alpha:0.72]:[UIColor colorWithWhite:0 alpha:0.45];c.badge.textColor=UIColor.whiteColor;return c;}
+- (CGSize)collectionView:(UICollectionView *)v layout:(UICollectionViewLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)p{(void)l;(void)p;CGFloat w=v.bounds.size.width;NSInteger n=w>950?4:w>650?3:2;CGFloat side=floor((w-(n-1)*18)/n);return CGSizeMake(side,side+89);}
 - (void)collectionView:(UICollectionView *)v didSelectItemAtIndexPath:(NSIndexPath *)p{(void)v;NSDictionary *g=games()[p.item];NSString *b=[@"org.nxnative." stringByAppendingString:g[@"id"]];if(![self.installed containsObject:b])return;dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{if(!NXOpenInstalledGame(b))dispatch_async(dispatch_get_main_queue(),^{UIAlertController *a=[UIAlertController alertControllerWithTitle:@"启动失败" message:@"请保持 MCP 服务运行后刷新，再试一次。" preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];[self presentViewController:a animated:YES completion:nil];});});}
 @end
 @interface LibraryDelegate:UIResponder<UIApplicationDelegate>
