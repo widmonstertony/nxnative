@@ -27,41 +27,76 @@ static void excludeGameResourcesFromBackup(void){
         if([fm fileExistsAtPath:resources.path]) [resources setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
     }
 }
-static NSArray<NSDictionary *> *games(void){NSArray *builtIn=@[
-@{@"name":@"GTA V",@"id":@"gta5",@"bundle":@"io.github.playgta5ios.app",@"size":@"约 42.2 GB",@"version":@"Port 1.5.2"},
-@{@"name":@"极品飞车：热力追踪",@"id":@"010029b0118e8000",@"size":@"7.53 GB",@"version":@"更新 1.0.3"},
-@{@"name":@"集合啦！动物森友会",@"id":@"01006f8002326000",@"size":@"10.42 GB",@"version":@"更新 3.0.3 · 3 DLC"},
-@{@"name":@"宝可梦铁拳 DX",@"id":@"0100b3f000be2000",@"size":@"3.67 GB",@"version":@"版本 1.3.3"},
-@{@"name":@"魔法使之夜",@"id":@"0100751018dba000",@"size":@"21.32 GB",@"version":@"更新 1.0.3"},
-@{@"name":@"宝可梦传说：阿尔宙斯",@"id":@"01001f5010dfa000",@"size":@"6.42 GB",@"version":@"更新 1.1.1"},
-@{@"name":@"宝可梦传说：Z-A",@"id":@"0100f43008c44000",@"size":@"5.99 GB",@"version":@"更新 2.0.2"},
-@{@"name":@"巫师 3",@"id":@"0100e67012924000",@"size":@"21.42 GB",@"version":@"更新 4.04b"},
-@{@"name":@"塞尔达传说：王国之泪",@"id":@"0100f2c0115b6000",@"size":@"导出 17.68 GB",@"version":@"待转换"},
-@{@"name":@"宝可梦：紫",@"id":@"01008f6008c5e000",@"size":@"导出 12.36 GB",@"version":@"待转换"},
-@{@"name":@"Fate/stay night REMASTERED",@"id":@"010023301e41c000",@"size":@"导出 8.88 GB",@"version":@"待转换"},
-@{@"name":@"Fate/hollow ataraxia REMASTERED",@"id":@"010070e022546000",@"size":@"导出 8.08 GB",@"version":@"待转换"},
-@{@"name":@"Fate/Samurai Remnant",@"id":@"0100b0701aa78000",@"size":@"导出 13.89 GB",@"version":@"待转换"},
-@{@"name":@"卫宫家今天的饭",@"id":@"01005e6010114000",@"size":@"导出 2.67 GB",@"version":@"待转换"},
-@{@"name":@"STEINS;GATE REBOOT",@"id":@"01008bc024fde000",@"size":@"导出 8.48 GB",@"version":@"待转换"},
-@{@"name":@"NieR:Automata",@"id":@"0100b8e016f76000",@"size":@"导出 11.71 GB",@"version":@"待转换"},
-@{@"name":@"CRISIS CORE -FINAL FANTASY VII- REUNION",@"id":@"0100d09016c6a000",@"size":@"导出 15.67 GB",@"version":@"待转换"},
-@{@"name":@"NARUTO STORM 4",@"id":@"010020100cf62000",@"size":@"导出 12.49 GB",@"version":@"待转换"},
-@{@"name":@"月姬",@"id":@"010057a01e4d4000",@"size":@"导出 3.20 GB",@"version":@"待转换"}];
+static NSDictionary *gameCard(NSString *title, NSString *documents, NSString *bundled){
+    NSFileManager *fm=NSFileManager.defaultManager;
+    NSString *slot=[documents stringByAppendingPathComponent:title];
+    NSString *meta=[slot stringByAppendingPathComponent:@"GameCard.json"];
+    if(![fm fileExistsAtPath:meta])meta=[[bundled stringByAppendingPathComponent:title] stringByAppendingPathComponent:@"GameCard.json"];
+    NSData *data=[NSData dataWithContentsOfFile:meta];
+    NSDictionary *stored=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+    if(![stored isKindOfClass:NSDictionary.class] ||
+       ![stored[@"title_id"] isKindOfClass:NSString.class] ||
+       [stored[@"title_id"] caseInsensitiveCompare:title]!=NSOrderedSame)stored=nil;
+    NSString *name=[stored[@"name"] isKindOfClass:NSString.class]&&[stored[@"name"] length]?stored[@"name"]:title;
+    NSString *version=[stored[@"version"] isKindOfClass:NSString.class]&&[stored[@"version"] length]?stored[@"version"]:@"本地文件";
+    NSString *size=[stored[@"size"] isKindOfClass:NSString.class]&&[stored[@"size"] length]?stored[@"size"]:@"已导入";
+    NSString *source=[slot stringByAppendingPathComponent:@"Source"];
+    BOOL sourceDir=NO;
+    BOOL pending=[fm fileExistsAtPath:source isDirectory:&sourceDir]&&sourceDir&&
+        [fm contentsOfDirectoryAtPath:source error:nil].count>0;
+    NSMutableDictionary *card=[@{@"name":name,@"id":title,@"size":size,@"version":version,@"pending":@(pending)} mutableCopy];
+    if([stored[@"bundle"] isKindOfClass:NSString.class])card[@"bundle"]=stored[@"bundle"];
+    return card;
+}
+static NSArray<NSDictionary *> *games(void){
+    NSFileManager *fm=NSFileManager.defaultManager;
     NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *root=[doc stringByAppendingPathComponent:@"Games"];
+    NSString *bundled=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources"];
+    NSMutableSet<NSString *> *titles=[NSMutableSet set];
+    for(NSString *base in @[root,bundled])for(NSString *name in [fm contentsOfDirectoryAtPath:base error:nil]){
+        if(!name.length||[name hasPrefix:@"."]||name.length>64)continue;
+        BOOL directory=NO;
+        NSString *slot=[base stringByAppendingPathComponent:name];
+        if(!([fm fileExistsAtPath:slot isDirectory:&directory]&&directory))continue;
+        BOOL containsGameFiles=NO;
+        for(NSString *part in @[@"Resources",@"UserData",@"Source"]){
+            NSString *path=[slot stringByAppendingPathComponent:part];
+            BOOL partIsDirectory=NO;
+            if([fm fileExistsAtPath:path isDirectory:&partIsDirectory]&&partIsDirectory&&
+               [fm contentsOfDirectoryAtPath:path error:nil].count>0){containsGameFiles=YES;break;}
+        }
+        if(containsGameFiles)[titles addObject:name.lowercaseString];
+    }
+    NSMutableArray<NSDictionary *> *all=[NSMutableArray array];
+    for(NSString *title in titles)[all addObject:gameCard(title,root,bundled)];
     NSString *incoming=[doc stringByAppendingPathComponent:@"Imports"];
-    NSMutableArray *all=[builtIn mutableCopy];
-    for(NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:incoming error:nil]){
+    for(NSString *name in [fm contentsOfDirectoryAtPath:incoming error:nil]){
         if([name hasPrefix:@"."])continue;
         NSString *path=[incoming stringByAppendingPathComponent:name];
-        BOOL folder=NO;[NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&folder];
-        NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+        BOOL folder=NO;[fm fileExistsAtPath:path isDirectory:&folder];
+        NSDictionary *attrs=[fm attributesOfItemAtPath:path error:nil];
         unsigned long long bytes=[attrs[NSFileSize] unsignedLongLongValue];
         NSString *size=folder?@"游戏文件夹":[NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile];
         [all addObject:@{@"name":name.stringByDeletingPathExtension,@"id":[@"import:" stringByAppendingString:name],@"size":size,@"version":@"等待转换",@"pending":@YES}];
     }
+    [all sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [a[@"name"] localizedStandardCompare:b[@"name"]];}];
     return all;
 }
 static NSString *bundleForGame(NSDictionary *g){return g[@"bundle"] ?: [@"org.nxnative." stringByAppendingString:g[@"id"]];}
+static UIImage *coverForGame(NSDictionary *g){
+    NSString *title=g[@"id"];
+    UIImage *bundled=[UIImage imageNamed:title];
+    if(bundled)return bundled;
+    NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *slot=[[doc stringByAppendingPathComponent:@"Games"] stringByAppendingPathComponent:title];
+    NSString *inside=[[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources"] stringByAppendingPathComponent:title];
+    for(NSString *base in @[slot,inside])for(NSString *file in @[@"Cover.png",@"cover.png",@"Icon.png"]){
+        UIImage *image=[UIImage imageWithContentsOfFile:[base stringByAppendingPathComponent:file]];
+        if(image)return image;
+    }
+    return nil;
+}
 #ifdef DM_LIBRARY_HOST
 static NSString *resourceRootForTitle(NSString *gamesRoot, NSString *title){
     NSFileManager *fm=NSFileManager.defaultManager;
@@ -76,12 +111,12 @@ static NSString *resourceRootForTitle(NSString *gamesRoot, NSString *title){
     return nil;
 }
 #endif
-static NSSet<NSString *> *availableGames(void){
+static NSSet<NSString *> *availableGames(NSArray<NSDictionary *> *catalog){
 #ifdef DM_LIBRARY_HOST
     NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
     NSString *root=[doc stringByAppendingPathComponent:@"Games"];
     NSMutableSet<NSString *> *result=[NSMutableSet set];
-    for(NSDictionary *g in games()){
+    for(NSDictionary *g in catalog){
         NSString *title=g[@"id"];
         const dm_game_profile *profile=dm_profile_find(title.UTF8String);
         if(!profile)continue;
@@ -172,6 +207,7 @@ _shellMask.frame=b;_shellMask.path=p.CGPath;_shellEdge.frame=b;_shellEdge.path=p
 @property(nonatomic,strong)UICollectionView *grid;
 @property(nonatomic,strong)UILabel *status,*countLabel;
 @property(nonatomic,strong)NSSet<NSString *> *installed;
+@property(nonatomic,copy)NSArray<NSDictionary *> *catalog;
 @property(nonatomic,assign)CGSize lastGridSize;
 @property(nonatomic,copy)void (^startGame)(NSString *titleID);
 @end
@@ -182,7 +218,7 @@ UIView *red=[UIView new];red.backgroundColor=C(224,49,54);red.layer.cornerRadius
 UILabel *eyebrow=[UILabel new];eyebrow.text=@"T O N T O N   /   G A M E   C A R D S";eyebrow.textColor=C(203,54,59);eyebrow.font=[UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
 UILabel *title=[UILabel new];title.text=@"TonTon游戏匣";title.textColor=UIColor.labelColor;title.font=[UIFont systemFontOfSize:32 weight:UIFontWeightHeavy];
 UILabel *sub=[UILabel new];sub.text=@"打开你的游戏卡带";sub.textColor=UIColor.secondaryLabelColor;sub.font=[UIFont systemFontOfSize:14];
-UILabel *count=[UILabel new];count.text=@"—\n款游戏";count.numberOfLines=2;count.textAlignment=NSTextAlignmentCenter;count.textColor=UIColor.labelColor;count.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold];count.backgroundColor=D(238,239,238,45,51,59);count.layer.cornerRadius=14;count.layer.masksToBounds=YES;self.countLabel=count;
+UILabel *count=[UILabel new];count.text=@"—\n款卡带";count.numberOfLines=2;count.textAlignment=NSTextAlignmentCenter;count.textColor=UIColor.labelColor;count.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold];count.backgroundColor=D(238,239,238,45,51,59);count.layer.cornerRadius=14;count.layer.masksToBounds=YES;self.countLabel=count;
 _status=[UILabel new];_status.text=@"正在读取卡带…";_status.textColor=UIColor.secondaryLabelColor;_status.font=[UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
 UIButton *add=[UIButton buttonWithType:UIButtonTypeSystem];UIImageSymbolConfiguration *cfg=[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightSemibold];[add setImage:[UIImage systemImageNamed:@"plus" withConfiguration:cfg] forState:UIControlStateNormal];add.imageView.contentMode=UIViewContentModeCenter;add.accessibilityLabel=@"添加 Switch 游戏";add.tintColor=UIColor.whiteColor;add.backgroundColor=C(218,50,56);add.layer.cornerRadius=27;add.layer.shadowColor=UIColor.blackColor.CGColor;add.layer.shadowOpacity=0.25;add.layer.shadowRadius=10;add.layer.shadowOffset=CGSizeMake(0,5);[add addTarget:self action:@selector(addGame) forControlEvents:UIControlEventTouchUpInside];
 UICollectionViewFlowLayout *flow=[UICollectionViewFlowLayout new];flow.minimumInteritemSpacing=15;flow.minimumLineSpacing=10;flow.sectionInset=UIEdgeInsetsMake(4,0,68,0);
@@ -198,7 +234,8 @@ UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
 [count.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-17],[count.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],[count.widthAnchor constraintEqualToConstant:68],[count.heightAnchor constraintEqualToConstant:62],
 [_status.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:8],[_status.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:4],
 [_grid.topAnchor constraintEqualToAnchor:_status.bottomAnchor constant:7],[_grid.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:18],[_grid.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-18],[_grid.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
-[add.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-22],[add.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-8],[add.widthAnchor constraintEqualToConstant:54],[add.heightAnchor constraintEqualToConstant:54]]];[self refresh];}
+[add.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-22],[add.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-8],[add.widthAnchor constraintEqualToConstant:54],[add.heightAnchor constraintEqualToConstant:54]]];[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh) name:UIApplicationDidBecomeActiveNotification object:nil];[self refresh];}
+- (void)dealloc{[[NSNotificationCenter defaultCenter] removeObserver:self];}
 - (void)viewDidLayoutSubviews{[super viewDidLayoutSubviews];if(!CGSizeEqualToSize(self.lastGridSize,self.grid.bounds.size)){self.lastGridSize=self.grid.bounds.size;[self.grid.collectionViewLayout invalidateLayout];}}
 - (void)showNotice:(NSString *)title detail:(NSString *)detail{UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:detail preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:a animated:YES completion:nil];}
 - (void)addGame{
@@ -263,10 +300,10 @@ UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
     [self refresh];
     [self showNotice:prepared?@"卡带已加入":@"文件已加入游戏匣" detail:prepared?@"可以从卡带封面打开。":@"文件已直接移动到游戏匣。转换程序完成后，这张卡带才能启动。"];
 }
-- (void)refresh{self.status.text=@"正在读取卡带…";dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{excludeGameResourcesFromBackup();NSSet *ids=availableGames();dispatch_async(dispatch_get_main_queue(),^{self.installed=ids;NSUInteger n=0;for(NSDictionary *g in games())if([ids containsObject:bundleForGame(g)])n++;self.countLabel.text=[NSString stringWithFormat:@"%02lu\n款游戏",(unsigned long)n];self.status.text=n?[NSString stringWithFormat:@"%lu 款可打开 · 轻点卡带封面",(unsigned long)n]:@"点右下角添加游戏";[self.grid reloadData];});});}
-- (NSArray<NSDictionary *> *)displayGames{return games();}
+- (void)refresh{self.status.text=@"正在读取卡带…";dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{excludeGameResourcesFromBackup();NSArray *catalog=games();NSSet *ids=availableGames(catalog);dispatch_async(dispatch_get_main_queue(),^{self.catalog=catalog;self.installed=ids;NSUInteger playable=0;for(NSDictionary *g in catalog)if([ids containsObject:bundleForGame(g)])playable++;self.countLabel.text=[NSString stringWithFormat:@"%02lu\n款卡带",(unsigned long)catalog.count];self.status.text=catalog.count?[NSString stringWithFormat:@"%lu 款已收录 · %lu 款可打开",(unsigned long)catalog.count,(unsigned long)playable]:@"点右下角添加游戏";[self.grid reloadData];});});}
+- (NSArray<NSDictionary *> *)displayGames{return self.catalog?:@[];}
 - (NSInteger)collectionView:(UICollectionView *)v numberOfItemsInSection:(NSInteger)s{(void)v;(void)s;return self.displayGames.count;}
-- (UICollectionViewCell *)collectionView:(UICollectionView *)v cellForItemAtIndexPath:(NSIndexPath *)p{CoverCard *c=(CoverCard *)[v dequeueReusableCellWithReuseIdentifier:@"card" forIndexPath:p];NSDictionary *g=self.displayGames[p.item];NSString *b=bundleForGame(g);BOOL installed=[self.installed containsObject:b];c.art.image=[UIImage imageNamed:g[@"id"]];c.placeholder.text=g[@"name"];c.placeholder.hidden=c.art.image!=nil;c.art.backgroundColor=C(37,48,66);c.title.text=g[@"name"];c.sizeLabel.text=[NSString stringWithFormat:@"%@  ·  %@",g[@"size"],g[@"version"]];c.badge.text=installed?@"▶":@"…";c.badge.backgroundColor=installed?[UIColor colorWithWhite:0 alpha:0.72]:[UIColor colorWithWhite:0 alpha:0.45];c.badge.textColor=UIColor.whiteColor;return c;}
+- (UICollectionViewCell *)collectionView:(UICollectionView *)v cellForItemAtIndexPath:(NSIndexPath *)p{CoverCard *c=(CoverCard *)[v dequeueReusableCellWithReuseIdentifier:@"card" forIndexPath:p];NSDictionary *g=self.displayGames[p.item];NSString *b=bundleForGame(g);BOOL installed=[self.installed containsObject:b];c.art.image=coverForGame(g);c.placeholder.text=g[@"name"];c.placeholder.hidden=c.art.image!=nil;c.art.backgroundColor=C(37,48,66);c.title.text=g[@"name"];c.sizeLabel.text=[NSString stringWithFormat:@"%@  ·  %@",g[@"size"],g[@"version"]];c.badge.text=installed?@"▶":@"…";c.badge.backgroundColor=installed?[UIColor colorWithWhite:0 alpha:0.72]:[UIColor colorWithWhite:0 alpha:0.45];c.badge.textColor=UIColor.whiteColor;return c;}
 - (CGSize)collectionView:(UICollectionView *)v layout:(UICollectionViewLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)p{(void)l;(void)p;CGFloat w=v.bounds.size.width;NSInteger n=w>=700?4:w>=500?3:2;NSInteger rows=(self.displayGames.count+n-1)/n;CGFloat byWidth=floor((w-(n-1)*15)/n);CGFloat byHeight=rows==2?floor((v.bounds.size.height-4-68-10)/2-60):300;CGFloat side=MIN(300,MIN(byWidth,MAX(120,byHeight)));return CGSizeMake(side,side+60);}
 - (void)collectionView:(UICollectionView *)v didSelectItemAtIndexPath:(NSIndexPath *)p{(void)v;NSDictionary *g=self.displayGames[p.item];NSString *b=bundleForGame(g);if(![self.installed containsObject:b]){if([g[@"pending"] boolValue])[self showNotice:@"文件已加入" detail:@"游戏文件已移入游戏匣。程序转换完成并更新游戏匣后才能打开。"];else [self showNotice:@"等待整合" detail:@"这款游戏已登记；程序和资源完成整合后才能从这里启动。原游戏和存档会保留到新版本可用。"] ;return;}
 #ifdef DM_LIBRARY_HOST
