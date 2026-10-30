@@ -105,3 +105,20 @@ usage. A focused regression preserves all 32,768 original blocks and verifies
 the GPU-to-CPU ownership transitions. This is the first candidate that repairs
 the observed frame-218 data loss; a successful build is not yet a corrected
 picture claim, which still requires the owner's device test.
+
+### Initial-pool-content parity (2026-10-30)
+
+The agent reproduced the current black UI after confirmed A inputs on M2.
+The intro video is visible. Two sampled inputs (serials 207 and 238) have
+nonzero CPU storage but both GPU RGB and alpha read zero. This alone does
+not prove that the CPU bytes are valid image content; the bounded source
+decode/ownership diagnostic is pending.
+
+A separate production-recorder regression exposed missing
+[initial pool content](../../../docs/reference/nvn-objects.md#a-pools-storage-at-creation-is-its-textures-content)
+semantics in the legacy backend: published initial data was zeroed instead of
+uploaded. The modern path already supports it. The compatibility port passes
+the GPU regression while keeping unflushed cached storage and COMPRESSIBLE
+images excluded, and never reinitializes an existing GPU allocation. This
+is a concrete host fix, not yet a verified correction of this title's picture.
+No shader chain or game resources are changed.

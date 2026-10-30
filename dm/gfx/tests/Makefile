@@ -398,6 +398,13 @@ t_atomic_image: t_atomic_image.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_atomic_image.m $(MTL_T_SRC) $(FW)
 
 # Exercise the production traditional Metal descriptor on the host GPU.
+t_legacy_initial_content: t_legacy_initial_content.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_legacy_initial_content.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_legacy_initial_content
+check_t_legacy_initial_content: t_legacy_initial_content
+	MTL_DEBUG_LAYER=1 ./t_legacy_initial_content
+run: check_t_legacy_initial_content
+
 t_legacy_pipeline: t_legacy_pipeline.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_legacy_pipeline.m $(MTL_T_SRC) $(FW)
 

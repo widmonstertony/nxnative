@@ -15,3 +15,6 @@ dm/gfx/tests/t_framegen_present
 dm/gfx/tests/t_framegen*.dSYM/
 /dm/gfx/tests/t_legacy_pipeline
 /dm/gfx/tests/t_legacy_pipeline.dSYM/
+
+/dm/gfx/tests/t_legacy_initial_content
+/dm/gfx/tests/t_legacy_initial_content.dSYM/

@@ -2092,8 +2092,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     tex_tag_format(mt, t->d.format);
     if (g_allocprof > 0) { static int n; if (n++ < 30 || n % 500 == 0) MLOG("新建贴图（%s）#%d ser=%llu %ux%ux%u 格式 %#x 目标 %d 级 %u 存储 %p", __func__, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (void *)t->mem); }
     res_add(mt);   // Both first upload and re-upload register residency here (Metal 4 does not make resources resident automatically; a missed registration = GPU address page fault)
-    nvn_dirty_protect(t->mem, t->L.size);
-    *stamp = nvn_dirty_now();
+    // A null stamp is a one-time initialization of an ordinary GPU texture,
+    // not a CPU-owned package. Do not install dirty-page/reupload tracking.
+    if (stamp) { nvn_dirty_protect(t->mem, t->L.size); *stamp = nvn_dirty_now(); }
     nvn_updiag_capture(diag);
     int linear_bpb = 0; size_t linear_row = 0;
     if (linear_needs_upload(t, &linear_bpb, &linear_row)) {
@@ -2397,6 +2398,31 @@ static int tex_cpu_written(uint64_t serial) {
     pthread_mutex_lock(&g_cpu_tex_mu); int r = g_cpu_tex && CFSetContainsValue(g_cpu_tex, (const void *)(uintptr_t)serial); pthread_mutex_unlock(&g_cpu_tex_mu);
     return r;
 }
+// Match the modern renderer's initial pool-content semantics. Inherit only
+// published CPU-cached storage, CPU-uncached storage or a pool's initial
+// CPU_NO_ACCESS data. A later GPU write remains authoritative: this is called
+// only for a fresh allocation, never for an existing texture or storage alias.
+int nvn_flushed(const void *p, uint64_t n);
+static int legacy_mem_any(const uint8_t *p, uint64_t n) {
+    uint64_t i=0, word;
+    for (; i+8<=n; i+=8) { memcpy(&word,p+i,8); if(word)return 1; }
+    for (; i<n; i++) if(p[i])return 1;
+    return 0;
+}
+static int legacy_initial_content(const tex_t *t, id<MTLTexture> mt) {
+    if (!t->mem || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || t->has_layout) return 0;
+    if (t->d.samples>1 || (t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) || ((int)mt.pixelFormat>=250 && (int)mt.pixelFormat<=262)) return 0;
+    int no_cpu=(t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)!=0;
+    int uncached=(t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED)!=0;
+    static int flush_fill=-1;
+    if(flush_fill<0) { const char *e=getenv("DM_NVN_FLUSH_FILL");flush_fill=!e||atoi(e)!=0; }
+    if(!no_cpu && !uncached && (!flush_fill || !nvn_flushed(t->mem,t->L.size)))return 0;
+    if(!atomic_load(&g_sub_thread_set) || !on_sub_thread() || !legacy_mem_any(t->mem,t->L.size))return 0;
+    if(pkg_upload(t,NULL,mt,0)!=mt)return 0;
+    static unsigned reports;
+    if(reports++<8)MLOG("initial pool content: ser=%llu %ux%u format=%#x source=%s",(unsigned long long)t->serial,t->d.width,t->d.height,t->d.format,no_cpu?"CPU_NO_ACCESS":uncached?"CPU_UNCACHED":"CPU-flushed");
+    return 1;
+}
 static id<MTLTexture> tex_mtl_(const tex_t *ct);
 static id<MTLTexture> tex_mtl(const tex_t *ct) { AP_B; id<MTLTexture> r = tex_mtl_(ct); AP_E(4); return r; }
 static uint64_t g_texinfo_ser[8]; static int g_texinfo_n;
@@ -2481,7 +2507,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         mt = [g_dev newTextureWithDescriptor:d];
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失败 %ux%u 格式 %#x 目标 %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
         tex_tag_format(mt, t->d.format);
-        res_add(mt); { uint32_t apf; tex_zero_fill(mt, bc_astc(t, &apf)); }   // register residency before zeroing (the copy destination must be resident too)
+        res_add(mt); if (!legacy_initial_content(t, mt)) { uint32_t apf; tex_zero_fill(mt, bc_astc(t, &apf)); }   // register residency before initialization
     }
     tex_tag_format(mt, t->d.format);
     if (g_allocprof > 0) { static int n; if (n++ < 30 || n % 500 == 0) MLOG("新建贴图（%s）#%d ser=%llu %ux%ux%u 格式 %#x 目标 %d 级 %u 存储 %p", __func__, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (void *)t->mem); }

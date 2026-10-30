@@ -284,6 +284,18 @@ Games read this count as a position in their own command memory and size their h
 - **Fix:** `tex_init_fill` (`nvn_mtl.m`) also fills a new texture in a `CPU_UNCACHED` pool from its storage once, at first use, when the storage holds data; the same exclusions as for `CPU_NO_ACCESS` pools apply (packaged layouts, `COMPRESSIBLE`, multisample, depth / stencil, sparse). The log says `initial content: … a CPU_UNCACHED pool's`. A texture the CPU writes again after its first use still needs the profile's keys.
 - **Found on:** [Donkey Kong Country: Tropical Freeze](../../dm/games/0100C1F0051B6000/README.md): the 912×512 ASTC 5×5 title logo (242,374 of 376,832 storage bytes non-zero at first use, no packaged layout) and the menus' ASTC panels; with the fill and neither profile key, the title and every menu draw.
 
+The legacy renderer now applies the same one-time initialization through
+`legacy_initial_content`. Previously it unconditionally zeroed new private
+textures, including published pool content. `t_legacy_initial_content` uses
+production NVN pool/texture entry points and direct GPU readback to cover
+CPU_NO_ACCESS, CPU_UNCACHED, cached storage flushed before or after texture
+creation, and negative controls for unflushed cached storage, COMPRESSIBLE
+textures and zero content. A subsequent lookup keeps the allocation and never
+repeats the upload. The initial regression had 264 failures; the repaired
+seven-case GPU run passes (Mac M4, not an iPad gameplay result). It does not
+enable per-game dirty-page upload flags or establish that every black-screen
+cause is resolved.
+
 ### Mapped-range flushes taken as uploads (`tex_flush_upload`)
 
 - **Symptom:** a movie plays black (Age of Calamity: its intro movie under the "+ Skip" prompt).
