@@ -4,6 +4,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ## Containers by engine
 
+### REDengine compressed shader caches are missed
+
+- **Symptom:** The Witcher 3 reaches its frame loop but shows black or solid magenta blocks, with runtime shader keys absent from the offline map. The initial split found 563 loose programs, mostly ancillary shaders.
+- **Cause:** the main caches are compressed containers. `staticshadernx.cache` uses an FZLC table of zstd chunks; a GLSLC output may cross chunk boundaries. `shadernx.cache` stores engine-key/codec/raw-size/packed-size records followed by lookup data. Scanning either as an ordinary file sees no GLSLC outputs inside its compressed payloads.
+- **Fix:** `redshader.py` validates FZLC count, reserved table, contiguous bounded ranges and exact frame lengths, then joins chunks before shader parsing. Hash records require the supported codec, bounded sizes and exact zstd-frame consumption. The existing GLSLC parser still validates stages, control/code lengths and identities. Resplit the complete profile, rebuild matching libraries and stamps, and rebuild the host; never rename old caches to make a new table appear compatible.
+- **Found on:** the external provisional US v4.04b profile, build `b151a224a429f9a73abb05c5a3de9468`, on M2 iPad with iOS 16.1-compatible host .4. All eleven missing keys in the owner's current run match programs in the decoded static cache exactly. The static cache yields 619 stages; the main cache yields 8,186 GLSLC records. These are extraction results; corrected gameplay remains unverified until the rebuilt package is installed and tested by its owner.
+- **Checks:** `test_redshader.py` uses synthetic frames and a synthetic GLSLC output spanning chunks, exercises the real file scanner, hash-record lookup tails, bad codecs, lengths, ranges and reserved bytes. Existing size-prefixed-frame and Unity GLSLC tests remain unchanged.
+
 ### Captured NVN stages missing from the offline map
 
 - **Symptom:** a game continues submitting frames and audio, but the scene is black and the log reports shader keys missing from the map.

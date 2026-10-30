@@ -2012,6 +2012,12 @@ def unity_text_glslc(x, base):
     return out
 
 def scan_blob(d, label, out):
+    if d[:4] == b'FZLC' or d[8:9] == b'\x01' and d[17:21] == ZSTD_MAGIC:
+        import redshader
+        blobs = [(0, redshader.fzlc(d, zstd_mod()))] if d[:4] == b'FZLC' else redshader.records(d, zstd_mod())
+        for offset, raw in blobs:
+            out.extend(glslc_shaders(raw, f'{label}#REDcache@{offset:#x}'))
+        return
     if d[:4] == b'HCPS': out.extend(hcps_shaders(d, 0, label)); return
     for m in re.finditer(b'SLCT\x03\x10\0\0', d): out.extend(slct_shaders(d, m.start(), label))
     if d[:4] == b'Yaz0': d = yaz0(d)
@@ -2200,7 +2206,7 @@ def scan_file_in(args):
         try: pairs = unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
         return rel, uniq_keys(found), var_pairs(found) | {(a, b, 'prog') for a, b in pairs}, trees
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d and NEEDLE not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] not in (b'MSHD', b'FZLC') and not (d[8:9] == b'\x01' and d[17:21] == ZSTD_MAGIC) and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d and NEEDLE not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
     else:
         scan_blob(d, '/' + rel, found)
         # whole GLSLC outputs in a file no other reader takes (FINAL FANTASY TACTICS - The Ivalice Chronicles: its engine's technique files, resources_nx/…/shader/*.tec, 261 outputs beside
