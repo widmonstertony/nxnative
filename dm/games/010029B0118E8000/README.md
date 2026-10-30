@@ -108,11 +108,11 @@ picture claim, which still requires the owner's device test.
 
 ### Initial-pool-content parity (2026-10-30)
 
-The agent reproduced the current black UI after confirmed A inputs on M2.
-The intro video is visible. Two sampled inputs (serials 207 and 238) have
-nonzero CPU storage but both GPU RGB and alpha read zero. This alone does
-not prove that the CPU bytes are valid image content; the bounded source
-decode/ownership diagnostic is pending.
+The agent reproduced the black UI after confirmed A inputs on M2. The intro
+video is visible. In `.19`, a bounded source decode proves serial 207 contains
+a valid 256x256 BC3 sRGB opacity image in a CPU_UNCACHED pool (0x22), while
+the corresponding GPU RGB and alpha both read zero. No CPU-upload profile
+flag or guest GPU write accounts for this initial content.
 
 A separate production-recorder regression exposed missing
 [initial pool content](../../../docs/reference/nvn-objects.md#a-pools-storage-at-creation-is-its-textures-content)
@@ -120,5 +120,10 @@ semantics in the legacy backend: published initial data was zeroed instead of
 uploaded. The modern path already supports it. The compatibility port passes
 the GPU regression while keeping unflushed cached storage and COMPRESSIBLE
 images excluded, and never reinitializes an existing GPU allocation. This
-is a concrete host fix, not yet a verified correction of this title's picture.
-No shader chain or game resources are changed.
+is a concrete host fix. After the save-preserving `.20` M2 installation,
+the same sampled texture's GPU RGB matches the decoded source exactly and
+its alpha is restored (mean absolute error 0.85/255, maximum 32/255 after
+the BC-to-ASTC path). The EA dialogs now show
+text, logos and borders. This verifies that particular data-loss repair,
+not the complete 3D picture or gameplay: the bounded A-input reproduction
+ends on the user-agreement page. No shader chain or game resources changed.
