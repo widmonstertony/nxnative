@@ -201,3 +201,40 @@ def capture_input(src):
     if n != 1:
         raise ValueError('unknown geometry capture-input declaration')
     return lowered
+
+
+def kernel_viewport_zero(src):
+    """Lower a geometry kernel's ViewportIndex output to viewport-zero culling.
+
+    Metal compute kernels cannot return a stage-output structure.  The fixed-
+    input geometry translator nevertheless leaves ViewportIndex in main0_out
+    when the original geometry shader writes it.  Replay currently binds only
+    viewport zero, so an emitted vertex for another viewport must not enter the
+    compacted primitive stream.  Turn those index writes into restart markers,
+    keep viewport-zero writes unchanged and make the kernel return void.
+
+    Reject any other returned field instead of silently dropping an output.
+    """
+    if 'gl_ViewportIndex' not in src:
+        return src
+    if 'dm_gs_viewport_index' in src:
+        raise ValueError('geometry kernel: viewport-index lowering already present')
+    st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
+    if not st or re.sub(r'\s+', ' ', st.group(1)).strip() != 'uint gl_ViewportIndex;':
+        raise ValueError('geometry kernel: ViewportIndex is not the only returned output')
+    entry = re.search(r'\bkernel\s+main0_out\s+main0\s*\(', src)
+    if not entry:
+        raise ValueError('geometry kernel: missing ViewportIndex kernel entry')
+    lowered = src[:st.start()] + src[st.end():]
+    lowered, nentry = re.subn(r'\bkernel\s+main0_out\s+main0\s*\(', 'kernel void main0(', lowered, count=1)
+    lowered, ninit = re.subn(r'\bmain0_out\s+out\s*=\s*\{\s*\};', 'uint dm_gs_viewport_index = 0u;', lowered, count=1)
+    lowered, nassign = re.subn(r'\bout\.gl_ViewportIndex\s*=\s*([^;\n]+);', r'dm_gs_viewport_index = \1;', lowered)
+    index_store = re.compile(r'(\(\*spvDescriptorSet0\.geometry_ib_output\)\._m0\[[^\]\n]+\]\s*=\s*)([^;\n]+);')
+    lowered, nstores = index_store.subn(
+        lambda m: m.group(1) + '((dm_gs_viewport_index == 0u) ? (' + m.group(2) + ') : 4294967295u);', lowered)
+    lowered, nreturn = re.subn(r'\breturn\s+out\s*;', 'return;', lowered)
+    if (nentry, ninit) != (1, 1) or not nassign or not nstores or not nreturn:
+        raise ValueError('geometry kernel: incomplete ViewportIndex lowering')
+    if 'main0_out' in lowered or 'gl_ViewportIndex' in lowered or 'out.' in lowered:
+        raise ValueError('geometry kernel: returned ViewportIndex survived lowering')
+    return lowered

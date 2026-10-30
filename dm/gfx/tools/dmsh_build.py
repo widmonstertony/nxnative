@@ -882,7 +882,7 @@ def geometry_finish(key, w, j, c1):
         dmsh_geometry.flatten_sets(spv)
         r = subprocess.run([SPIRV_CROSS, *dmsh_atomic.cross_args(XC, spv), spv], capture_output=True, text=True)
         if r.returncode: return 'geometry MSL failed', r.stderr.strip()[:160], None
-        src = dmsh_geometry.capture_input(dmsh_geometry.topology_pointer(precise(dmsh_atomic.check_msl(r.stdout))))
+        src = dmsh_geometry.kernel_viewport_zero(dmsh_geometry.capture_input(dmsh_geometry.topology_pointer(precise(dmsh_atomic.check_msl(r.stdout)))))
         res = json.load(open(os.path.join(w, k + '.res.json')))
         refl = {'key': key + '_bg' + str(t), 'route': 'B', 'chain': CHAIN, 'dm_ctl': key,
                 'source': f'{loc[key][0]}#{loc[key][1]}', 'pc_paired': pc_of[key], 'stage': 'gs',

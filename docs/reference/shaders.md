@@ -528,6 +528,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [NieR:Automata The End of YoRHa Edition](../../dm/games/010056B015FE8000/README.md): its passthrough index-building geometry shaders; the triangle kernel's six-word stores disagreed with its two-word metadata while rendering flight. The game note tracks the visual result after correction.
 - **Check:** `test_dmsh_geometry.py` covers all five variants, ordinary bounds and malformed headers. With `DM_TEST_GEOMETRY` pointing at `t_geometry`, it passes production-generated layouts to a native emitter with independent topology bounds. GPU canaries protect the nominal vertex and raw-index allocations, and compaction must preserve the emitted count and order. The old rule produced 34 failures; the corrected metadata passes all 170 native checks with Metal validation.
 
+### Geometry kernel ViewportIndex on viewport-zero replay
+
+- **Symptom:** a translated geometry kernel fails Metal compilation with `invalid return type 'main0_out' for kernel function`. Its only returned field is `gl_ViewportIndex`; compute kernels cannot return a stage-output structure.
+- **Cause:** the fixed-input geometry translator keeps the original geometry shader's `ViewportIndex` output after lowering the stage to compute. The output is not part of the geometry scratch ABI, so SPIRV-Cross leaves it in `main0_out`. Replay currently binds viewport zero only, as for geometry-reader viewport masks above.
+- **Fix:** `dmsh_geometry.kernel_viewport_zero` changes this exact kernel shape to `void`, tracks the index in a local integer and writes primitive-restart instead of each emitted raw index while the selected viewport is not zero. Viewport-zero geometry and restart padding remain byte-for-byte equivalent. A returned structure with any other field, an unknown assignment or an unrecognized index store fails the build rather than losing an output silently. Rebuild shaders and the host for the new chain.
+- **Found on:** a provisional Grand Theft Auto V Switch profile (main build `6e3e9b3af5746e74b615bd981080c927`): 17 of its 19 geometry shaders write `ViewportIndex`, including cascade shadows. The title is not yet a supported game.
+- **Check:** `test_dmsh_geometry.py` checks unchanged ordinary kernels, viewport-zero index gating, rejection of another returned field and Mac/iOS Metal compilation. All 19 real geometry shaders build for iOS 16.1 (113 libraries compiled and 20 reused across their topology variants and readers); a representative six-stage sample then builds 6/6. This establishes compilation and viewport-zero culling, not GTA V gameplay or multi-viewport rendering.
+
 ### Passthrough geometry kernels lose raster vertices
 
 - **Symptom:** a geometry kernel compiles and runs its storage-buffer side effects, but contains no `geometry_vb_output` binding and fills its index stream with restart markers; its following raster pass draws no geometry.

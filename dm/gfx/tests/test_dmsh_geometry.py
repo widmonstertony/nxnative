@@ -154,6 +154,58 @@ class GeometryReader(unittest.TestCase):
                     self.assertEqual(r.returncode, 0, r.stderr)
 
 
+def viewport_index_kernel(extra_output=''):
+    return f'''#include <metal_stdlib>
+using namespace metal;
+struct _29 {{ uint _m0[16]; }};
+struct spvDescriptorSetBuffer0 {{ device _29* geometry_ib_output [[id(0)]]; }};
+struct main0_out
+{{
+    uint gl_ViewportIndex;
+    {extra_output}
+}};
+kernel main0_out main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint id [[thread_position_in_grid]])
+{{
+    main0_out out = {{}};
+    if (id >= 8) return out;
+    out.gl_ViewportIndex = id & 1u;
+    (*spvDescriptorSet0.geometry_ib_output)._m0[id] = uint(id + 1u);
+    (*spvDescriptorSet0.geometry_ib_output)._m0[id + 8u] = 4294967295u;
+    return out;
+}}
+'''
+
+
+class GeometryKernelViewportIndex(unittest.TestCase):
+    def test_ordinary_kernel_is_unchanged(self):
+        src = 'kernel void main0() {}'
+        self.assertEqual(dmsh_geometry.kernel_viewport_zero(src), src)
+
+    def test_only_viewport_zero_reaches_the_index_stream(self):
+        lowered = dmsh_geometry.kernel_viewport_zero(viewport_index_kernel())
+        self.assertIn('kernel void main0(', lowered)
+        self.assertIn('uint dm_gs_viewport_index = 0u;', lowered)
+        self.assertEqual(lowered.count('dm_gs_viewport_index == 0u'), 2)
+        self.assertNotIn('main0_out', lowered)
+        self.assertNotIn('gl_ViewportIndex', lowered)
+        self.assertNotIn('return out', lowered)
+
+    def test_another_returned_output_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'not the only returned output'):
+            dmsh_geometry.kernel_viewport_zero(viewport_index_kernel('uint other;'))
+
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires the Metal compiler')
+    def test_lowered_kernel_compiles(self):
+        lowered = dmsh_geometry.kernel_viewport_zero(viewport_index_kernel())
+        with tempfile.TemporaryDirectory(prefix='dmsh_geometry_viewport_') as d:
+            src = Path(d) / 'kernel.metal'; src.write_text(lowered)
+            for sdk in ('macosx', 'iphoneos'):
+                with self.subTest(sdk=sdk):
+                    r = subprocess.run(['xcrun', '-sdk', sdk, 'metal',
+                                        '-fmodules-cache-path=' + d + '/modules', '-fsyntax-only', str(src)],
+                                       capture_output=True, text=True)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+
 def geometry_header(passthrough=True, vertices=1, topology=7, invocations=1):
     return struct.pack('<5I', int(passthrough) << 24, 0, invocations << 24, topology << 24, vertices)
 
