@@ -39,6 +39,12 @@ static NSDictionary *gameCard(NSString *title, NSString *documents, NSString *bu
        ![stored[@"title_id"] isKindOfClass:NSString.class] ||
        [stored[@"title_id"] caseInsensitiveCompare:title]!=NSOrderedSame)stored=nil;
     NSString *name=[stored[@"name"] isKindOfClass:NSString.class]&&[stored[@"name"] length]?stored[@"name"]:title;
+#ifdef DM_LIBRARY_HOST
+    if([name isEqualToString:title]){
+        const dm_game_profile *profile=dm_profile_find(title.UTF8String);
+        if(profile&&profile->name&&profile->name[0])name=[NSString stringWithUTF8String:profile->name];
+    }
+#endif
     NSString *version=[stored[@"version"] isKindOfClass:NSString.class]&&[stored[@"version"] length]?stored[@"version"]:@"本地文件";
     NSString *size=[stored[@"size"] isKindOfClass:NSString.class]&&[stored[@"size"] length]?stored[@"size"]:@"已导入";
     NSString *source=[slot stringByAppendingPathComponent:@"Source"];

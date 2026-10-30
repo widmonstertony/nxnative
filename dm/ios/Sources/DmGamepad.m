@@ -19,6 +19,7 @@
 #import <CoreMotion/CoreMotion.h>
 #import <CoreText/CoreText.h>
 #include <pthread.h>
+#include <strings.h>
 #include "dm.h"
 #include "dm_input.h"
 #include "front.h"
@@ -41,6 +42,16 @@ static uint64_t g_touch_face, g_touch_native;
 static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry, g_key_lx, g_key_ly, g_key_rx, g_key_ry, g_mouse_rx, g_mouse_ry;
 static BOOL g_key_w, g_key_a, g_key_s, g_key_d, g_key_left, g_key_up, g_key_right, g_key_down;
 static BOOL g_key_j, g_key_enter, g_key_k, g_key_backspace;
+static BOOL g_key_z, g_key_c;
+
+static BOOL nfs_keyboard(void) {
+#ifdef DM_MULTI_GAME
+    const char *id = getenv("DM_LIBRARY_GAME_ID");
+#else
+    const char *id = DM_GAME_ID;
+#endif
+    return id && strcasecmp(id, "010029B0118E8000") == 0;
+}
 static BOOL g_shift_left, g_shift_right;
 static BOOL g_command_left, g_command_right;
 static uint64_t g_run_button, g_aim_button;   // native Npad shortcuts, independent of visible face letters
@@ -713,6 +724,8 @@ static void read_key(GCKeyCode key, BOOL pressed) {
     else if (key == GCKeyCodeKeyA) g_key_a = pressed;
     else if (key == GCKeyCodeKeyS) g_key_s = pressed;
     else if (key == GCKeyCodeKeyD) g_key_d = pressed;
+    else if (key == GCKeyCodeKeyZ) g_key_z = pressed;
+    else if (key == GCKeyCodeKeyC) g_key_c = pressed;
     else if (key == GCKeyCodeLeftShift) g_shift_left = pressed;
     else if (key == GCKeyCodeRightShift) g_shift_right = pressed;
     else if (key == GCKeyCodeLeftGUI) g_command_left = pressed;
@@ -727,8 +740,15 @@ static void read_key(GCKeyCode key, BOOL pressed) {
         if (g_key_j || g_key_enter) g_key_btn |= DM_BTN_A;
         if (g_key_k || g_key_backspace) g_key_btn |= DM_BTN_B;
     } else g_key_btn = pressed ? g_key_btn | bit : g_key_btn & ~bit;
+    if (nfs_keyboard()) {
+        // NFS drives on the Switch triggers. Keep Z/C as aliases; W/S are
+        // the natural keyboard pedals, while A/D still steer the left stick.
+        g_key_btn &= ~(DM_BTN_ZL | DM_BTN_ZR);
+        if (g_key_s || g_key_z) g_key_btn |= DM_BTN_ZL;
+        if (g_key_w || g_key_c) g_key_btn |= DM_BTN_ZR;
+    }
     g_key_lx = ((int)g_key_d - (int)g_key_a) * DM_STICK_MAX;
-    g_key_ly = ((int)g_key_w - (int)g_key_s) * DM_STICK_MAX;
+    g_key_ly = nfs_keyboard() ? 0 : ((int)g_key_w - (int)g_key_s) * DM_STICK_MAX;
     // Arrow keys are the four digital directions. Camera input remains on the
     // right-side touch drag, mouse/trackpad, or a physical right stick.
     g_key_rx = g_key_ry = 0;
@@ -740,6 +760,7 @@ static void clear_keyboard(void) {
     g_key_btn = 0; g_key_lx = g_key_ly = g_key_rx = g_key_ry = 0;
     g_key_w = g_key_a = g_key_s = g_key_d = g_key_left = g_key_up = g_key_right = g_key_down = NO;
     g_key_j = g_key_enter = g_key_k = g_key_backspace = NO;
+    g_key_z = g_key_c = NO;
     g_shift_left = g_shift_right = NO;
     g_command_left = g_command_right = NO;
     pthread_mutex_unlock(&g_mu);
