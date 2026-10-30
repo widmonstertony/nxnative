@@ -1,30 +1,41 @@
-# TonTon游戏匣界面试用版
+# Shared iOS game library host
 
-这是一个 iOS 16.1+ 的卡带盒风格封面界面原型。右下角的加号用于
-重新读取本机游戏；顶部显示实际可打开的游戏数量。它在设备上读取已安装的
-`org.nxnative.*` 游戏应用，并通过本机 MCP 服务打开所选应用。
-封面图只从用户本机已有的游戏包提取，放在被 Git 忽略的
-`LocalCovers/` 目录；仓库中只包含游戏库自己的图标。
-标题下的版本和资源大小是 M2 iPad 已安装内容的核对快照；它们随游戏更新需要重新生成，不能当成运行验证结果。
+The library builds **one host executable** for multiple Switch games. The
+graphics, input, HLE and loader code is compiled once. Each game still has its
+own patched guest program, profile and shader resources; the guest program is
+placed in a distinct signed Mach-O section. Selecting a card chooses its
+profile and data paths before the host starts.
 
-游戏资源和存档可以先按 title ID 复制到本 App 的 Documents/Games 中，
-逐项校验并保留原始 App。这个原型**还不是多游戏运行宿主**。不能因为封面出现、点击能打开
-另一个应用，就删除原游戏应用或其存档。正式单 App 交付需要：
+`dm/ios/tools/library_embed.py` takes a local JSON manifest and generates
+`game_profile.h`, `game_profile_runtime.c`, `embed.S` and `link-flags.txt`:
 
-GTA V Port 使用单独的 Web/native 运行方式；它的本地资源可以作为 `gta5`
-槽位迁入，但也需要在同一 App 中整合对应运行宿主，才能卸载原 Port App。
-
-1. 在一个签名的 App 内为每款游戏选择正确的宿主配置及代码。
-2. 按 title ID 隔离 RomFS、着色器、DLC、设置、日志和存档。
-3. 迁移后逐款核对资源与存档哈希，并在 M2、A10X 上启动验证。
-4. 验证完成后才能移除旧应用；任何失败都保留原应用和数据。
-
-构建界面原型：
-
-```sh
-xcodegen generate
-xcodebuild -project NXGameLibrary.xcodeproj -scheme NXGameLibrary \
-  -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO build
+```json
+{"games":[
+  {"profile":"/absolute/path/to/0100000000000000/profile",
+   "patched":"/absolute/path/to/that-games/patched-output"}
+]}
 ```
 
-原型源码、图标和操作说明可公开；游戏资源、存档和签名资料不能提交。
+The Xcode target compiles the generated registry and assembly with
+`DM_LIBRARY_HOST=1`, includes `LibraryApp/Sources/main.m`, and uses the
+generated link flags. It does not stage a particular game's `romfs.img`,
+`msl` or `dm` directory inside the app bundle. Per-game files are stored at
+`Documents/Games/<title-id>/Resources` and writable data at
+`Documents/Games/<title-id>/UserData`.
+
+`LocalCovers/` is Git ignored; any covers extracted from the owner's games
+remain on that device or in its local build. Game resources, saves and signing
+material must not be committed. The separate `NXGameLibrary` target remains a
+UI-only prototype and is not evidence that the shared host can run a game.
+
+The **+** button imports an existing prepared game folder into that layout,
+or moves a raw NSP/XCI/NSZ/NCA into `Documents/Imports` as a pending card.
+Raw packages need the usual extraction, guest patching and shader build before
+they can run. Adding an unregistered guest program also requires rebuilding
+and signing the host app; the file picker alone cannot add executable code to
+an already signed iOS binary.
+
+The same host cannot start a second game in the current process. The selected
+profile and graphics state are process-wide and initialize once. A return to
+the library and subsequent game switch needs a controlled host teardown or a
+fresh process launch; the current card flow starts one game per app launch.
