@@ -508,8 +508,15 @@ def decompress_nsz(nsp_dir, app, fam, keys, env):
                 # nsz 4.6.1 loads keys.txt beside argv[0] at import time; with argv[0] = 'nsz' that is cwd. That release has no --keys option.
                 (tmp / 'keys.txt').symlink_to(keys.resolve())
                 run([*nsz, *keys_opt, '-D', '-o', tmp, p.resolve()], log, env=env, cwd=tmp)
-                if not (tmp / dst.name).is_file(): raise BuildError(f'nsz made no {dst.name} (full output: {log})')
-                (tmp / dst.name).rename(dst)
+                # nsz names its output after the resolved source path. A verified
+                # export can be linked here under a simpler name; accept only
+                # that one alternate name and keep the cache's stable alias.
+                made_path = tmp / dst.name
+                if not made_path.is_file() and p.is_symlink():
+                    made_path = tmp / (p.resolve().stem + COMPRESSED[p.suffix])
+                if not made_path.is_file():
+                    raise BuildError(f'nsz made no {dst.name} (full output: {log})')
+                made_path.rename(dst)
             finally: rmtree(tmp)
             keyfile.write_text(key + '\n'); made += 1
         conv[p] = dst
