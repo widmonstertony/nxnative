@@ -295,6 +295,19 @@ static void t_joycons(void) {
     // One Joy-Con alone on player 2: JoyRight on No2; leaving: full-key again
     dm_pad_players(3); dm_joy_attach(1, 2);
     CHECK(h_hid_GetStyle(&(uint32_t){1}) == STYLE_JOYRIGHT, "one right Joy-Con alone: JoyRight on its own npad");
+    h_hid_JoySingle(&(uint32_t){0});
+    uint32_t jleft = 0, jright = 0; SixAxisState six;
+    CHECK(h_hid_SixHandles(&jleft, 1, &(uint32_t){0}, STYLE_JOYLEFT) == 1 && h_hid_SixStates(&six, 1, &jleft) == 1 && six.acc[0] != 0.0f && six.acc[1] != 0.0f && six.acc[2] == -1.0f,
+          "Joy-Con six-axis acceleration never reports an exact 0.0f component");
+    CHECK(h_hid_SixHandles(&jright, 1, &(uint32_t){2}, STYLE_JOYRIGHT) == 1 && h_hid_SixRest(&jleft) && h_hid_SixRest(&jright),
+          "idle split Joy-Con six-axis sensors are at rest");
+    dm_motion_set_joy(0, 0, (const float[3]){0, 0, -1}, (const float[3]){0, 0, 0.5f}, motion_now);
+    dm_motion_set_joy(0, 1, (const float[3]){0, 0, -1}, (const float[3]){0, 0, 0.5f}, motion_now);
+    CHECK(!h_hid_SixRest(&jleft) && !h_hid_SixRest(&jright),
+          "turning split Joy-Con six-axis sensors are not at rest");
+    dm_motion_clear_joy(0, 0); dm_motion_clear_joy(0, 1);
+    dm_joy_attach(0, 1); dm_joy_attach(0, 3);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_JOYDUAL, "re-joining single Joy-Cons into a pair clears single assignment");
     dm_joy_attach(1, 0); dm_joy_attach(0, 0);
     CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_FULLKEY && h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY, "no Joy-Con reported any more: full-key controllers, as before");
     dm_haptics_route(0, 0); dm_pad_players(1); h_hid_SetStyles(0xffffffffu);

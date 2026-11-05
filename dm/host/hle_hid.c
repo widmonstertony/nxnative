@@ -414,7 +414,11 @@ void dm_joy_attach(int p, uint32_t sides) {
     sides &= 3;
     if (sides == 3 || !sides) atomic_store(&g_joy_paired[p], sides == 3);
     atomic_fetch_and(&g_joy_reported[p], sides);   // a Joy-Con taken away has reported nothing yet when it comes back
-    if (atomic_exchange(&g_joy_sides[p], sides) != sides && !sides) for (int s = 0; s < 2; s++) { atomic_store(&g_joy_btn[p][s], 0); atomic_store(&g_joy_axes[p][s], 0); }
+    uint32_t old = atomic_exchange(&g_joy_sides[p], sides);
+    if (old != sides) {
+        if (sides == 3 && old != 0) atomic_fetch_and(&g_single_mask, ~(1u << p));
+        if (!sides) for (int s = 0; s < 2; s++) { atomic_store(&g_joy_btn[p][s], 0); atomic_store(&g_joy_axes[p][s], 0); }
+    }
     styles_sync();
 }
 void dm_joy_set(int p, int side, uint64_t buttons, int32_t sx, int32_t sy) {
@@ -1122,7 +1126,15 @@ static int six_states(SixAxisState *out, int n, uint32_t h) {
     static _Thread_local live_hist src;   // 10 KB: off the guest thread's stack
     int64_t samp = answer_tick(&g_hwm_states, h, (int64_t)(guest_ns() / SIX_PERIOD_NS)), first = samp - n + 1;
     int shakes; six_source(h, first > 0 ? (uint64_t)first * SIX_PERIOD_NS : 0, &src, &shakes, &g_hwm_states);
-    for (int i = 0; i < n; i++) six_at(&out[i], samp - i, &src, shakes);
+    int sb = six_style_bit(h), split = sb >= 0 && ((1u << sb) & (STYLE_JOYDUAL | STYLE_JOYLEFT | STYLE_JOYRIGHT)) != 0;
+    for (int i = 0; i < n; i++) {
+        six_at(&out[i], samp - i, &src, shakes);
+        // Super Mario Party (main+0x57a72c, main+0x57ce38) discards any Joy-Con SixAxisSensorState whose
+        // acceleration has an exact 0.0f component (fcmp s0/s1/s2, #0.0; b.eq) and falls back to (0, 0, 0).
+        if (split) {
+            for (int k = 0; k < 3; k++) if (out[i].acc[k] == 0.0f) out[i].acc[k] = 1e-6f;
+        }
+    }
     return n;
 }
 // A style set of several styles (FullKey | JoyDual, as a game that takes either passes) gets the style the npad's controller is shown in, when it is one of them (else the first, as
@@ -1684,9 +1696,12 @@ HLE_FORCE("_ZN2nn3hid16GetGestureStatesEPNS0_12GestureStateEi", "gesture states,
 HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStop, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "six-axis sensor current state", void, h_hid_SixState, SixAxisState *s, const uint32_t *h) { six_states(s, 1, *h); }
 HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless player 1's is shaking or a live controller is turning", unsigned, h_hid_SixRest, const uint32_t *h) {
-    int pl = player_of(*h >> 8 & 0xff); motion_state ms;
-    if (motion_live(pl, &ms)) return fabsf(ms.gyro[0]) + fabsf(ms.gyro[1]) + fabsf(ms.gyro[2]) < 0.01f && !(pl == 0 && shaking(guest_ns()));
-    return pl != 0 || !shaking(guest_ns());
+    npad_ref ref = npad_resolve(*h >> 8 & 0xff);
+    int pl = ref.kind >= KIND_DUAL ? ref.pad : player_of(*h >> 8 & 0xff), shakes = pl == 0 && ref.kind < KIND_DUAL;
+    motion_state ms;
+    int live = ref.kind >= KIND_DUAL ? motion_joy(ref.pad, ref.kind == KIND_LEFT ? 0 : ref.kind == KIND_RIGHT ? 1 : (int)(*h >> 16 & 1), &ms) : motion_live(pl, &ms);
+    if (live) return fabsf(ms.gyro[0]) + fabsf(ms.gyro[1]) + fabsf(ms.gyro[2]) < 0.01f && !(shakes && shaking(guest_ns()));
+    return !shakes || !shaking(guest_ns());
 }
 // The console's own six-axis sensor (SevenSixAxisSensor, the body's orientation in handheld mode; The Legend of Zelda: Breath of the Wild): takes a work buffer and is switched through the hid service. The host provides none: switching succeeds, 0 states
 HLE_FORCE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", "console six-axis sensor initialization; not provided by the host", Result, h_hid_SevenInit, void *buf, size_t n) { (void)buf; (void)n; return RES_OK; }
