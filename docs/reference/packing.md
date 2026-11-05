@@ -76,6 +76,13 @@
 - **Fix:** the translator is rebuilt with Microsoft's .NET SDK. `native_tools.sh` refuses a slice with a weak import before it joins the slices, and `test_native_tools.py` (`test_no_weak_imports`) reads the symbol tables of both committed tools, so a function newer than the minimum macOS cannot be committed again from any Mac. `nx_extract` had none. Measured: over the translator jobs of a full Cuphead shader build, the new arm64 slice wrote the same files as the old one, byte for byte. Not run on macOS 26 here.
 - **Found on:** every game's build on macOS 26 ([GitHub issue #2190](https://github.com/seedds/nxnative/issues/2190), [#2239](https://github.com/seedds/nxnative/issues/2239), [#2227](https://github.com/seedds/nxnative/issues/2227)).
 
+### The Mac host build starts an older Python than the pipeline
+
+- **Symptom:** the Mac host step fails in `host_msl.py` with `TypeError: __init__() got an unexpected keyword argument 'capture_output'`, although the launcher reports a recent bundled Python.
+- **Cause:** the pipeline runs under the selected interpreter, but the host Makefile started `python3` by name. The pipeline's tool folders could put an older installation before the bundled interpreter on `PATH`.
+- **Fix:** `build_mac_host` passes its exact `sys.executable` to both Make invocations as `PYTHON`. The host Makefile quotes that setting for its shader and profile generators, including parse-time profile lookup. Direct Make builds default to `python3` and can set `PYTHON` explicitly. `PATH` is unchanged. Synthetic tests execute the real shader-header target with an unusable `python3` on `PATH` and an explicitly selected versioned interpreter in a path with spaces.
+- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md), version 3.0.0, reported with bundled Python 3.13 and a child Python 3.6 in [NX2Apple issue #711](https://github.com/LNPANDY/NX2Apple/issues/711). The interpreter failure was reproduced synthetically, without game files or a gameplay check.
+
 ### Homebrew .NET is on PATH but apphosts cannot find the runtime
 
 - **Symptom:** the first extraction stops with `nx_extract exit code 131` and `.NET location: Not found`, even though `dotnet` is on `PATH`. The shader translator can fail the same way.
