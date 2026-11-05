@@ -8,9 +8,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <limits.h>
-#include <mach-o/getsect.h>
-#include <mach-o/ldsyms.h>
 #include "hle.h"
+#include "host_image.h"
 #if TARGET_OS_IPHONE
 #include <mach/mach.h>
 #endif
@@ -214,7 +213,7 @@ static uint64_t resolve_sym(module_t *m, const char *name) {
 static const hle_force_ent *g_force; static unsigned g_nforce; static unsigned *g_force_hits;
 static unsigned *g_fidx, g_fmask;   // name hash over the table: force_lookup runs for every named relocation, and each lookup used to strcmp its way through all 722 entries (the swhle table's scan is hashed the same way, hle.c)
 static void force_init(void) {
-    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
+    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(DM_HOST_IMAGE, "__DATA", "swforce", &sz);
     g_nforce = g_force ? (unsigned)(sz / sizeof *g_force) : 0;
     g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
     unsigned cap = 16; while (cap < g_nforce * 2) cap <<= 1;
@@ -745,7 +744,7 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
 }
 // The image the module sections are read from (front.h dm_set_game_image_header). getsectiondata takes any loaded image's header and applies its slide
 #include "front.h"
-static const struct mach_header_64 *g_game_image = &_mh_execute_header;
+static const struct mach_header_64 *g_game_image = DM_HOST_IMAGE;
 void dm_set_game_image_header(const void *mh) { g_game_image = mh; }
 #define IMAGE_MH g_game_image
 // The NRO modules (loader.c "NRO modules") are packed instead of getting sections of their own: a Mach-O file has at most 255 sections, and Super Smash Bros. Ultimate's 98 NROs would
