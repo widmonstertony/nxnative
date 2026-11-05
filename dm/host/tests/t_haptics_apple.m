@@ -100,7 +100,7 @@ static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t target, d
 @property(copy) void (^startingReset)(void);
 @end
 @implementation TestEngine
-- (NSTimeInterval)currentTime { return now(); }   // an engine's clock runs like the host's
+- (NSTimeInterval)currentTime { return (double)testTime / NSEC_PER_SEC; }   // the same clock as the driven dispatch deadlines
 - (BOOL)startAndReturnError:(NSError **)e {
     self.starts++; self.handlersAtStart = self.resetHandler && self.stoppedHandler;
     self.startingReset = self.resetHandler;
@@ -267,6 +267,39 @@ int main(void) { @autoreleasepool {
     dispatch_queue_set_specific(queue, &queue, &queue, NULL);
     timers = [NSMutableArray new];
     dm_haptics_init(apply, 1); drain();
+    __block int rawCalls=0; __block float rawLeft=0;
+    NSObject *owner=[NSObject new];
+    // Reusing a DualShock player's slot for a raw output must release its HID claim.
+    // Use the same fake handles as the HID registry tests: release also closes the device.
+    TestHid *oldRoute = [TestHid new], *otherRoute = [TestHid new];
+    TestHandle *oldHandle = [TestHandle new], *otherHandle = [TestHandle new];
+    oldHandle.hid = oldRoute; otherHandle.hid = otherRoute;
+    dispatch_sync(queue, ^{
+        ds4[2].dev = (IOHIDDeviceRef)CFBridgingRetain(oldHandle);
+        ds4[3].dev = (IOHIDDeviceRef)CFBridgingRetain(otherHandle);
+    });
+    dm_haptics_apple_output(2, owner, ^(dm_haptic_state s, float gain) { rawCalls++; rawLeft=s.motor[0].amplitude_low*gain; });
+    dispatch_sync(queue, ^{
+        assert(!ds4[2].dev && ds4[3].dev);
+        assert(oldRoute.closes == 1 && otherRoute.closes == 0);
+        ds4_release(3);
+        assert(otherRoute.closes == 1);
+    });
+    dm_vibration_update raw={2,0,{0.5f,160,0,320}};
+    dm_haptics_send(&raw,1); drain(); assert(rawLeft==0.5f && (dm_haptics_available() & 4));
+    int before=rawCalls;
+    advance(0.039); assert(rawCalls==before);
+    advance(0.001); assert(rawCalls==before+1 && rawLeft==0.5f); // firmware watchdog refreshed at 40 ms
+    advance(0.08); assert(rawCalls==before+3 && rawLeft==0.5f); // refresh continues without a new game send
+    suspend(DM_HAPTICS_INACTIVE,YES); drain(); assert(rawLeft==0);
+    before=rawCalls; advance(0.12); assert(rawCalls==before); // stale timers cannot revive rumble
+    suspend(DM_HAPTICS_INACTIVE,NO); dm_haptics_send(&raw,1); drain(); assert(rawLeft==0.5f);
+    dm_haptics_apple_focus(0); drain(); assert(rawLeft==0);
+    suspend(DM_HAPTICS_INACTIVE,YES); suspend(DM_HAPTICS_INACTIVE,NO);
+    dm_haptics_send(&raw,1); drain(); assert(rawLeft==0); // app activation cannot bypass window suspension
+    dm_haptics_apple_focus(1); dm_haptics_send(&raw,1); drain(); assert(rawLeft==0.5f);
+    dm_haptics_apple_controller(2,nil); drain(); assert(rawLeft==0 && !(dm_haptics_available() & 4));
+    before=rawCalls; advance(0.04); assert(rawCalls==before); // stale route cannot refresh after disconnect
     TestEngine *left = [TestEngine new], *right = [TestEngine new];
     dispatch_sync(queue, ^{
         channels[0] = [NSMutableArray new];
@@ -426,9 +459,12 @@ int main(void) { @autoreleasepool {
     dm_haptics_apple_controller(0, (id)unsupported); drain();
     assert(!(dm_haptics_available() & 1) && unsupported.haptics.attempts == 0);
     // DM_RUMBLE_MIN: controller levels below it are silent, the rest stretched over the full range; the phone keeps its levels
-    assert(controller_level(0) == 0 && controller_level(0.3f) == 0.3f && controller_level(1) == 1 && controller_level(NAN) == 0);
+    assert(dm_haptics_apple_controller_intensity(0) == 0 && dm_haptics_apple_controller_intensity(0.3f) == 0.3f && dm_haptics_apple_controller_intensity(1) == 1 && dm_haptics_apple_controller_intensity(NAN) == 0);
     rumble_min = 0.45f;
-    assert(controller_level(0.4f) == 0 && controller_level(0.45f) == 0 && fabsf(controller_level(0.725f) - 0.5f) < 1e-6f && controller_level(1) == 1);
+    dm_vibration rawLevel = {.amplitude_low=0.3f, .frequency_low=160, .frequency_high=320};
+    assert(dm_haptics_apple_controller_intensity(dm_haptics_level(&rawLevel, 1, 1).intensity) == 0);
+    assert(fabsf(dm_haptics_apple_controller_intensity(dm_haptics_level(&rawLevel, 1, 2).intensity) - 3.0f/11.0f) < 1e-6f); // gain before cutoff
+    assert(dm_haptics_apple_controller_intensity(0.4f) == 0 && dm_haptics_apple_controller_intensity(0.45f) == 0 && fabsf(dm_haptics_apple_controller_intensity(0.725f) - 0.5f) < 1e-6f && dm_haptics_apple_controller_intensity(1) == 1);
     TestController *cut = [TestController new]; cut.haptics = [TestHaptics new];
     dm_haptics_apple_controller(0, (id)cut); drain();
     send_pair(0.3, 0); drain();
@@ -496,6 +532,13 @@ int main(void) { @autoreleasepool {
     assert(jc.haptics.attempts == 2);
     assert([jc.haptics.requestedLocalities[0] isEqual:GCHapticsLocalityLeftHandle]);
     assert([jc.haptics.requestedLocalities[1] isEqual:GCHapticsLocalityRightHandle]);
+    // Switching a split locality to native Steam output invalidates its old
+    // route, and switching back stops native output before restoring locality.
+    __block unsigned nativeStops=0;
+    dm_haptics_apple_output(0,@"split-to-Steam",^(dm_haptic_state state,float level) { (void)level; if(!state.motor[0].amplitude_low && !state.motor[1].amplitude_low) ++nativeStops; });
+    drain(); assert(outputOwners[0] && !controllers[0] && !controllerLocalities[0] && !channels[0].count);
+    dm_haptics_apple_controller_locality(0,(id)jc,GCHapticsLocalityLeftHandle); drain();
+    assert(nativeStops && !outputOwners[0] && !nativeOutputs[0] && channels[0].count==1 && [controllerLocalities[0] isEqual:GCHapticsLocalityLeftHandle]);
     dm_haptics_apple_controller(0, nil); dm_haptics_apple_controller(1, nil); drain();
     assert(ds4_crc((const uint8_t *)"123456789", 9) == 0xCBF43926u);   // the report's CRC32 (IEEE, reflected)
     dm_haptics_apple_shutdown();

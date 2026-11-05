@@ -614,6 +614,10 @@ Why the host is a child process: macOS privacy checks (TCC) cover files on remov
 
 Signing: `pack_app.py` signs the inner host first, then the bundle (`codesign --force --sign <identity>`). It signs ad-hoc by default; `--mac-sign "<identity>"` (`MAC_SIGN` in Spyder) names a Developer ID or another identity. It never uses the hardened runtime: `--options runtime` refuses the executable memory the host maps for the game's code. Notarization needs the hardened runtime, so the app is not notarized. Gatekeeper blocks it on a Mac it was downloaded to until it is allowed in System Settings › Privacy & Security. `dm/tools/tests/test_nsp_mac_app.py` tests the packer and the launcher with a stand-in host, without game files.
 
+For the Steam Controller's direct HID input, see [Input Monitoring and rebuilt apps](mac-controllers.md#input-monitoring-and-rebuilt-apps), including renewing permission after an ad-hoc rebuild.
+
+Mac controller routing, including the split Joy-Con adapters in the shared controller registry, model-specific extras, shared mapping preferences and their hardware validation limits are described in [Mac controllers](mac-controllers.md). Packaged apps advertise this contract with `DMControllerMappings=1` in `Info.plist` so front ends can gate mapping controls.
+
 ## Build and run on a device with Xcode
 
 With an Apple developer account, Xcode can sign and install the app itself:

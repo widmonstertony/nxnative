@@ -42,6 +42,8 @@ static CFArrayRef test_elements(IOHIDDeviceRef device, CFDictionaryRef match, IO
 static io_service_t test_service(IOHIDDeviceRef device) { return (io_service_t)((__bridge TestDev *)device).entry; }
 static kern_return_t test_entry_id(io_registry_entry_t e, uint64_t *id) { *id = e; return KERN_SUCCESS; }
 static IOReturn test_set_report(IOHIDDeviceRef d, IOHIDReportType t, CFIndex id, const uint8_t *r, CFIndex n) { (void)d; (void)t; (void)id; (void)r; (void)n; return kIOReturnSuccess; }
+static IOReturn test_open_close(IOHIDDeviceRef d, IOOptionBits o) { (void)d; (void)o; return kIOReturnSuccess; }
+static void test_schedule(IOHIDDeviceRef d, CFRunLoopRef l, CFStringRef m) { (void)d; (void)l; (void)m; }
 
 static uint64_t tick = 1000000000;
 uint64_t now_ns(void) { return tick; }
@@ -53,10 +55,15 @@ uint64_t now_ns(void) { return tick; }
 #define IOHIDDeviceGetService test_service
 #define IORegistryEntryGetRegistryEntryID test_entry_id
 #define IOHIDDeviceSetReport test_set_report
+#define IOHIDDeviceOpen test_open_close
+#define IOHIDDeviceClose test_open_close
+#define IOHIDDeviceScheduleWithRunLoop test_schedule
+#define IOHIDDeviceUnscheduleFromRunLoop test_schedule
 #define GCController TestGC
 #include "../pad_hid_mac.h"
 
 static int attached, changes;
+static int hidpad_available(IOHIDDeviceRef d) { (void)d; return 1; }
 static void hidpad_attach(hid_pad *d) { (void)d; attached++; }
 static void hidpad_detach(hid_pad *d) { (void)d; attached--; }
 static void hidpad_read(hid_pad *d) { (void)d; }

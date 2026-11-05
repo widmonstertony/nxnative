@@ -1,10 +1,11 @@
 // The Mac front end's button assignments (front_mac.m; pure, so tests/t_input_map.c checks it without a keyboard or controller), named as DM_KEYS names them (hle_hid.c).
 // DM_KEYMAP=<name>=<key code>,… puts a function on another key: <key code> is the macOS virtual key code (NSEvent.keyCode, decimal), or "none" to leave the function on no key.
-// The names are the 16 buttons, the four directions of each stick (LUp … RRight) and Shake; the left stick is on W A S D, the right stick on no key, unless DM_KEYMAP says so.
+// The names are the 16 buttons, the four directions of each stick (LUp … RRight) and Shake; the left stick is on W A S D, the right stick on Shift+arrow keys (unless those arrows are remapped), with additional keys assignable through DM_KEYMAP.
 // One key holds one function: the last assignment of a key wins, and the function that held it before is left on no key, so "A=40,B=38" swaps A and B.
 // DM_PAD_MAP=<name>=<name>,… changes what a controller's buttons send: the button that sends <first> by default (by position, as the iPhone maps it) sends <second> instead,
-// "none" sends nothing; buttons not named stay as they are, so "A=B,B=A" swaps them. Only the 16 buttons take part (the sticks stay sticks).
+// "none" sends nothing; buttons not named stay as they are, so "A=B,B=A" swaps them. Sources are the 16 buttons (the sticks stay sticks); Shake is also a target.
 // A malformed entry is left out and named in the log; the rest of the list still applies.
+// input_map_valid() is the same parser without a map or a log line: the Mac launcher (dm/mac/launcher.c) checks a saved DM_KEYMAP / DM_PAD_MAP with it, so a saved value is used only when the host takes every entry of it.
 #pragma once
 #include <stdint.h>
 #include <stdio.h>
@@ -40,14 +41,14 @@ static void key_map_default(key_map *m) {
 static void pad_map_default(pad_map *m) { for (int b = 0; b < IM_BUTTONS; b++) m->to[b] = (int8_t)b; }
 
 // Walks "<name>=<value>,…", calling one(name's function, value text, its length) for each entry; returns the number of malformed entries, each logged here
-static int im_parse(const char *spec, int max_fn, int (*one)(void *, int, const char *, size_t), void *ctx) {
+static int im_parse(const char *spec, int max_fn, int (*one)(void *, int, const char *, size_t), void *ctx, int log) {
     int bad = 0;
     for (const char *p = spec; p && *p; ) {
         const char *end = strchr(p, ','); size_t n = end ? (size_t)(end - p) : strlen(p);
         const char *eq = memchr(p, '=', n);
         int f = eq ? im_name(p, (size_t)(eq - p)) : -1;
         if (f < 0 || f >= max_fn || !one(ctx, f, eq + 1, n - (size_t)(eq + 1 - p))) {
-            fprintf(stderr, "[dm] [RED] input map: '%.*s' is not <name>=<value>, left out\n", (int)n, p);   // dm.h LOG's form (this header stays free of dm.h for the test)
+            if (log) fprintf(stderr, "[dm] [RED] input map: '%.*s' is not <name>=<value>, left out\n", (int)n, p);   // dm.h LOG's form (this header stays free of dm.h for the test)
             bad++;
         }
         p = end ? end + 1 : NULL;
@@ -67,12 +68,43 @@ static int im_key_one(void *ctx, int f, const char *v, size_t n) {
 static int im_pad_one(void *ctx, int f, const char *v, size_t n) {
     pad_map *m = ctx;
     if (n == 4 && !strncasecmp(v, "none", 4)) { m->to[f] = -1; return 1; }
-    int t = im_name(v, n); if (t < 0 || t >= IM_BUTTONS) return 0;
+    int t = im_name(v, n); if (t == IM_SHAKE) t = 63;
+    if (t < 0 || (t >= IM_BUTTONS && t != 63)) return 0;
     m->to[f] = (int8_t)t; return 1;
 }
-static int key_map_parse(key_map *m, const char *spec) { return im_parse(spec, IM_N, im_key_one, m); }
-static int pad_map_parse(pad_map *m, const char *spec) { return im_parse(spec, IM_BUTTONS, im_pad_one, m); }
+static int key_map_parse(key_map *m, const char *spec) { return im_parse(spec, IM_N, im_key_one, m, 1); }
+static int pad_map_parse(pad_map *m, const char *spec) { return im_parse(spec, IM_BUTTONS, im_pad_one, m, 1); }
+// 1 when spec is a DM_KEYMAP (pad = 0) or DM_PAD_MAP (pad = 1) value the host takes whole: not empty, every entry well-formed. Pure: nothing is logged, no map is kept
+static int input_map_valid(const char *spec, int pad) {
+    if (!spec || !*spec) return 0;
+    key_map k; pad_map m; key_map_default(&k); pad_map_default(&m);
+    return pad ? !im_parse(spec, IM_BUTTONS, im_pad_one, &m, 0) : !im_parse(spec, IM_N, im_key_one, &k, 0);
+}
 static int key_map_fn(const key_map *m, unsigned code) { return code < IM_KEYS ? m->fn[code] : -1; }
+// Functions held by physical keys. Zero is released; a held entry is function + 1.
+typedef struct { uint8_t pressed[IM_KEYS]; } key_state;
+static void key_state_clear(key_state *s) { memset(s, 0, sizeof *s); }
+static uint32_t key_state_event(key_state *s, const key_map *m, unsigned code, int down, int shift) {
+    if (code < IM_KEYS) {
+        if (!down) s->pressed[code] = 0;
+        else if (!s->pressed[code]) {
+            int f = key_map_fn(m, code);
+            // Shift changes only the default D-pad arrows. Explicitly moved/disabled arrows keep their mapping.
+            // Capture once on key-down: repeats and key-up must not reinterpret a later modifier state.
+            if (shift) {
+                if (code == 123 && f == 12) f = IM_RLEFT;
+                else if (code == 126 && f == 13) f = IM_RUP;
+                else if (code == 124 && f == 14) f = IM_RRIGHT;
+                else if (code == 125 && f == 15) f = IM_RDOWN;
+            }
+            if (f >= 0) s->pressed[code] = (uint8_t)(f + 1);
+        }
+    }
+    uint32_t held = 0;
+    for (unsigned i = 0; i < IM_KEYS; i++) if (s->pressed[i]) held |= 1u << (s->pressed[i] - 1);
+    return held;
+}
+
 // The buttons a controller sends for the buttons the default mapping read (DM_BTN_* bits); bits above the 16 buttons (DM_BTN_SHAKE) pass through
 static uint64_t pad_map_apply(const pad_map *m, uint64_t btn) {
     uint64_t out = btn & ~0xffffull;

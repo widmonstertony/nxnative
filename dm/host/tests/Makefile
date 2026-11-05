@@ -80,6 +80,9 @@ run: $(B)/t_net_eventfd $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_to
 	TMPDIR="$(abspath $(B))" $(B)/t_cheats $(QUIET)
 	$(B)/t_nro
 	$(B)/t_symbols
+	$(B)/t_pad_map
+	$(B)/t_pad_motion
+	$(B)/t_controllers_mac
 run: $(B)/t_nro
 run: $(B)/t_sync_wait
 $(B)/t_sync_wait: t_sync_wait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
@@ -425,3 +428,11 @@ $(B)/t_profile_runtime: t_profile_runtime.c ../hle_profile.c ../hle_profile.h ..
 .PHONY: profile-runtime
 profile-runtime: $(B)/t_profile_runtime
 	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
+
+run: $(B)/t_pad_map $(B)/t_pad_motion $(B)/t_controllers_mac
+$(B)/t_pad_motion: t_pad_motion.c ../pad_motion.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_motion.c
+$(B)/t_pad_map: t_pad_map.c ../pad_map.h ../steam_input.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_map.c
+$(B)/t_controllers_mac: t_controllers_mac.m ../home_quit.h ../pad_hid.h ../pad_hid_mac.h ../pad_apple.h ../input_map.h ../input_preferences_mac.h ../controllers_mac.m ../controllers_mac.h ../pad_joycon.h ../pad_joycon_mac.h ../pad_map.h ../pad_motion.h ../steam_input.h ../pad_slots.h ../front.h ../dm_input.h ../haptics_apple.h ../hle_haptics.h ../dm.h ../motion_apple.h ../motion_pro_mac.h ../motion_pro.h $(GAME_H) | $(B)
+	$(CLANG) $(GINC) -O1 -fobjc-arc -Wall -Werror -Wno-unused-function -o $@ t_controllers_mac.m -framework Cocoa -framework GameController -framework IOKit
