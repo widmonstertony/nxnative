@@ -45,6 +45,8 @@ static void swizzle_case(int tid, int format, int view_format, int uploaded, con
     [base replaceRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0 withBytes:host bytesPerRow:bytes];
     if (uploaded) { t.has_layout = 1; t.mem = (uint8_t *)pixels; NvPkg *pk = [NvPkg new]; pk->tex = base; pk->span = pixels; pk->seen = nvn_dirty_now(); serial_put(t.serial, pk); }
     else serial_put(t.serial, base);
+    // The serial table owns the CF retain for base or pk until serial_del below.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
     view_t v = {0}; if (mapping) { v.set_swizzle = 1; memcpy(v.swz, mapping, 4); }
     if (view_format) { v.set_format = 1; v.format = view_format; }
     mtl_reg_tex(tid, &t, mapping || view_format ? &v : NULL);
@@ -69,6 +71,8 @@ static void cleared_case(int tid, int format) {
     serial_put(t.serial, base);
     mtl_reg_tex(tid, &t, NULL);
     os_unfair_lock_lock(&g_rmu); id<MTLTexture> view = tex_by_id(tid); os_unfair_lock_unlock(&g_rmu);
+    // The serial table owns base's CF retain until serial_del below.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
     CHECK(view == base, "a cleared RGB565-family texture needs no view");
     read_check(tid, view, (const float[8]){1,0,0,1, 1,0,0,1}, 0.001f);
     serial_del(t.serial);
@@ -93,6 +97,8 @@ static void image_case(int tid) {
     os_unfair_lock_unlock(&g_rmu);
     run2(pipe_of(@"#include <metal_stdlib>\nusing namespace metal;\nkernel void store(texture2d<float, access::write> t [[texture(0)]], uint i [[thread_position_in_grid]]) { t.write(float4(0.25, 0.5, 0.75, 0.125), uint2(i, 0)); }\n", @"store"), img, nil);
     uint8_t px[8]; [base getBytes:px bytesPerRow:8 fromRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0];
+    // The serial table owns base's CF retain until serial_del below.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
     for (int i = 0; i < 8; i++) CHECK(abs((int)px[i] - (int[4]){64, 128, 191, 32}[i % 4]) <= 1, "the image write is stored as written");
     read_check(tid, view, (const float[8]){px[0]/255.f, px[1]/255.f, px[2]/255.f, 1, px[4]/255.f, px[5]/255.f, px[6]/255.f, 1}, 0.001f);
     serial_del(t.serial);
