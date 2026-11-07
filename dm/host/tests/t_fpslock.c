@@ -1,4 +1,11 @@
-// Exercise production build gates and frame-limit writes against sparse synthetic module memory; Unreal's rows come from the console variables the rewriter names in main's fixups.
+// Exercise production build gates and frame-limit writes against sparse synthetic module memory; Unreal's rows come from the console variables the rewriter names in main's fixups,
+// and a target frame rate the game steps by from the field it names there (FPS_TARGET_PTR, FPS_TARGET_FIELD).
+#include "../hle.h"
+#undef DM_GAME_FPS_MAX
+static int test_fps_max = 120;
+#define DM_GAME_FPS_MAX test_fps_max
+static int test_high = 120;   // what the frame step's hold allows (hle_nvn.c)
+int nvn_fps_high_now(void) { return test_high; }
 #include "../hle_fpslock.c"
 #include <assert.h>
 #include <math.h>
@@ -9,8 +16,6 @@
 static module_t test_modules[1];
 module_t *g_mod = test_modules;
 int g_nmod;
-static uint64_t test_guest_time=1000000000ull;
-uint64_t guest_ns(void) { return test_guest_time; }
 static int writes;
 void dm_guest_write_prepare(void *p, size_t n) { (void)p; assert(n == 4 || n == 8); writes++; }
 
@@ -47,7 +52,8 @@ static void check(int which) {
     assert(base != MAP_FAILED);
     g_nmod = 1; strcpy(g_mod[0].name, "main"); g_mod[0].base = base;
     strcpy(g_mod[0].build_id, "94ceae325c205c4b9d6f7235552f28fd");
-    setenv("DM_FPS_TARGET", which == 1 || which == 10 ? "30" : which == 2 || which == 11 ? "0" : "60", 1);
+    setenv("DM_FPS_TARGET", which >= 19 ? "120" : which == 1 || which == 10 || which == 18 ? "30" : which == 2 || which == 11 ? "0" : "60", 1);
+    if (which == 20) test_fps_max = 60;
     int32_t *unity = (int32_t *)(base + 0x4afc868);
     *unity = which == 1 ? 60 : which == 4 ? -1 : which == 5 ? 0 : 30;
     uint8_t object[0x500] = {0};
@@ -76,6 +82,18 @@ static void check(int which) {
         frostbite(base, object);
         *(float *)(object + 0x34) = 30; *(int32_t *)(object + 0x38) = 30;
         if (which == 16) *(uint64_t *)(object + 8) = 0;   // the cache word holds something else
+    } else if (which == 21) {   // Unreal at 120: the frame limit follows, and the present interval stays one vsync (60 / 120 is no interval)
+        strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
+        cvar(DM_GAME_UE_FPS_CVAR, 0x7c738d0); cvar("rhi.SyncInterval", 0x7b32690);
+        *(uintptr_t *)(base + 0x7c738d0 + 0x10) = (uintptr_t)object;
+        *(uintptr_t *)(base + 0x7b32690 + 0x10) = (uintptr_t)(object + 16);
+        f = (float *)object; f[0] = f[1] = 30;
+        sync = (int32_t *)(object + 16); sync[0] = sync[1] = 2;
+    } else if (which == 17 || which == 18 || which == 19 || which == 20) {   // Fire Emblem Fortune's Weave: the target the rewriter found, 30 in gameplay (17) or 60 in a menu (18, at DM_FPS_TARGET=30)
+        strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
+        g_mod[0].fps_target_ptr = 0x21e60d8; g_mod[0].fps_target_field = 0x1dc;
+        *(uintptr_t *)(base + 0x21e60d8) = (uintptr_t)object;
+        *(int32_t *)(object + 0x1dc) = which == 17 ? 30 : 60;
     } else if (which >= 9) {   // the present interval alone (UE 4.18's nvn.SyncInterval); 12: a main the rewriter found no variable in
         strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
         if (which != 12) cvar("nvn.SyncInterval", 0x8adca10);
@@ -86,6 +104,20 @@ static void check(int which) {
     if (which & 1) assert(dm_fps_lock_engine() == engine);   // the graphics layer's present cap may ask before the first present (the acquire)
     dm_fps_lock_tick();
     assert(dm_fps_lock_engine() == engine);
+    if (which == 19) {   // 120: the target follows the hold, so the game's step stays what the screen shows; the game setting its own 30 again changes nothing
+        int32_t *t = (int32_t *)(object + 0x1dc);
+        assert(*t == 120);
+        test_high = 60; dm_fps_lock_tick(); assert(*t == 60);
+        test_high = 120; dm_fps_lock_tick(); assert(*t == 120);
+        *t = 30; dm_fps_lock_tick(); assert(*t == 120);
+        munmap(base, len); return;
+    }
+    if (which == 20) { assert(*(int32_t *)(object + 0x1dc) == 60); munmap(base, len); return; }   // a game not checked at 120 runs at 60
+    if (which == 21) {
+        assert(f[0] == 120 && f[1] == 120 && sync[0] == 1 && sync[1] == 1);
+        test_high = 60; dm_fps_lock_tick(); assert(f[0] == 60 && f[1] == 60 && sync[0] == 1 && sync[1] == 1);
+        munmap(base, len); return;
+    }
     if (which == 0) {
         assert(*unity == 60 && writes == 1);
         dm_fps_lock_tick(); assert(writes == 1);
@@ -108,7 +140,13 @@ static void check(int which) {
         assert(*(float *)(object + 0x34) == 60 && *(int32_t *)(object + 0x38) == 60 && writes == 2);
         dm_fps_lock_tick(); assert(writes == 2);
         *(int32_t *)(object + 0x38) = 30; dm_fps_lock_tick(); assert(*(int32_t *)(object + 0x38) == 60 && writes == 3);
-    } else if (which == 16) assert(*(float *)(object + 0x34) == 30 && *(int32_t *)(object + 0x38) == 30 && writes == 0);
+    } else if (which == 17) {
+        int32_t *t = (int32_t *)(object + 0x1dc);
+        assert(*t == 60 && writes == 1);
+        dm_fps_lock_tick(); assert(writes == 1);
+        *t = 30; dm_fps_lock_tick(); assert(*t == 60 && writes == 2);   // the game sets 30 again where gameplay starts
+    } else if (which == 18) assert(*(int32_t *)(object + 0x1dc) == 30 && writes == 1);
+    else if (which == 16) assert(*(float *)(object + 0x34) == 30 && *(int32_t *)(object + 0x38) == 30 && writes == 0);
     else if (which == 13) {
         assert(sync[0] == 2 && sync[1] == 2 && writes == 0);
         *(uintptr_t *)(base + 0x8adca10 + 0x10) = (uintptr_t)object;
@@ -119,29 +157,12 @@ static void check(int which) {
     munmap(base, len);
 }
 
-static void witcher_unlimited(void) {
-    size_t n=0x4140000;
-    uint8_t *base=mmap(NULL,n,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);assert(base!=MAP_FAILED);
-    memset(test_modules,0,sizeof test_modules);g_nmod=1;g_mod[0].base=base;g_mod[0].size=n;
-    strcpy(g_mod[0].name,"main");strcpy(g_mod[0].build_id,"b151a224a429f9a73abb05c5a3de9468");
-    int32_t *limit=(int32_t *)(base+0x411dcfc);float *a=(float *)(base+0x41312b4),*b=(float *)(base+0x41312e4);
-    *limit=30;*a=31.5f;*b=31.5f;writes=0;unsetenv("DM_FRAME_LIMIT");witcher_fps_tick();assert(*limit==30&&writes==0);
-    setenv("DM_FRAME_LIMIT","unlimited",1);witcher_fps_tick();assert(*limit==0&&writes==1&&*a==31.5f&&*b==31.5f);
-    witcher_fps_tick();assert(writes==1);*limit=30;witcher_fps_tick();assert(*limit==0&&writes==2);
-    *limit=30;g_mod[0].build_id[0]='0';witcher_fps_tick();assert(*limit==30&&writes==2);
-    g_mod[0].build_id[0]='b';g_mod[0].size=0x41312e7;witcher_fps_tick();assert(*limit==30&&writes==2);
-    g_mod[0].size=n;*a=0;witcher_fps_tick();assert(*limit==30&&writes==2);
-    *a=NAN;witcher_fps_tick();assert(*limit==30&&writes==2);
-    unsetenv("DM_FRAME_LIMIT");munmap(base,n);memset(test_modules,0,sizeof test_modules);g_nmod=0;writes=0;
-}
-
 int main(void) {
-    witcher_unlimited();
     // Each process starts the production one-time initialization with a fresh build and target.
-    for (int i = 0; i < 17; i++) {
+    for (int i = 0; i < 22; i++) {
         pid_t p = fork(); assert(p >= 0);
         if (!p) { check(i); _exit(0); }
         int status; assert(waitpid(p, &status, 0) == p); assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
-    puts("Frame limits: integer/float FPS, milliseconds, vsync copies, build gates and overrides passed");
+    puts("Frame limits: integer/float FPS, milliseconds, vsync copies, build gates, found fields and overrides passed");
 }

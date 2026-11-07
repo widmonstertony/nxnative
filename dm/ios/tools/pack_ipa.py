@@ -13,7 +13,10 @@
 #   unchanged; --no-reuse forces a full pack. The index holds only source metadata and compression settings; ZIP metadata comes from the old IPA.
 #   Only mappings whose source folder is on APFS reuse files; other mappings pack their files again. The kept run needs an APFS clone of the old IPA; if cloning fails, eligible files are copied compressed.
 #   Reused bytes are not checked against their CRC: damage inside the old IPA carries over. Use --no-reuse or delete <out.ipa>.idx to rebuild
-import argparse, collections, concurrent.futures as cf, ctypes, json, os, stat, struct, sys, time, zipfile, zlib
+import argparse, atexit, collections, concurrent.futures as cf, ctypes, json, os, re, shutil, stat, struct, sys, tempfile, time, zipfile, zlib
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), '..', '..', 'tools'))
+import shader_lib
 
 LEVEL = 6
 IDX_VERSION = 3
@@ -24,16 +27,6 @@ CHUNK = 16 << 20
 L32, L16 = 0xFFFFFFFF, 0xFFFF
 DIR_MODE = stat.S_IFDIR | 0o755   # a parent folder no source folder stands for (Payload/, msl/); its time is 1980-01-01, so it is the same in every pack
 Entry = collections.namedtuple('Entry', 'name path st root')   # st None: a synthetic parent; root: the mapping's source folder
-
-
-def apple_double(path, st):
-    """exFAT stores macOS resource forks in sidecars; never ship those in an IPA.
-
-    Check both name and header so a game's ordinary ._ file remains content.
-    ditto restores these sidecars as resource forks, which codesign rejects.
-    """
-    if not os.path.basename(path).startswith('._') or not stat.S_ISREG(st.st_mode): return False
-    with open(path, 'rb') as f: return f.read(8) == b'\x00\x05\x16\x07\x00\x02\x00\x00'
 
 
 def entries(maps, skip, skip_suffix=()):
@@ -50,7 +43,6 @@ def entries(maps, skip, skip_suffix=()):
             name = f'{arc}/{e.name}'
             if name in skip or name in roots or (skip_suffix and e.name.endswith(skip_suffix) and not e.is_dir(follow_symlinks=False)): continue
             st = e.stat(follow_symlinks=False)
-            if apple_double(e.path, st): continue
             if stat.S_ISDIR(st.st_mode): add(name + '/', e.path, st); walk(e.path, name)
             elif stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode): add(name, e.path, st)
             else: sys.exit(f'[RED] pack_ipa: neither a file, a folder nor a symlink: {e.path}')
@@ -61,7 +53,6 @@ def entries(maps, skip, skip_suffix=()):
             if p + '/' not in seen:
                 add(p + '/', None, None); parents.add(p + '/')
         source_stat = os.stat(src)
-        if apple_double(src, source_stat): continue
         if stat.S_ISREG(source_stat.st_mode): add(arc, src, source_stat)
         else: add(arc + '/', src, source_stat); walk(src, arc)
     return out
@@ -237,6 +228,22 @@ def prefix(es, files, infos, old, idx, apfs):
     return keep, pos
 
 
+def library_map(arc, src, skip_suffix, out):
+    """An NVN game's libraries, mapped as <app>/msl/[p<N>/]b-<chain>, when they are the one file b-<chain>.img (dm/tools/shader_lib.py): that file at <archive path>.img. The NSP script's image already leaves
+    out what its app does not read. A build by hand that wants less than the image holds gets a copy, beside the IPA until the end of the pack (deflated again each time: a new file is never reused),
+    and one that wants the pulling libraries from an image without them stops here, as they would only fail on the device. Anything else goes as mapped"""
+    if not re.fullmatch(r'.*/msl/(p\d+/)?b-[^/]+', arc) or not str(shader_lib.view(src)).endswith('.img'): return arc, src
+    if shader_lib.PULLING not in skip_suffix and shader_lib.left_out_pulling(src):
+        sys.exit(f'[RED] pack_ipa: {shader_lib.image_of(src)} has no pulling vertex libraries, and this app needs them: run the NSP script again, which builds them')
+    image = shader_lib.image_of(src)
+    if any(p.name.endswith(skip_suffix) for p in shader_lib.view(src).iterdir()) if skip_suffix else False:
+        work = tempfile.mkdtemp(prefix=os.path.basename(out) + '.msl-', dir=os.path.dirname(os.path.abspath(out)))
+        atexit.register(shutil.rmtree, work, True)
+        image = os.path.join(work, os.path.basename(image))
+        shader_lib.subset(src, image, skip_suffix)
+    return arc + '.img', image
+
+
 def main():
     ap = argparse.ArgumentParser(description='Pack an IPA (zip) from files and folders mapped to archive paths, in parallel')
     ap.add_argument('out'); ap.add_argument('maps', nargs='+', metavar='archive_path=source')
@@ -248,6 +255,7 @@ def main():
     maps = []
     for m in a.maps:
         arc, sep, src = m.partition('=')
+        if sep: arc, src = library_map(arc, src, tuple(a.skip_suffix), a.out)
         if not sep or not arc.strip('/') or not (os.path.isdir(src) or os.path.isfile(src)): sys.exit(f'[RED] pack_ipa: not <archive path>=<file or folder>: {m}')
         maps.append((arc.strip('/'), src))
     store = tuple(s.lower() for s in a.store.split(':') if s)

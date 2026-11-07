@@ -11,8 +11,7 @@ program_id	0100F43008C44000
 name	Pokémon Legends: Z-A
 ipa	PokMonLegendsZA.ipa
 app_category	public.app-category.games
-pad_layout	full
-render_cond	on
+pad_layout	simple
 # the game sets the near=0 depth mode (nvnDeviceSetDepthMode): the pipeline bases made before it runs take the main0_z vertex entries
 depth_mode	zero
 
@@ -26,8 +25,6 @@ shader_versions	v393216
 modules	main sdk
 romfs_marker	arc/data.trpfs
 zip_store	.bnk:.pck:.trpfd:.trpfs:.metallib
-# Old Apple GPU builds are invalid without this profile's proven shader companions.
-ios_companions	ios_companions.json
 
 # ---- Memory ----
 # nninitStartup (main+0x1b2e650) initializes its StandardAllocator with virtual address memory over 12 GB of address space (StandardAllocator::Initialize(nullptr, 0x300000000), main+0x1b3e3ec),

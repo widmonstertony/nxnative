@@ -154,60 +154,24 @@ class GeometryReader(unittest.TestCase):
                     self.assertEqual(r.returncode, 0, r.stderr)
 
 
-def viewport_index_kernel(extra_output=''):
-    return f'''#include <metal_stdlib>
-using namespace metal;
-struct _29 {{ uint _m0[16]; }};
-struct spvDescriptorSetBuffer0 {{ device _29* geometry_ib_output [[id(0)]]; }};
-struct main0_out
-{{
-    uint gl_ViewportIndex;
-    {extra_output}
-}};
-kernel main0_out main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint id [[thread_position_in_grid]])
-{{
-    main0_out out = {{}};
-    if (id >= 8) return out;
-    out.gl_ViewportIndex = id & 1u;
-    (*spvDescriptorSet0.geometry_ib_output)._m0[id] = uint(id + 1u);
-    (*spvDescriptorSet0.geometry_ib_output)._m0[id + 8u] = 4294967295u;
-    return out;
-}}
-'''
-
-
-class GeometryKernelViewportIndex(unittest.TestCase):
-    def test_ordinary_kernel_is_unchanged(self):
-        src = 'kernel void main0() {}'
-        self.assertEqual(dmsh_geometry.kernel_viewport_zero(src), src)
-
-    def test_only_viewport_zero_reaches_the_index_stream(self):
-        lowered = dmsh_geometry.kernel_viewport_zero(viewport_index_kernel())
-        self.assertIn('kernel void main0(', lowered)
-        self.assertIn('uint dm_gs_viewport_index = 0u;', lowered)
-        self.assertEqual(lowered.count('dm_gs_viewport_index == 0u'), 2)
-        self.assertNotIn('main0_out', lowered)
-        self.assertNotIn('gl_ViewportIndex', lowered)
-        self.assertNotIn('return out', lowered)
-
-    def test_another_returned_output_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, 'not the only returned output'):
-            dmsh_geometry.kernel_viewport_zero(viewport_index_kernel('uint other;'))
-
-    @unittest.skipUnless(shutil.which('xcrun'), 'requires the Metal compiler')
-    def test_lowered_kernel_compiles(self):
-        lowered = dmsh_geometry.kernel_viewport_zero(viewport_index_kernel())
-        with tempfile.TemporaryDirectory(prefix='dmsh_geometry_viewport_') as d:
-            src = Path(d) / 'kernel.metal'; src.write_text(lowered)
-            for sdk in ('macosx', 'iphoneos'):
-                with self.subTest(sdk=sdk):
-                    r = subprocess.run(['xcrun', '-sdk', sdk, 'metal',
-                                        '-fmodules-cache-path=' + d + '/modules', '-fsyntax-only', str(src)],
-                                       capture_output=True, text=True)
-                    self.assertEqual(r.returncode, 0, r.stderr)
-
 def geometry_header(passthrough=True, vertices=1, topology=7, invocations=1):
     return struct.pack('<5I', int(passthrough) << 24, 0, invocations << 24, topology << 24, vertices)
+
+
+class TopologyPointer(unittest.TestCase):
+    def test_a_helper_function_gets_the_table_as_a_pointer(self):   # Kirby Air Riders: SPIRV-Cross makes a helper of a block the shader reaches from several places, and passes the table to it
+        src = ('struct spvDescriptorSetBuffer0 { texture_buffer<float> trb_data [[id(16)]]; };\n'
+               'void _97(texture_buffer<float> trb_data) { float a = trb_data.read(uint(1)).x; }\n'
+               'kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0) { float b = spvDescriptorSet0.trb_data.read(uint(f(2))).x; _97(spvDescriptorSet0.trb_data); }\n')
+        out = dmsh_geometry.topology_pointer(src)
+        self.assertNotIn('texture_buffer', out)
+        self.assertIn('device const uint* trb_data [[id(16)]]', out)
+        self.assertIn('void _97(device const uint* trb_data)', out)
+        self.assertIn('as_type<float>(trb_data[uint(1)])', out)
+        self.assertIn('as_type<float>(spvDescriptorSet0.trb_data[uint(f(2))])', out)
+
+    def test_no_table_stops_the_shader(self):
+        with self.assertRaises(ValueError): dmsh_geometry.topology_pointer('struct spvDescriptorSetBuffer0 { };')
 
 
 class GeometryOutputLayout(unittest.TestCase):
@@ -429,6 +393,14 @@ class MeshPassthrough(unittest.TestCase):
         self.assertNotIn('spvDescriptorSet0.vertex_output', src)
         self.assertNotIn('[[point_size]]', src)
         self.assertIn('dm_ix + uint(dm_d.base_vertex)', src)
+        # the run twins: the table at the draw slot, the vertex set and the kernel's from the draw's record
+        self.assertIn('[[mesh]] void dm_mesh_run(', src)
+        self.assertIn('[[mesh]] void dm_mesh_run_z(', src)
+        self.assertIn('constant dm_mesh_rec* dm_run [[buffer(12)]]', src)
+        self.assertIn('constant spvDescriptorSetBuffer0& spvDescriptorSet0 = *(constant spvDescriptorSetBuffer0*)dm_r.slot[0];', src)
+        self.assertIn('constant dm_g::spvDescriptorSetBuffer0& dm_gset = *(constant dm_g::spvDescriptorSetBuffer0*)dm_r.slot[13];', src)
+        self.assertIn('uint dm_tg = dm_tgr - (dm_lo ? dm_run[dm_lo - 1u].group_end : 0u);', src)
+        self.assertEqual(src.count('dm_g::dm_gs(dm_gset,'), 4)   # the same body in all four entries
         if shutil.which('xcrun') and sys.platform == 'darwin':
             with tempfile.TemporaryDirectory() as d:
                 Path(d, 'm.metal').write_text(src)
@@ -450,12 +422,22 @@ class MeshPassthrough(unittest.TestCase):
         src = dmsh_mesh.compose(wide, MESH_HEAD + '\n' + lean, reads)
         self.assertIn('[[mesh]] void dm_mesh_p16(metal::mesh<main0_out, dm_mesh_prim, 48, 16,', src)
         self.assertIn('[[mesh]] void dm_mesh_z_p16(', src)
+        self.assertIn('[[mesh]] void dm_mesh_run_z_p16(metal::mesh<main0_out, dm_mesh_prim, 48, 16,', src)
         self.assertIn('uint dm_p0 = dm_tg * 16u, dm_np = min(16u,', src)
         if shutil.which('xcrun') and sys.platform == 'darwin':
             with tempfile.TemporaryDirectory() as d:
                 Path(d, 'm.metal').write_text(src)
                 r = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-fmodules-cache-path=' + d + '/modules', str(Path(d, 'm.metal')), '-o', str(Path(d, 'm.air'))], capture_output=True, text=True)
                 self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+
+    def test_run_needs_constant_resources(self):
+        # a vertex resource the record cannot hand over as a constant reference: no run twin, the single entries stay
+        lean, reads = dmsh_geometry.lean(LEAN_KERNEL, 134)
+        vs = MESH_VS.replace('constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]])', 'constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], device uint* dm_w [[buffer(3)]])')
+        self.assertNotEqual(vs, MESH_VS)
+        src = dmsh_mesh.compose(vs, MESH_HEAD + '\n' + lean, reads)
+        self.assertIn('[[mesh]] void dm_mesh(', src)
+        self.assertNotIn('dm_mesh_run', src.replace('struct dm_mesh_rec', ''))
 
     def test_compose_rejects_clip_z(self):
         lean, _ = dmsh_geometry.lean(LEAN_KERNEL, 134)
@@ -513,6 +495,7 @@ class MeshPassthrough(unittest.TestCase):
                 r = subprocess.run([str(binary), str(library)], capture_output=True, text=True)
                 if r.returncode == 77: self.skipTest('no Metal device')
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn('6 run cases passed', r.stdout)
 
 
 @unittest.skipUnless(os.environ.get('DMSH_TEST_XLATE'), 'requires the offline translator')
@@ -586,5 +569,43 @@ vertex main0_out main0(uint v [[vertex_id]], uint i [[instance_id]])
                 print(result.stdout.strip())
 
 
+# t_geometry_mesh.m's shaders: a pulling vertex shader whose depth is its uniform's z, the test lean kernel (its storage counter
+# and its viewport mask from vertex t's position x bit 0), and their mesh library (dm_mesh, dm_mesh_run) under the keys the test uses
+MESH_RUN_VS = MESH_VS.replace('out.gl_Position = in.m_0 * spvDescriptorSet0.c[0];', 'out.gl_Position = float4(in.m_0.xy, spvDescriptorSet0.c[0].z, 1.0);') \
+                     .replace('    out.gl_Position = in.m_0;\n', '    out.gl_Position = float4(in.m_0.xy, spvDescriptorSet0.c[0].z, 1.0);\n')
+
+
+def mesh_fixture(out):
+    lean, reads = dmsh_geometry.lean(LEAN_KERNEL, 134)
+    files = {'vertex': MESH_RUN_VS + '\nfragment void depth_only() {}\n', 'lean': MESH_HEAD + '\n' + lean,
+             '7e57000000000a00_7e57000000000b00_m3': dmsh_mesh.compose(MESH_RUN_VS, MESH_HEAD + '\n' + lean, reads)}
+    for name, src in files.items():
+        path = Path(out, name + '.metal'); path.write_text(src)
+        subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-w', '-fmodules-cache-path=' + out + '/modules', str(path), '-o', str(path.with_suffix('.air'))], check=True)
+        subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', str(path.with_suffix('.air')), '-o', str(path.with_suffix('.metallib'))], check=True)
+    Path(out, 'reads.json').write_text(json.dumps(reads))
+
+
+class PointSize(unittest.TestCase):
+    def drop(self, src):
+        builder = Path(dmsh_geometry.__file__).with_name('dmsh_build.py').read_text()
+        node = next(n for n in ast.parse(builder).body if isinstance(n, ast.FunctionDef) and n.name == 'drop_point_size')
+        ns = {'re': re, 'sys': sys}
+        exec(ast.get_source_segment(builder, node), ns)
+        return ns['drop_point_size'](src)
+
+    def test_a_write_goes(self):
+        self.assertNotIn('PointSize', self.drop('vertex main0l_out main0_l(uint i [[vertex_id]])\n{\n    main0l_out out = {};\n    out.gl_PointSize = 1.0;\n    return out;\n}\n'))
+
+    def test_a_reference_takes_a_local(self):
+        # The translated body is a function of its own, which writes the output through its argument: that argument has no member to name in an entry point without the point size
+        out = self.drop('vertex main0l_out main0_l(uint i [[vertex_id]])\n{\n    main0l_out out = {};\n    _88(out.gl_Position, out.gl_PointSize);\n    return out;\n}\n'
+                        'vertex main0l_out main0_lz(uint i [[vertex_id]])\n{\n    main0l_out out = {};\n    _88(out.gl_Position, out.gl_PointSize);\n    return out;\n}\n')
+        self.assertNotIn('out.gl_PointSize', out)
+        self.assertEqual(out.count('float dmsh_point_size = 1.0;'), 2)
+        self.assertEqual(out.count('_88(out.gl_Position, dmsh_point_size);'), 2)
+
+
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--fixture': mesh_fixture(sys.argv[2]); sys.exit(0)
     unittest.main()

@@ -25,7 +25,7 @@ class AocStartup(unittest.TestCase):
                           '- (NSString *)resourcePath { return fixture_bundle; }\n@end\n#define NSBundle FixtureBundle\n'
                           '#define NSSearchPathForDirectoriesInDomains(a,b,c) @[fixture_doc]\n' + locator +
                           '\nint main(int argc, char **argv) { @autoreleasepool { if (argc < 3) return 2;\n'
-                          'fixture_doc = @(argv[1]); fixture_bundle = @(argv[2]); aoc_locate(fixture_doc, fixture_bundle);\n'
+                          'fixture_doc = @(argv[1]); fixture_bundle = @(argv[2]); aoc_locate();\n'
                           'const char *e = getenv("DM_AOC_DIR"); puts(e ? e : "(none)"); return 0; }}\n')
         cls.locator = root / 'aoc'
         subprocess.run(['clang', '-fobjc-arc', '-Wall', '-Werror', str(source), '-framework', 'Foundation', '-o', str(cls.locator)], check=True)

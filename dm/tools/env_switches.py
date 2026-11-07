@@ -36,8 +36,7 @@ def scan():
         if not p.endswith(CODE) and not p.startswith('scripts/'): continue
         # names the code defines as preprocessor macros (the generated profile header's DM_GAME_*, host constants) are not switches, unless something also reads
         # them from the environment (DM_GAME_ENV, which overrides the profile's macro of that name)
-        macros |= set(re.findall(r'#\s*(?:define|ifdef|ifndef)\s+(' + NAME + r')', text))
-        macros |= set(re.findall(r'\bdefined\s*\(?\s*(' + NAME + r')', text))
+        macros |= set(re.findall(r'#\s*define\s+(' + NAME + r')', text))
         if '/tests/' in p:   # a test's own switches only; the names in its fixtures are data
             found = re.findall(READ, text)
         elif p.endswith('.sh'): found = re.findall(r'\$\{?(' + NAME + r')\b', text) + re.findall(r'["\'](' + NAME + r')["\']', text)

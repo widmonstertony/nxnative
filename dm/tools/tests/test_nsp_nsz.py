@@ -49,23 +49,10 @@ class Nsz(unittest.TestCase):
         self.assertEqual(staged.resolve(), self.keys.resolve())
         self.assertEqual(staged.read_text(), 'test keys\n')
         self.runs.append(src.name)
+        if src.suffix not in nsp.COMPRESSED: return   # the real nsz: PathTools.isCompressedGame takes a lowercase extension only, skips anything else and exits 0 with no output
+        self.assertEqual(src, src.resolve())   # and it resolves a symlink before it looks at the extension
         (out / (src.stem + nsp.COMPRESSED[src.suffix])).write_bytes(b'partial' if self.fail_conversion else b'nsp of ' + src.name.encode())
         if self.fail_conversion: raise nsp.BuildError('nsz exit code 1')
-
-    def test_scan_ignores_appledouble_but_keeps_real_prefixed_package(self):
-        # Duplicate updates previously made an otherwise valid unversioned
-        # update ambiguous; the converter then tried to decompress metadata.
-        self.upd.rename(self.upd.with_name('Update [' + f'{APP | 0x800:016X}' + '].nsz'))
-        real = self.tmp / ('._Real [' + f'{APP | 0x1001:016X}' + '][v0].nsp')
-        pfs0(real, [f'{APP | 0x1001:016x}0000000000000011.tik'])
-        for package in list(self.tmp.glob('*.nsz')):
-            (self.tmp / ('._' + package.name)).write_bytes(b'\x00\x05\x16\x07\x00\x02\x00\x00metadata')
-        app, family = nsp.scan_nsps(self.tmp)
-        self.assertEqual(app, APP)
-        self.assertEqual(len(family['updates']), 1)
-        self.assertEqual(family['dlc'][0][2], real)
-        have = nsp.nsp_versions(family, ['v0', 'v65536'])
-        self.assertEqual(have['v65536'], family['updates'][0][1])
 
     def test_scan_and_convert(self):
         app, fam = nsp.scan_nsps(self.tmp)
@@ -103,6 +90,34 @@ class Nsz(unittest.TestCase):
         self.assertEqual(fam['base'].suffix, '.xci')
         self.assertEqual(fam['base'].read_bytes(), b'nsp of Game [v0].xcz')
         self.assertFalse((fam['base'].parent / 'partial').exists())
+
+    def test_extension_in_capitals_is_converted(self):
+        self.upd.unlink()
+        for capitals, lower, made in (('.NSZ', '.nsz', '.nsp'), ('.XCZ', '.xcz', '.xci')):
+            with self.subTest(capitals=capitals):
+                src = self.base.with_suffix(capitals); self.base.rename(src); content = src.read_bytes()
+                app, fam = nsp.scan_nsps(self.tmp)
+                self.assertEqual(fam['base'], src)
+                fam = nsp.decompress_nsz(self.tmp, app, fam, self.keys, {})
+                self.assertEqual(fam['base'], self.tmp / f'{APP:016X}_build' / 'nsp' / f'Game [v0]{made}')
+                self.assertEqual(fam['base'].read_bytes(), f'nsp of Game [v0]{lower}'.encode())
+                self.assertEqual((sorted(p.name for p in self.tmp.iterdir() if p.is_file()), src.read_bytes()), ([src.name], content))   # the player's file stays as it was
+                self.assertFalse((fam['base'].parent / 'partial').exists())
+                src.rename(self.base)
+
+    def test_extension_in_capitals_without_a_hard_link(self):   # another volume, exFAT
+        self.upd.unlink(); src = self.base.with_suffix('.NSZ'); self.base.rename(src)
+        app, fam = nsp.scan_nsps(self.tmp)
+        with mock.patch.object(os, 'link', side_effect=OSError('no hard links')):
+            fam = nsp.decompress_nsz(self.tmp, app, fam, self.keys, {})
+        self.assertEqual(fam['base'].read_bytes(), b'nsp of Game [v0].nsz')
+        self.assertTrue(src.is_file())
+
+    def test_lowercase_extension_is_given_as_it_is(self):
+        self.upd.unlink()
+        with mock.patch.object(os, 'link') as link: nsp.decompress_nsz(self.tmp, *nsp.scan_nsps(self.tmp), self.keys, {})
+        link.assert_not_called()
+        self.assertEqual(self.runs, [self.base.name])
 
     def test_failed_conversion_is_not_kept(self):
         app, fam = nsp.scan_nsps(self.tmp); self.fail_conversion = True

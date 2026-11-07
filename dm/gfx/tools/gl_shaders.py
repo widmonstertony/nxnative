@@ -64,9 +64,7 @@ def sources(roots):
                         st = 'vert' if nm.endswith('_vp.shad') else 'frag' if nm.endswith('_fp.shad') else None
                         yield text_of(a.read(nm)), st, f'/{os.path.relpath(p, r)}:{nm}'
                 elif fn.endswith(('.vert', '.frag')):
-                    with open(p, 'rb') as f: data = f.read()
-                    if fn.startswith('._') and data[:8] == b'\x00\x05\x16\x07\x00\x02\x00\x00': continue
-                    source = text_of(data)
+                    with open(p, 'rb') as f: source = text_of(f.read())
                     yield source, fn.rsplit('.', 1)[1], '/' + os.path.relpath(p, r)
 
 # NVIDIA's GLSL compiler accepts more than the GLSL ES 3.20 specification, and glslang does not; these fix-ups run on the preprocessed text (glslang -E, so macros are expanded):
@@ -103,27 +101,6 @@ def fixups(t):
 def glsl_type(t, refl):
     return refl['types'][t]['name'] if t in refl.get('types', {}) else t
 
-def legacy_interface(pre, stage):
-    """Lower GLSL 1.10/1.20 interfaces to their equivalent explicit form.
-
-    A source without #version is a legacy source, not an empty string. Keep
-    the original source hash; this changes only the compiler input dialect.
-    Other unsupported legacy built-ins are left for the compiler to reject.
-    """
-    version = re.search(r'^\s*#version\s+(\d+)\b[^\n]*', pre, re.M)
-    if version and int(version[1]) > 120: return pre
-    if version: pre = pre[:version.start()] + pre[version.end():]
-    if stage == 'vert': pre = re.sub(r'\battribute\b', 'in', pre)
-    pre = re.sub(r'\bvarying\b', 'out' if stage == 'vert' else 'in', pre)
-    declaration = ''
-    if stage == 'frag' and re.search(r'\bgl_FragColor\b', pre):
-        name = 'dm_legacy_fragment_color'
-        while re.search(r'\b' + name + r'\b', pre): name += '_'
-        pre = re.sub(r'\bgl_FragColor\b', name, pre)
-        declaration = 'layout(location=0) out vec4 ' + name + ';\n'
-    return '#version 450\n' + declaration + pre
-
-
 def uni_members(refl, ms, prefix, base, f, bools):
     """Table rows for default block members. A struct's members recurse with their dotted name, which is the name the game passes to GL (u_LightEnv.m_dirLights_dir[0]); the
     reflection gives a nested member's offset relative to its parent, so the parent's offset is added"""
@@ -154,32 +131,6 @@ def es100(t, stage):
     t = re.sub(r'\bsample\b', 'gm_sample', t)   # `sample` became a reserved word after ES 1.00 (GameMaker's sprite shaders use it as a variable)
     return '#version 310 es\nprecision highp float;\nprecision highp int;\n' + t
 
-def lower_constant_sampler_arrays(src):
-    """Split constant-index sampler arrays; keep element identity for GL."""
-    aliases = {}
-    pattern = r'\b(uniform\s+(?:(?:lowp|mediump|highp)\s+)?[iu]?sampler\w*\s+)(\w+)\s*\[\s*(\d+)\s*\]\s*;'
-    for match in list(re.finditer(pattern, src)):
-        declaration, name, size = match[0], match[2], int(match[3])
-        if not 1 <= size <= 16: continue
-        use = r'\b' + re.escape(name) + r'\s*\[\s*([^\[\]]+)\s*\]'
-        body = src.replace(declaration, '', 1)
-        indices = {}
-        for m in re.finditer(use, body):
-            expr = m[1].strip()
-            literal = re.fullmatch(r'(\d+)|int\s*\(\s*(\d+)\.0*\s*\)', expr)
-            if not literal or int(literal[1] or literal[2]) >= size: break
-            indices[expr] = int(literal[1] or literal[2])
-        else:
-            prefix = 'dm_gl_sampler_' + name + '_'
-            while re.search(r'\b' + prefix, src): prefix += '_'
-            names = [prefix + str(i) for i in range(size)]
-            # Names are reserved in the original source before substitution.
-            src = src.replace(declaration, '\n'.join(match[1] + n + ';' for n in names), 1)
-            src = re.sub(use, lambda m: names[indices[m[1].strip()]], src)
-            aliases.update({n: (name, i, size) for i, n in enumerate(names)})
-    return src, aliases
-
-
 def translate(src, stage, key, tmp):
     """GLSL → MSL; returns (msl path, table fields) or an error string"""
     t = src.decode('latin1')
@@ -189,13 +140,7 @@ def translate(src, stage, key, tmp):
     open(g + '.in', 'wb').write(src)
     r = subprocess.run(['glslangValidator', '-E', '-S', stage, g + '.in'], capture_output=True, text=True)
     if r.returncode: return 'glslang -E: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
-    at = r.stdout.find('#version')
-    pre = legacy_interface(r.stdout[at:] if at >= 0 else r.stdout, stage)
-    # Vulkan's SPIR-V frontend requires GLSL ES 3.10 or later. Upgrade the
-    # directive only after preprocessing with the original ES 3.00 version,
-    # so __VERSION__ branches and the original shader's lookup key stay intact.
-    pre = re.sub(r'^([ \t]*#version[ \t]+)300([ \t]+es\b)', r'\g<1>310\2', pre, count=1, flags=re.M)
-    pre, sampler_elements = lower_constant_sampler_arrays(pre)
+    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first
     open(g, 'w').write(fixups(pre))
     r = subprocess.run(['glslangValidator', '-V', '-R', '--aml', '--amb', '-S', stage, g, '-o', spv], capture_output=True, text=True)
     if r.returncode: return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
@@ -224,11 +169,7 @@ def translate(src, stage, key, tmp):
         if e: return e
     for t in refl.get('textures', []):
         if t.get('array'): return f'sampler array {t["name"]}'
-        if t['name'] in sampler_elements:
-            name, elem, count = sampler_elements[t['name']]
-            f.append(f't:{name}={t["binding"]}:{t["type"]}:{elem}:{count}')
-        else:
-            f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
+        f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
     for k in ('separate_images', 'separate_samplers', 'images', 'ssbos', 'push_constants'):
         if refl.get(k): return f'{k} are not implemented'
     if any(int(x) > 15 for x in re.findall(r'\[\[(?:sampler|buffer)\((\d+)\)\]\]', m)): return 'a buffer or sampler slot above 15'

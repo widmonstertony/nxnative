@@ -11,11 +11,8 @@ host, ios = f'{repo}/dm/host', f'{repo}/dm/ios'
 game = os.environ.get('GAME') or os.environ.get('DM_GAME')
 if not game: sys.exit('set GAME (or DM_GAME) to a base game title ID')
 env = dict(os.environ, GAME=game)
-renderer = os.environ.get('DM_IOS_RENDERER', 'legacy')
-if renderer not in ('legacy', 'metal4'): sys.exit('DM_IOS_RENDERER must be legacy or metal4')
-minimum = '16.1' if renderer == 'legacy' else '26.0'
-subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos', 'MSL_MIN_iphoneos=' + minimum], check=True, env=env)
-cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos', 'MSL_MIN_iphoneos=' + minimum], capture_output=True, text=True, check=True, env=env).stdout
+subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos'], check=True, env=env)
+cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos'], capture_output=True, text=True, check=True, env=env).stdout
 lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]
 lines.sort(key=lambda t: 'dmhost' not in t)   # the host's own command first, as gen_build.py does, so its header paths come before libvpx's
 srcs, incs, defs = [], [], []
@@ -31,8 +28,7 @@ ios_src = os.path.normpath(f'{ios}/Sources')
 srcs = [s for s in dict.fromkeys(srcs) if not os.path.splitext(s)[0].endswith('_mac') and os.path.dirname(s) != ios_src]
 srcs += sorted(os.path.join(ios_src, f) for f in os.listdir(ios_src) if f.endswith(('.c', '.m')))
 dirs = list(dict.fromkeys(os.path.dirname(s) for s in srcs))
-if renderer == 'metal4': defs.append('-DDM_NVN_MODERN_RENDERER=1')
-flags = ['-arch', 'arm64', '-miphoneos-version-min=' + minimum, '-mcpu=' + ('apple-a10' if renderer == 'legacy' else 'apple-a18'), '-fobjc-arc', '-O1', '-w'] + defs + [f'-I{d}' for d in incs + dirs]
+flags = ['-arch', 'arm64', '-miphoneos-version-min=26.0', '-mcpu=apple-a18', '-fobjc-arc', '-O1', '-w'] + defs + [f'-I{d}' for d in incs + dirs]
 def one(s):
     c = ['xcrun', '-sdk', 'iphoneos', 'clang'] + flags + (['-Dmain=dm_main'] if s == os.path.join(host, 'main.c') else []) + ['-c', s, '-o', '/dev/null']
     if s.endswith('.c'): c[4:4] = ['-std=gnu11']
@@ -42,5 +38,5 @@ bad = 0
 with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as ex:
     for s, rc, err in ex.map(one, srcs):
         if rc: bad += 1; print(f'FAIL {os.path.relpath(s, repo)}\n{err}', file=sys.stderr)
-print(f'iOS compile check ({renderer}, min iOS {minimum}): {len(srcs)} files, {bad} failed')
+print(f'iOS compile check: {len(srcs)} files, {bad} failed')
 sys.exit(1 if bad else 0)

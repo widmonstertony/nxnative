@@ -15,5 +15,3 @@ BINDING = [
     {'what': 'frame limiter spin: its branch back cut', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the engine's own spin limiter; a function-matched rule could carry it over the game's updates"},
 ]
-
-CAPABILITIES = {'799d1061182c1302e08e706b84ce76e5': ('NFS_TIMING',)}

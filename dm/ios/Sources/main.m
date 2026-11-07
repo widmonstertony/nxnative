@@ -1,6 +1,3 @@
-#ifdef DM_GTA_NATIVE
-#import "TonTonGTAV.h"
-#endif
 // iOS App entry: set the environment (game files, saves, shader libraries), write the host log to Documents/log.txt, create the window (front_ios.m), then run the host's dm_main on a big-stack thread.
 // The game files (RomFS) ship inside the App at <App>/romfs; Documents/romfs.img (one image, scripts/push_romfs.sh; its name in any letter case) or a Documents/romfs folder is also accepted (lets you swap them without reinstalling). The DLC folder aoc/ likewise: Documents/aoc, else <App>/aoc.
 #import <UIKit/UIKit.h>
@@ -14,17 +11,8 @@
 #include "game_profile.h"   // game profile constants (the RomFS marker path)
 #include "front.h"
 #include "romfs_image.h"
-#import "DmCrashLogArchive.h"
-#ifdef DM_LIBRARY_HOST
-#import "../LibraryApp/Sources/LibraryRoot.h"
-#import "../LibraryApp/Sources/LibraryFramework.h"
-#ifdef DM_WEB_RUNTIME
-#import "../Engines/TonTonWebRuntime.h"
-#endif
-#endif
 #include "romfs_identity.h"
 #include "player_env.h"
-#include "frame_limit.h"
 #ifndef DM_PLAYER_BUILD
 #define DM_PLAYER_BUILD 0
 #endif
@@ -36,10 +24,6 @@ UIViewController *front_ios_root(void);
 void front_ios_focus_event(int ev);
 
 static char *g_argv[4]; static int g_argc;
-#ifdef DM_LIBRARY_HOST
-static TonTonGameHost g_independent_host;
-static const void *g_independent_image;
-#endif
 
 // Documents/romfs.img, one RomFS image file (dm/tools/romfs_image.py, scripts/push_romfs.sh): only a complete one counts. Its index is written last and ends the file, so a copy cut off partway is skipped
 static int romfs_image_complete(NSString *path) {
@@ -51,9 +35,9 @@ static int romfs_image_complete(NSString *path) {
     romfs_image_close(m); return 1;
 }
 // A build made with DM_COPY_ROMFS=NO carries <App>/romfs.id (dm/host/romfs_identity.h): only a Documents/romfs.img with that identity is used. No romfs.id (the default build): any complete image
-static int romfs_identity_accepts(NSString *img, NSString *res) {
+static int romfs_identity_accepts(NSString *img) {
     romfs_id want, got;
-    int rc = romfs_id_check([res stringByAppendingPathComponent:@"romfs.id"].fileSystemRepresentation, img.fileSystemRepresentation, &want, &got);
+    int rc = romfs_id_check([NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.id"].fileSystemRepresentation, img.fileSystemRepresentation, &want, &got);
     if (rc != ROMFS_ID_OK && rc != ROMFS_ID_NONE) fprintf(stderr, "[RED] boot: Documents/%s is not the image this build needs (verdict %d); not used\n", img.lastPathComponent.UTF8String, rc);
     return rc == ROMFS_ID_OK || rc == ROMFS_ID_NONE;
 }
@@ -69,12 +53,16 @@ static NSArray<NSString *> *romfs_document_images(NSString *doc) {
     }];
     return imgs;
 }
-static NSString *romfs_locate(NSString *doc, NSString *res) {
+static NSString *romfs_locate(NSString *prog) {   // prog: a game of several programs, the running program's folder in the app (p<N>); nil otherwise
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *marker = [NSString stringWithUTF8String:DM_GAME_ROMFS_MARKER];
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    if (prog) {   // the program's files are in the app (Documents holds one image, one program's)
+        NSString *p = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:prog], *img = [p stringByAppendingPathComponent:@"romfs.img"], *d = [p stringByAppendingPathComponent:@"romfs"];
+        if (romfs_image_complete(img)) return img;
+        return [fm fileExistsAtPath:[d stringByAppendingPathComponent:@(DM_GAME_ROMFS_MARKER)]] ? d : nil;
+    }
     for (NSString *img in romfs_document_images(doc)) {
-        if (!romfs_image_complete(img) || !romfs_identity_accepts(img, res)) continue;
-#ifndef DM_LIBRARY_HOST
+        if (!romfs_image_complete(img) || !romfs_identity_accepts(img)) continue;
         // A folder copy from before images is now dead weight of up to many GB (often cut off partway). Deleting its 300,000 files here took longer than iOS allows an app to start
         // (Tears of the Kingdom: killed on a black screen), so it is moved aside at once and deleted in the background, leftovers of an interrupted delete included
         NSString *old = [doc stringByAppendingPathComponent:@"romfs"], *tmp = NSTemporaryDirectory();
@@ -84,61 +72,24 @@ static NSString *romfs_locate(NSString *doc, NSString *res) {
             NSFileManager *bfm = [NSFileManager new];
             for (NSString *n in [bfm contentsOfDirectoryAtPath:tmp error:nil]) if ([n hasPrefix:@"romfs-old-"]) [bfm removeItemAtPath:[tmp stringByAppendingPathComponent:n] error:nil];
         });
-#endif
         return img;
     }
-    NSString *bundledImage = [res stringByAppendingPathComponent:@"romfs.img"];
+    NSString *bundledImage = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.img"];
     NSString *documentFolder = [doc stringByAppendingPathComponent:@"romfs"];
-    if ([fm fileExistsAtPath:[documentFolder stringByAppendingPathComponent:marker]]) return documentFolder;
+    if ([fm fileExistsAtPath:[documentFolder stringByAppendingPathComponent:@(DM_GAME_ROMFS_MARKER)]]) return documentFolder;
     if (romfs_image_complete(bundledImage)) return bundledImage;
-    for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [res stringByAppendingPathComponent:@"romfs"]])
-        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:marker]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
+    for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs"]])
+        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@(DM_GAME_ROMFS_MARKER)]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
     return nil;
 }
 
-// The shared library keeps each game's read-only resources and writable data
-// under one title-ID directory. A slot is selected before host preload; the
-// single-game app continues to use its existing paths when no slot is set.
-static int library_slot_paths(NSString **doc, NSString **res) {
-    const char *raw = getenv("DM_LIBRARY_GAME_ID");
-    if (!raw || !*raw) return 1;
-    NSString *title = [[NSString stringWithUTF8String:raw] lowercaseString];
-    NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
-    if (title.length != 16 || [title rangeOfCharacterFromSet:other].location != NSNotFound) {
-        fprintf(stderr, "[RED] boot: invalid library title ID\n"); return 0;
-    }
-    NSString *root = [[*doc stringByAppendingPathComponent:@"Games"] stringByAppendingPathComponent:title];
-    NSString *user = [root stringByAppendingPathComponent:@"UserData"];
-    NSString *resources = [root stringByAppendingPathComponent:@"Resources"];
-    BOOL isDir = NO;
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *bundled = [[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameResources"] stringByAppendingPathComponent:title];
-    if (![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"dm/shader_map.tsv"]] &&
-        [fm fileExistsAtPath:[bundled stringByAppendingPathComponent:@"dm/shader_map.tsv"]])
-        resources = bundled;
-    if (![fm fileExistsAtPath:resources isDirectory:&isDir] || !isDir ||
-        ![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"dm"] isDirectory:&isDir] || !isDir ||
-        ![fm fileExistsAtPath:[resources stringByAppendingPathComponent:@"msl"] isDirectory:&isDir] || !isDir ||
-        ![fm fileExistsAtPath:[[resources stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"shader_map.tsv"]]) {
-        fprintf(stderr, "[RED] boot: library slot %s is incomplete\n", title.UTF8String); return 0;
-    }
-    NSString *legacyTitle=[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLibraryLegacyTitleID"];
-    if([legacyTitle isKindOfClass:NSString.class]&&[legacyTitle.lowercaseString isEqualToString:title]&&
-       [fm fileExistsAtPath:[*doc stringByAppendingPathComponent:@"save"]])
-        user=*doc; // An in-place update of a single-game app keeps its existing save path.
-    else if(![fm createDirectoryAtPath:user withIntermediateDirectories:YES attributes:nil error:nil]){
-        fprintf(stderr, "[RED] boot: library slot user data is unavailable\n"); return 0;
-    }
-    *doc = user; *res = resources;
-    fprintf(stderr, "boot: library slot %s\n", title.UTF8String);
-    return 1;
-}
 // Add-on content (DLC): each DLC's RomFS image at <dir>/<index>.img (or a legacy <index>/ folder). Like the game files, Documents/aoc comes before <App>/aoc.
 // A DM_AOC_DIR that is already set (env.txt, the launch environment) wins. The host mounts and counts the DLC from DM_AOC_DIR (hle_fs.c, hle_misc.c)
-static void aoc_locate(NSString *doc, NSString *res) {
+static void aoc_locate(void) {
     if (getenv("DM_AOC_DIR")) return;
     NSFileManager *fm = NSFileManager.defaultManager;
-    for (NSString *d in @[[doc stringByAppendingPathComponent:@"aoc"], [res stringByAppendingPathComponent:@"aoc"]]) {
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    for (NSString *d in @[[doc stringByAppendingPathComponent:@"aoc"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aoc"]]) {
         BOOL dir = NO;
         if (![fm fileExistsAtPath:d isDirectory:&dir] || !dir) continue;
         setenv("DM_AOC_DIR", d.fileSystemRepresentation, 0);
@@ -159,8 +110,6 @@ const char *front_ios_device_check(void) {
     if (done++) return msg[0] ? msg : NULL;
     id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();   // the system default device, the one the graphics layers take (mtl_init repeats this check for the other routes)
     if (gpu.supportsBCTextureCompression) return NULL;
-    // The traditional renderer includes BC decode/upload fallback on iOS 16/17.
-    if (gpu) return NULL;
     snprintf(msg, sizeof msg, "This device's GPU (%s) cannot read BC-compressed textures, which the games use. It needs an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later.",
              gpu ? gpu.name.UTF8String : "no Metal device");
     fprintf(stderr, "[RED] boot: %s\n", msg);
@@ -175,17 +124,11 @@ static void romfs_identity_report(NSString *doc) {
     fprintf(stderr, "[RED] boot: %s\n", g_boot_message);
 }
 
+static NSString *program_env(void);
 static int boot_env(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
     NSString *res = NSBundle.mainBundle.resourcePath;
-#ifdef DM_MULTI_GAME
-    const char *selected = getenv("DM_LIBRARY_GAME_ID");
-    if (!dm_profile_select(selected)) { fprintf(stderr, "[RED] boot: no registered library game selected\n"); return 0; }
-#endif
-    if (!library_slot_paths(&doc, &res)) return 0;
-    NSString *romfs = romfs_locate(doc, res);
-    if (!romfs) { fprintf(stderr, "[RED] boot: selected game files not found or incomplete\n"); return 0; }
     for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
     // Keep game files and scratch data out of device backups (Documents is backed up by default; a RomFS placed there is many GB). Saves, logs and the pipeline list stay in the backup
     for (NSString *d in [@[@"romfs", @"aoc", @"temp"] arrayByAddingObjectsFromArray:[romfs_document_images(doc) valueForKey:@"lastPathComponent"]]) {
@@ -194,29 +137,8 @@ static int boot_env(void) {
     }
     // Log: the host only writes to stderr; redirect it to Documents/log.txt (the previous one is kept as log.prev.txt), retrieve it from the Files app when something goes wrong
     NSString *log = [doc stringByAppendingPathComponent:@"log.txt"], *prev = [doc stringByAppendingPathComponent:@"log.prev.txt"];
-    // Keep a bounded history across repeated launches: the report being
-    // investigated must survive the player's attempts to reopen the game.
-    NSString *history = [doc stringByAppendingPathComponent:@"Logs"];
-    [fm createDirectoryAtPath:history withIntermediateDirectories:YES attributes:nil error:nil];
-    // Do not rotate away the evidence if a crash archive could not be made.
-    if (!dm_archive_crash_log(log, history) || !dm_archive_crash_log(prev, history)) {
-        NSLog(@"[RED] boot: cannot preserve crash log; existing reports retained");
-        return 0;
-    }
-    if ([fm fileExistsAtPath:prev]) {
-        NSString *last = [history stringByAppendingPathComponent:@"previous-4.txt"];
-        [fm removeItemAtPath:last error:nil];
-        for (int i = 3; i >= 1; i--) {
-            NSString *a = [history stringByAppendingPathComponent:[NSString stringWithFormat:@"previous-%d.txt", i]];
-            NSString *b = [history stringByAppendingPathComponent:[NSString stringWithFormat:@"previous-%d.txt", i + 1]];
-            [fm moveItemAtPath:a toPath:b error:nil];
-        }
-        [fm moveItemAtPath:prev toPath:[history stringByAppendingPathComponent:@"previous-1.txt"] error:nil];
-    }
-    [fm moveItemAtPath:log toPath:prev error:nil];
+    [fm removeItemAtPath:prev error:nil]; [fm moveItemAtPath:log toPath:prev error:nil];
     if (freopen(log.fileSystemRepresentation, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-    else NSLog(@"[RED] boot: cannot open Documents log (errno %d)", errno);
-    NSLog(@"boot: Documents writable=%d", [fm isWritableFileAtPath:doc]);
     // Environment switch files (for on-device diagnostics: a sideloaded app cannot be given environment variables from outside): one KEY=VALUE per line, # starts a comment; Documents/env.txt takes precedence over dm/env.txt in the bundle (put there by build_ipa.sh's DM_ENV_FILE)
     NSMutableArray<NSString *> *from_file = [NSMutableArray array], *from_launch = [NSMutableArray array];
     for (char **e = environ; *e; e++) {   // set at launch (Xcode, devicectl): before the env files, and the launcher keeps them
@@ -244,19 +166,6 @@ static int boot_env(void) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); [from_file addObject:k]; fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
-    // A portable per-app dump path for diagnostics baked into an IPA. Resolve
-    // it inside the app; an external installer need not write its container.
-    if (getenv("DM_NVN_SHDUMP") && !strcmp(getenv("DM_NVN_SHDUMP"), "auto")) {
-        NSString *dump = [doc stringByAppendingPathComponent:@"shader-dumps"];
-        NSError *error = nil;
-        if ([fm createDirectoryAtPath:dump withIntermediateDirectories:YES attributes:nil error:&error])
-            setenv("DM_NVN_SHDUMP", dump.fileSystemRepresentation, 1);
-        else { unsetenv("DM_NVN_SHDUMP"); fprintf(stderr, "[RED] boot: shader dump directory unavailable: %s\n", error.localizedDescription.UTF8String); }
-    }
-    // Default for every iPhone/iPad, independent of device/GPU generation.
-    // Explicit launch/environment preferences can retain original game pacing.
-    if (!getenv("DM_FRAME_LIMIT")) setenv("DM_FRAME_LIMIT", "unlimited", 0);
-    if (dm_frame_limit_unlimited()) setenv("DM_PRESENT_LINK", "2", 1);
     setenv("DM_ENV_FILE_KEYS", [from_file componentsJoinedByString:@" "].UTF8String, 1);   // the launcher keeps what an env file set (LauncherSettings.swift)
     setenv("DM_ENV_LAUNCH_KEYS", [from_launch componentsJoinedByString:@" "].UTF8String, 1);   // and what the launch environment set (docs/frontends.md, Saved choices)
     front_hud_env();   // an env file's DM_METAL_HUD; nothing in this process makes a Metal device before startGame (front_ios.m), which applies the launcher's
@@ -265,32 +174,54 @@ static int boot_env(void) {
     NSString *lang = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLanguage"];
     if (!getenv("DM_LANG") && [lang isKindOfClass:NSString.class] && lang.length) setenv("DM_LANG", lang.UTF8String, 0);
     fprintf(stderr, "boot: game language %s\n", getenv("DM_LANG") ?: "en-US");
-    fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
-    setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
+    NSString *dm = program_env();
+    if (!dm) { romfs_identity_report(doc); fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); return 0; }
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
-    NSString *dm = [res stringByAppendingPathComponent:@"dm"];
-    NSString *moduleTables=dm;
-#ifdef DM_LIBRARY_HOST
-    NSString *frameworkError=nil;
-    if (!TonTonPrepareGameFramework(@(getenv("DM_LIBRARY_GAME_ID")),&moduleTables,&frameworkError,
-                                    &g_independent_host,&g_independent_image)) {
-        fprintf(stderr,"[RED] boot: %s\n",frameworkError.UTF8String);return 0;
-    }
-#endif
-    setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
-    setenv("DM_MSL_DIR", [res stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 0);
-    setenv("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
-    aoc_locate(doc, res);   // add-on content: Documents/aoc, else <App>/aoc; an empty Documents/aoc explicitly selects no DLC
+    setenv("DM_GUEST_FILE_DIR", NSTemporaryDirectory().fileSystemRepresentation, 0);   // DM_GUEST_FILE (hle_svc.c) keeps the guest's memory in files there
+    setenv("DM_FONT_DIR", [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
+    aoc_locate();   // add-on content: Documents/aoc, else <App>/aoc; an empty Documents/aoc explicitly selects no DLC
     NSString *pso = [res stringByAppendingPathComponent:@"pso"];   // the pipeline archive made offline (build_ipa.sh, dm/gfx/tools/pso_offline.py): the shader pairs' bases, which the device then does not build
     if ([fm fileExistsAtPath:pso]) setenv("DM_PSO_BUNDLE", pso.fileSystemRepresentation, 0);
     chdir(doc.fileSystemRepresentation);
-    g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(moduleTables.fileSystemRepresentation); g_argc = 2;
-#ifdef DM_LIBRARY_HOST
-    if (g_independent_host.start) return 1;   // Start after the library applies per-game settings.
-#endif
+    g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(dm.fileSystemRepresentation); g_argc = 2;
     dm_host_preload_start(g_argc, g_argv);   // Module tables / relocation / takeover run early in the background, in parallel with UIKit startup (and the launcher: the settings it sets are read when the game starts)
     return 1;
+}
+
+// The running program's files (an app holding the programs of one game, build_ipa.sh PROGRAMS_TSV: Super Mario 3D All-Stars' launcher and the games it starts): dm/programs.txt lists them, and each has
+// its own: <App>/p<N>/romfs.img (html and jit beside it), <App>/msl/p<N>, <App>/dm/p<N> (rewriter tables, shader tables, launcher settings) and its modules in sections tagged p<N> (DM_EMBED_TAG, loader.c).
+// The host's profile is the program's (DM_PROGRAM, main.c dm_game_cur). oe::ExecuteProgram records the program and its parameters in Documents/program.bin (DM_EXEC_OUT, hle_oe.c), names it on screen, schedules a
+// notification that opens the app (front_ios.m front_program_handoff) and ends; this start reads the record and takes it away, so a later start, after the player quit the game, is at the launcher as on the Switch.
+// Started from the record, the settings screen stays away (DM_LAUNCHER=0): the player is on the way into a game. Returns the program's dm folder (the host's modules folder), nil when its game files are missing
+static NSString *program_env(void) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0], *res = NSBundle.mainBundle.resourcePath;
+    NSString *dmdir = [res stringByAppendingPathComponent:@"dm"], *msl = [res stringByAppendingPathComponent:@"msl"], *prog = nil;
+    NSString *plist = [NSString stringWithContentsOfFile:[dmdir stringByAppendingPathComponent:@"programs.txt"] encoding:NSUTF8StringEncoding error:nil];
+    if (plist) {
+        NSArray *have = [plist componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *rec = [doc stringByAppendingPathComponent:@"program.bin"]; NSData *d = [NSData dataWithContentsOfFile:rec]; int32_t n = 0;
+        if (d.length >= 4) { memcpy(&n, d.bytes, 4); [fm removeItemAtPath:rec error:nil]; setenv("DM_LAUNCHER", "0", 1); }
+        if (![have containsObject:[NSString stringWithFormat:@"%d", n]]) { fprintf(stderr, "[RED] boot: program %d is not in this app; program 0\n", n); n = 0; d = nil; }
+        prog = [NSString stringWithFormat:@"p%d", n];
+        NSString *lp = [doc stringByAppendingPathComponent:@"launch_param.bin"];
+        if (d.length > 4) { [[d subdataWithRange:NSMakeRange(4, d.length - 4)] writeToFile:lp atomically:YES]; setenv("DM_LAUNCH_PARAM", lp.fileSystemRepresentation, 1); }
+        else { [fm removeItemAtPath:lp error:nil]; unsetenv("DM_LAUNCH_PARAM"); }
+        setenv("DM_PROGRAM", [NSString stringWithFormat:@"%d", n].UTF8String, 1);
+        setenv("DM_EMBED_TAG", prog.UTF8String, 1);
+        setenv("DM_EXEC_OUT", rec.fileSystemRepresentation, 0);
+        dmdir = [dmdir stringByAppendingPathComponent:prog]; msl = [msl stringByAppendingPathComponent:prog];
+        setenv("DM_APP_DM", dmdir.fileSystemRepresentation, 1);   // the launcher's settings (Launcher.swift)
+        fprintf(stderr, "boot: program %d of %s (%zu bytes of launch parameter)\n", n, [[plist stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] stringByReplacingOccurrencesOfString:@"\n" withString:@" "].UTF8String, d.length > 4 ? (size_t)d.length - 4 : 0);
+    }
+    NSString *romfs = romfs_locate(prog);
+    if (!romfs) return nil;
+    fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
+    setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
+    setenv("DM_NVN_SHMAP", [dmdir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
+    setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 0);
+    return dmdir;
 }
 static int g_boot_ok;
 
@@ -309,25 +240,11 @@ void front_ios_boot(void) {   // Called by front_ios.m once the window and Metal
 }
 int front_ios_boot_ok(void) { return g_boot_ok; }
 
-static void focus_game(int event) {
-#ifdef DM_LIBRARY_HOST
-    if (g_boot_ok && g_independent_host.focus) {
-        g_independent_host.focus(event);
-        return;
-    }
-#endif
-    front_ios_focus_event(event);
-}
-
-@class SceneDelegate;
 @interface App : UIResponder <UIApplicationDelegate>
 @end
 @implementation App
 - (UISceneConfiguration *)application:(UIApplication *)a configurationForConnectingSceneSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
-    BOOL tv = [s.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
-    UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:tv ? @"TV" : @"Default" sessionRole:s.role];
-    c.delegateClass = NSClassFromString(tv ? @"DmTVSceneDelegate" : @"SceneDelegate");
-    return c;
+    return [[UISceneConfiguration alloc] initWithName:[s.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive] ? @"TV" : @"Default" sessionRole:s.role];   // a TV (front_ios.m DmTVSceneDelegate)
 }
 @end
 
@@ -338,88 +255,16 @@ static void focus_game(int event) {
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-#ifdef DM_LIBRARY_HOST
-    __weak SceneDelegate *weakSelf=self;
-    self.window.rootViewController=TonTonLibraryController(^(NSString *titleID){
-        SceneDelegate *owner=weakSelf;
-        if(!owner||g_boot_ok)return;
-#ifdef DM_WEB_RUNTIME
-        if([titleID isEqual:@"redalert2"]){
-            NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
-            UIViewController *game=TonTonWebRuntimeController(titleID,[documents stringByAppendingPathComponent:@"Games/redalert2"]);
-            if(game){g_boot_ok=1;owner.window.rootViewController=game;}
-            return;
-        }
-#endif
-#ifdef DM_GTA_NATIVE
-        if([titleID isEqual:@"gta5"]){
-            NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
-            UIViewController *library=owner.window.rootViewController;
-            UIViewController *game=TonTonGTAVCreateControllerWithReturn([documents stringByAppendingPathComponent:@"Games/gta5"],^{
-                SceneDelegate *current=weakSelf;
-                if(!current)return;
-                g_boot_ok=0;
-                current.window.rootViewController=library;
-            });
-            if(game){g_boot_ok=1;owner.window.rootViewController=game;}
-            return;
-        }
-#endif
-        setenv("DM_LIBRARY_GAME_ID",titleID.UTF8String,1);
-        if(!boot_env()){
-            UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"卡带暂时无法启动" message:@"请检查该游戏的资源是否已完整移入游戏匣。" preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-            [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];return;
-        }
-        TonTonApplyGlobalSettings(titleID);
-        if (g_independent_host.start) {
-            const char *error = g_independent_host.start((const char *const *)g_argv, g_argc, g_independent_image);
-            if (error) {
-                fprintf(stderr,"[RED] boot: independent game host: %s\n",error);
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"卡带暂时无法启动"
-                    message:@"游戏自带引擎未能启动。" preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-                [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];
-                g_independent_host = (TonTonGameHost){0};
-                return;
-            }
-            g_boot_ok=1;
-            g_independent_host.present((__bridge void *)owner.window);
-            return;
-        }
-        g_boot_ok=1;
-        owner.window.rootViewController=front_ios_root();
-    });
-#else
     self.window.rootViewController = front_ios_root();
-#endif
     [self.window makeKeyAndVisible];
 }
-- (void)sceneWillResignActive:(UIScene *)s {
-#ifdef DM_GTA_NATIVE
-    if(TonTonGTAVIsActive()){TonTonGTAVFocus(0,0);return;}
-#endif
- focus_game(0); }
-- (void)sceneDidEnterBackground:(UIScene *)s {
-#ifdef DM_GTA_NATIVE
-    if(TonTonGTAVIsActive()){TonTonGTAVFocus(0,1);return;}
-#endif
- focus_game(1); }
-- (void)sceneWillEnterForeground:(UIScene *)s {
-#ifdef DM_GTA_NATIVE
-    if(TonTonGTAVIsActive()){TonTonGTAVFocus(0,0);return;}
-#endif
- focus_game(2); }
-- (void)sceneDidBecomeActive:(UIScene *)s {
-#ifdef DM_GTA_NATIVE
-    if(TonTonGTAVIsActive()){TonTonGTAVFocus(1,0);return;}
-#endif
- focus_game(3); }
+- (void)sceneWillResignActive:(UIScene *)s { front_ios_focus_event(0); }
+- (void)sceneDidEnterBackground:(UIScene *)s { front_ios_focus_event(1); }
+- (void)sceneWillEnterForeground:(UIScene *)s { front_ios_focus_event(2); }
+- (void)sceneDidBecomeActive:(UIScene *)s { front_ios_focus_event(3); }
 @end
 
 int main(int argc, char **argv) {
-#ifndef DM_LIBRARY_HOST
     @autoreleasepool { g_boot_ok = boot_env(); }
-#endif
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(App.class)); }
 }
