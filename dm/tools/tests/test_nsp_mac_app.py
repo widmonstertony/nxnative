@@ -120,7 +120,7 @@ class PackReuse(unittest.TestCase):
             'pso/prebuilt.tsv': b'prebuilt', 'pso/rest_pairs.tsv': b'rest', 'pso/archive.tsv': b'index',
             'pso/gpu-prewarm-00.mtl4a': b'bases', 'pso/gpu-prewarm-00.keys': b'DMPSOIX1', 'pso/prewarm.tsv': b'stamp',   # --prebake's files and their index
             'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
-            'host/romfs_image.h': b'validator', 'host/input_map.h': b'maps', 'host/dm_input.h': b'buttons', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'tools/romfs.py': b'reader',
+            'host/romfs_image.h': b'validator', 'host/input_map.h': b'maps', 'host/dm_input.h': b'buttons', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'tools/romfs.py': b'reader', 'tools/nacp.py': b'names', 'control.nacp': b'nacp',
             'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows', 'ios/Sources/SaveSyncReport.swift': b'report',
         }
         for n in pack_app.TABLES: files['profile/' + n] = n.encode()
@@ -130,7 +130,7 @@ class PackReuse(unittest.TestCase):
         self.args = pack_app.parse([str(t / 'Game.app'), '--host', str(t / 'dmhost'), '--patched', str(t / 'patched'),
                                    '--romfs', str(t / 'romfs'), '--msl', str(t / 'msl'), '--tables', str(t / 'profile'), '--font', str(t / 'font'),
                                    '--aoc', str(t / 'aoc'), '--pso', str(t / 'pso'), '--pso-pairs', str(t / 'split.tsv'), '--env-file', str(t / 'env.txt'),
-                                   '--title-id', TID, '--name', 'Test Game', '--marker', 'marker', '--icon', str(t / 'icon.jpg')])
+                                   '--title-id', TID, '--name', 'Test Game', '--marker', 'marker', '--icon', str(t / 'icon.jpg'), '--control', str(t / 'control.nacp')])
         self.commands = []
         self.clang_version, self.swiftc_version, self.sdk_version = 'clang fixture 1', 'swiftc fixture 1', '27.0'
         self.clang, self.swiftc, self.sdk = t / 'bin/clang', t / 'bin/swiftc', t / 'sdk'
@@ -215,7 +215,8 @@ class PackReuse(unittest.TestCase):
                  'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'pso/gpu-prewarm-00.mtl4a', 'pso/gpu-prewarm-00.keys', 'pso/prewarm.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c',
                  'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift', 'ios/Sources/SaveSyncReport.swift',   # the settings window's sources
                  'host/input_map.h', 'host/dm_input.h',   # the launcher's headers
-                 'host/save_sync.c', 'host/save_sync.h']   # the cloud-save code the launcher links (its send after the host exits)
+                 'host/save_sync.c', 'host/save_sync.h',   # the cloud-save code the launcher links (its send after the host exits)
+                 'control.nacp', 'tools/nacp.py']   # the game's names in Info.plist (DMTitleNames) and their reader
         names += ['profile/' + n for n in pack_app.TABLES]
         for name in names:
             with self.subTest(name=name):
@@ -465,6 +466,9 @@ class App(unittest.TestCase):
         (t / 'pso').mkdir(); (t / 'pso/applegpu_g14s.mtl4a').write_bytes(b'arch'); (t / 'pso/prebuilt.tsv').write_text('chain\t0123456789ab\n'); (t / 'pso/key.x').write_text('not for the app')
         (t / 'env.txt').write_text('# baked in\nDM_BAKED=1\nDM_BOTH=bundle\n')
         (t / 'launcher.json').write_text('{"game": "x", "settings": []}\n')
+        titles = bytearray(0x4000)
+        for i, n in ((0, b'Game: Test'), (2, 'ゲーム'.encode()), (14, '游戏'.encode())): titles[i * 0x300:i * 0x300 + len(n)] = n   # American English, Japanese, Simplified Chinese
+        (t / 'control.nacp').write_bytes(titles)
         subprocess.run(['sips', '-s', 'format', 'jpeg', '-z', '256', '256', '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns',
                         '--out', t / 'icon.jpg'], check=True, capture_output=True)
         (t / 'bin/osascript').write_text('#!/bin/sh\necho "$@" > "$HOME/alert.txt"\nprintf "%s\\0" "$@" > "$HOME/alert.args"\n'
@@ -474,7 +478,7 @@ class App(unittest.TestCase):
         cls.args = pack_app.parse([str(cls.app), '--host', str(t / 'dmhost'), '--patched', str(t / 'patched'), '--romfs', str(t / 'romfs'), '--msl', str(t / 'cache/b-0123456789ab'),
                                    '--tables', str(t / 'profile'), '--font', str(t / 'font'), '--aoc', str(t / 'aoc'), '--pso', str(t / 'pso'), '--env-file', str(t / 'env.txt'), '--settings', str(t / 'launcher.json'), '--title-id', TID.lower(),
                                    '--name', 'Game: Test', '--version', '1.0.1', '--lang', 'fr', '--marker', 'region_common/audio/edward.bfsar', '--icon', str(t / 'icon.jpg'),
-                                   '--category', 'public.app-category.games'])
+                                   '--category', 'public.app-category.games', '--control', str(t / 'control.nacp')])
         with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(cls.args)
 
     @classmethod
@@ -532,6 +536,13 @@ class App(unittest.TestCase):
         self.assertEqual(p['DMSettings'], [])   # launcher.json's settings, as the saved choices they accept: none here
         self.assertRegex(p['DMCommit'], r'^[0-9a-f]{12}(\+dirty)?$')   # the packing checkout (scripts/bug_report.py, the host's start line)
         self.assertEqual(p['DMChain'], '0123456789ab')   # the chain of the libraries packed (msl/b-<chain>)
+        self.assertEqual(p['DMTitleNames'], {'en-US': 'Game: Test', 'ja': 'ゲーム', 'zh-Hans': '游戏'})   # the game's name in each of its languages: Mac front ends show their own language's
+
+    def test_no_title_names_without_control_data(self):   # no --control, or control data with no names: no DMTitleNames, the front ends show CFBundleDisplayName
+        a = types.SimpleNamespace(**vars(self.args)); a.control = None; a.settings = None
+        self.assertNotIn('DMTitleNames', pack_app.info_plist(a, '26.0', False))
+        a.control = str(self.tmp / 'missing.nacp')
+        self.assertNotIn('DMTitleNames', pack_app.info_plist(a, '26.0', False))
 
     def test_packed_language_is_the_lists(self):   # --lang a game lacks: the Game language row's default (settings.py: the game's first), with or without the window
         with tempfile.TemporaryDirectory(dir=TEST_ROOT) as d:
@@ -904,6 +915,7 @@ class Script(unittest.TestCase):
         self.assertNotIn('--aoc', o); self.assertNotIn('--icon', o)
         self.assertNotIn('--pso', o)   # no shader pairs: no pipeline archive
         self.assertEqual(o['--settings'], str(tmp / 'app/launcher.json'))   # the launcher settings the Mac front end reads, without the iPhone's own switches
+        self.assertEqual(o['--control'], str(tmp / 'ex/control.nacp'))   # the game's names in each language (DMTitleNames), from the control data that lists its languages
         self.assertEqual(self.settings_cmd[2:], ['01008CF01BAAC000', str(tmp / 'patched'), str(tmp / 'ex/control.nacp'), str(tmp / 'app/launcher.json')])
         self.assertEqual((self.settings_env['SETTINGS_PLATFORM'], self.settings_env['GFXAPI'], self.settings_env['DM_LANG']), ('mac', 'nvn', 'en-US'))
         o, tmp = self.pack_cmd('vulkan', aoc=Path('/x/aoc'), sign='Developer ID Application: X (T)')
