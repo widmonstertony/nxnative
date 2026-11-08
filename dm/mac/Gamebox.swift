@@ -47,6 +47,7 @@ private struct GameSettings: Identifiable {
     let game: Game
     let app: URL
     let version: String
+    let cloudKitContainer: String?
     let defaults: UserDefaults
     let model: LauncherModel
     let environment: [String: String]
@@ -62,6 +63,7 @@ private struct GameSettings: Identifiable {
         self.game = game
         self.app = app
         self.version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        self.cloudKitContainer = bundle.object(forInfoDictionaryKey: "DMCloudSaveContainer") as? String
         self.defaults = defaults
         let support = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/nxnative")
@@ -156,7 +158,7 @@ private struct GameboxLibrary: View {
         .sheet(item: $settings) { state in
             LauncherView(m: state.model, name: state.game.name, version: state.version,
                          icon: NSWorkspace.shared.icon(forFile: state.app.path), cancelTitle: "取消",
-                         environment: state.environment, done: { play in
+                         environment: state.environment, cloudKitContainer: state.cloudKitContainer, done: { play in
                 settings = nil
                 if play {
                     state.model.saveChoices()

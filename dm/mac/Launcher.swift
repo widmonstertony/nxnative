@@ -19,6 +19,7 @@ struct LauncherView: View {
     let icon: NSImage
     let cancelTitle: LocalizedStringKey
     let environment: [String: String]
+    let cloudKitContainer: String?
     @AppStorage("window.show") private var show = true
     @AppStorage("window.advanced") private var advanced = false
 
@@ -26,6 +27,7 @@ struct LauncherView: View {
          version: String = info("CFBundleShortVersionString") ?? "1.0",
          icon: NSImage = NSApp.applicationIconImage, cancelTitle: LocalizedStringKey = "Quit",
          environment: [String: String] = ProcessInfo.processInfo.environment,
+         cloudKitContainer: String? = info("DMCloudSaveContainer") as? String,
          done: @escaping (Bool) -> Void, fit: @escaping (CGFloat) -> Void) {
         self.m = m
         self.name = name
@@ -33,6 +35,7 @@ struct LauncherView: View {
         self.icon = icon
         self.cancelTitle = cancelTitle
         self.environment = environment
+        self.cloudKitContainer = cloudKitContainer
         self.done = done
         self.fit = fit
     }
@@ -50,7 +53,7 @@ struct LauncherView: View {
             .padding([.horizontal, .top], 20)
             Form {
                 settingSections(basic: true)
-                CloudSavesSection(environment: environment)
+                CloudSavesSection(environment: environment, cloudKitContainer: cloudKitContainer)
                 Section {
                     DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
                 }
@@ -98,26 +101,36 @@ struct LauncherView: View {
 struct CloudSavesSection: View {
     @AppStorage("cloudSaves.folder") private var folder = ""
     private let fixed: String?
+    private let cloudKitEnabled: Bool
 
-    init(environment env: [String: String]) {
+    init(environment env: [String: String], cloudKitContainer: String?) {
         let keys = ((env["DM_ENV_FILE_KEYS"] ?? "") + " " + (env["DM_ENV_LAUNCH_KEYS"] ?? "")).split(separator: " ")
         fixed = keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
+        cloudKitEnabled = cloudKitContainer?.hasPrefix("iCloud.") == true
     }
 
     var body: some View {
-        Section {
-            LabeledContent("Cloud saves") {
-                Text(fixed.map { "\(Self.shown($0)) (env.txt)" } ?? (folder.isEmpty ? "Off" : Self.shown(folder)))
-                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+        if cloudKitEnabled {
+            Section {
+                LabeledContent("iCloud saves", value: fixed == "0" ? "Off" : "Automatic")
+            } footer: {
+                Text("Use the same iCloud account on all your devices. The game reads your save when it starts and syncs after each save.")
             }
-            if fixed == nil {
-                HStack {
-                    Button(folder.isEmpty ? "Choose a folder…" : "Choose a different folder…", action: choose)
-                    if !folder.isEmpty { Button("Turn off") { folder = "" } }
+        } else {
+            Section {
+                LabeledContent("Cloud saves") {
+                    Text(fixed.map { "\(Self.shown($0)) (env.txt)" } ?? (folder.isEmpty ? "Off" : Self.shown(folder)))
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                 }
+                if fixed == nil {
+                    HStack {
+                        Button(folder.isEmpty ? "Choose a folder…" : "Choose a different folder…", action: choose)
+                        if !folder.isEmpty { Button("Turn off") { folder = "" } }
+                    }
+                }
+            } footer: {
+                Text("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder.")
             }
-        } footer: {
-            Text("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder.")
         }
     }
 
