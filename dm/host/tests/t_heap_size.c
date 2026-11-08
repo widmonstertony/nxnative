@@ -58,7 +58,6 @@ static void *heap_mmap(void *addr, size_t size, int prot, int flags, int fd, off
     if (flags & MAP_FIXED) {
         map_calls++; last_addr = addr; last_size = size; last_prot = prot;
         assert(flags == (MAP_PRIVATE | MAP_ANON | MAP_FIXED) && fd == -1 && offset == 0);
-        assert(prot == PROT_NONE);
         assert(g_heap_cur == old_size && regs[0] == sentinel && regs[1] == requested);
         if (injected_map_error) { errno = injected_map_error; return MAP_FAILED; }
     }

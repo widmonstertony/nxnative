@@ -56,13 +56,17 @@ def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table
     return {m[1] for m in re.finditer(r'^# (\w+)\t', path.read_text(encoding='utf-8'), re.M)}
 
 
+UNKNOWN_LANGUAGES = 'This game\'s files do not list its languages, so some of these may not be in the game. It may then show another one.'
+
+
 def build(gid, patched, control):
     platform = os.environ.get('SETTINGS_PLATFORM') or 'ios'
     if platform not in ('ios', 'mac'): sys.exit(f'SETTINGS_PLATFORM must be ios or mac: {platform}')
     g = game.load(gid)
-    macros = dict(re.findall(r'^#define (DM_GAME_\w+) (.*)$', game.header(g), re.M))   # the host's own defaults, as it is compiled for this game
+    macros = dict(re.findall(r'^#define (DM_GAME_\w+) (.*)$', game.header_one(g), re.M))   # the host's own defaults, as it is compiled for this game
     keys = fixups_keys(Path(patched) / 'main.fixups.tsv')
-    langs = [(c, n) for c, n in nacp.LANGUAGES if c in nacp.languages(control)]
+    have = nacp.languages(control)
+    langs = [(c, n) for c, n in nacp.LANGUAGES if not have or c in have]   # no list (a dump or a NUP has no control data, none of its packages may): any language may be the game's, as DM_LANG and the NSP script's check take it
 
     def macro(name, n):
         if name not in macros: sys.exit(f'settings.tsv:{n}: no {name} in the game profile header (game.py header)')
@@ -71,7 +75,7 @@ def build(gid, patched, control):
     def shown(cond, n):
         if cond == 'always': return True
         if cond == 'languages>1': return len(langs) > 1
-        if cond.startswith('fixups:'): return bool(set(cond[7:].split('|')) & keys)
+        if cond.startswith('fixups:'): return cond[7:] in keys
         if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
         if cond.startswith('platform:'): return platform == cond[9:]
         m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
@@ -91,8 +95,12 @@ def build(gid, patched, control):
 
     def takes(kind, values):   # the values a row's variable can take, for needs; None when any (a range, the game's languages)
         if kind == 'toggle': return {'1', '0'} if values == '-' else set(values.split('/'))
-        if kind == 'choice' and values != 'languages': return {v.split('=', 1)[0] for v in values.split(',')}
+        if kind == 'choice' and values != 'languages': return {v.split('?', 1)[0].split('=', 1)[0] for v in values.split(',')}
         return None
+
+    def offered(v, n):   # value=label?cond&cond: an option only some games or platforms have
+        parts = v.split('?', 1)
+        return len(parts) == 1 or all(shown(c, n) for c in parts[1].split('&'))
 
     out, table, base = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g)
     for n, (var, kind, values, default, cond, section, label, note, extra) in rows():
@@ -103,26 +111,14 @@ def build(gid, patched, control):
             can = table[need]
             if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: needs a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
         if not shown(cond, n): continue
-        if var == 'DM_FRAMEGEN' and platform == 'ios' and os.environ.get('DM_IOS_RENDERER', 'legacy') != 'metal4':
-            continue   # This implementation needs the modern command-buffer path.
-        if var == 'DM_PSO_MTL4' and 'MTL4_DUAL_SOURCE_UNAVAILABLE' in keys:
-            # Open translator limitation: the secondary blend output is still
-            # emitted as MRT1; Metal 4's compiler aborts on the resulting PSO.
-            kind, values, default = 'choice', '0=Unavailable pending shader fix', '0'
-            note = 'This game needs a dual-source shader variant before Metal 4 pipelines can be enabled.'
-        # Opt-in elapsed-clock builds start with native handheld rendering and a
-        # real MetalFX upscale. This lowers game work instead of only sharpening
-        # an unchanged 1080p picture. Existing saved choices still take priority.
-        if keys & {'ARCEUS_TIMING', 'ZA_TIMING'}:
-            if var == 'DM_OPMODE': default = '0'
-            elif var == 'DM_PRESENT_UPSCALE': default = 'metalfx'
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
         if kind == 'choice':
-            opts = [list(l) for l in langs] if values == 'languages' else [v.split('=', 1) for v in values.split(',')]
+            opts = [list(l) for l in langs] if values == 'languages' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v, n)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
             if s['default'] not in [o[0] for o in opts]: s['default'] = opts[0][0]   # a default the game does not offer (a language it lacks): its first
             s['options'] = opts
+            if values == 'languages' and not have: s['note'] = UNKNOWN_LANGUAGES
         elif kind == 'range':
             lo, hi, st = (float(x) for x in values.split(':'))
             s.update(min=lo, max=hi, step=st)

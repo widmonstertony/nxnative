@@ -25,20 +25,19 @@ def build(gid, api, platform=None):
         return {s['env']: s for s in settings.build(gid, tmp, Path(tmp) / 'control.nacp')['settings']}
 
 
+def rows_with_languages(listed):   # the settings rows, by variable, of a game whose control data lists these languages
+    with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=listed), patch.dict(os.environ, {'GFXAPI': 'nvn', 'DM_LANG': 'en-US'}):
+        return {s['env']: s for s in settings.build(BOTW, tmp, Path(tmp) / 'control.nacp')['settings']}
+
+
 class LauncherSettingsTests(unittest.TestCase):
-    def test_exact_build_timing_and_known_pipeline_limit(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=['en-US']), patch.dict(os.environ, {'GFXAPI': 'nvn', 'SETTINGS_PLATFORM': 'ios'}):
-            root = Path(tmp)
-            without = {s['env']: s for s in settings.build(BOTW, root, root / 'control.nacp')['settings']}
-            self.assertNotIn('DM_ARCEUS_FPS', without)
-            (root / 'main.fixups.tsv').write_text('# ARCEUS_TIMING\t1\n# MTL4_DUAL_SOURCE_UNAVAILABLE\t1\n')
-            rows = {s['env']: s for s in settings.build(BOTW, root, root / 'control.nacp')['settings']}
-            self.assertEqual(rows['DM_ARCEUS_FPS']['default'], '120')
-            self.assertEqual([o[0] for o in rows['DM_ARCEUS_FPS']['options']], ['0', '30', '60', '120'])
-            self.assertEqual(rows['DM_PSO_MTL4']['default'], '0')
-            self.assertEqual(rows['DM_PSO_MTL4']['options'], [['0', 'Unavailable pending shader fix']])
-            self.assertIn('dual-source', rows['DM_PSO_MTL4']['note'])
-            self.assertEqual(without['DM_PSO_MTL4']['kind'], 'toggle')
+    def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
+        self.assertNotIn('DM_LANG', rows_with_languages(['ja']))   # one language: nothing to pick
+        s = rows_with_languages(['en-US', 'ja'])['DM_LANG']
+        self.assertEqual((s['options'], s['note']), ([['en-US', 'American English'], ['ja', 'Japanese']], ''))
+        s = rows_with_languages([])['DM_LANG']   # no control data: a dump, a NUP without a NACP
+        self.assertEqual(s['options'], [list(l) for l in settings.nacp.LANGUAGES])
+        self.assertEqual((s['default'], s['note']), ('en-US', settings.UNKNOWN_LANGUAGES))
 
     def test_upscaling_is_opt_in_for_every_graphics_api(self):
         for api, gid in [('nvn', BOTW), ('vulkan', '0100535012974000'), ('gl', '010014E00DB56000')]:
@@ -76,7 +75,7 @@ class LauncherSettingsTests(unittest.TestCase):
     def test_iphone_switches_only_on_the_iphone(self):   # the frame-rate counter and touch feedback are the iOS front end's (front_ios.m, DmGamepad.m)
         ios, mac = build(BOTW, 'nvn'), build(BOTW, 'nvn', 'mac')
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
-        self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS'})
+        self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
         self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN'})   # the Mac window's Display mode (front_mac.m reads 1 or 0)
         s = mac['DM_FULLSCREEN']

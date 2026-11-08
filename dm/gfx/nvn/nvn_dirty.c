@@ -27,7 +27,7 @@ enum { BLK_SHIFT = 10, BLK = 1 << BLK_SHIFT, NBLK = 256, MAX_RANGE = BLK * NBLK 
 // Ranges are rounded to host pages (16 KB) but guest memory pools are only 4 KB aligned: adjacent pools share their first / last pages, so one address can fall in several registered ranges.
 // So: "is this texture tracked" looks for a range that holds its whole span; a fault / host pre-write unprotects and stamps every range covering that page; pool destruction identifies its range by the pool's exact start mem.
 // (Previously the first range containing the address was always taken: two SMBW ASTC 6x5 textures whose pool's first page is shared with a small preceding pool were judged untracked and re-uploaded on every use, about 6 MB per frame)
-typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; } range_t;
+typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; _Atomic(_Atomic uint8_t *) sparse; size_t cap; _Atomic int live; } range_t;   // sparse: per page, protected for a placement sparse tile (nvn_dirty_protect_sparse)
 static _Atomic(range_t *) g_blk[NBLK];
 static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_SHIFT], memory_order_acquire)[i & (BLK - 1)]; }
 static _Atomic int g_nr;
@@ -62,9 +62,11 @@ static int busy_wait(range_t *r, uintptr_t p) {
 }
 static int live_at(int i) { return atomic_load_explicit(&rg(i)->live, memory_order_acquire); }
 // The registered range that holds all of [a, a+len) (used for a texture's tracking / protection / dirty check)
+static _Atomic int g_span_last;   // the last range found: looks come in runs over one pool, and a scan of Mario Kart World's 5,000 pools per look took a quarter of its submit thread's time
 static range_t *find_span(uintptr_t a, size_t len) {
-    int n = atomic_load(&g_nr);
-    for (int i = 0; i < n; i++) { range_t *r = rg(i); if (live_at(i) && a >= r->base && a + len <= r->end) return r; }
+    int n = atomic_load(&g_nr), k = atomic_load_explicit(&g_span_last, memory_order_relaxed);
+    if (k < n) { range_t *r = rg(k); if (live_at(k) && a >= r->base && a + len <= r->end) return r; }
+    for (int i = 0; i < n; i++) { range_t *r = rg(i); if (live_at(i) && a >= r->base && a + len <= r->end) { atomic_store_explicit(&g_span_last, i, memory_order_relaxed); return r; } }
     return NULL;
 }
 static void stamp_page(range_t *r, uintptr_t p) {
@@ -73,9 +75,11 @@ static void stamp_page(range_t *r, uintptr_t p) {
     // must invalidate that cached clock, as the page stays writable until the next upload protects it again.
     atomic_fetch_add(&g_now, 1);
 }
+static _Atomic uint64_t g_sparse_writes;   // writes to pages protected for a placement sparse tile (nvn_dirty_sparse_writes)
+static void sparse_note(range_t *r, uintptr_t p) { _Atomic uint8_t *sp = atomic_load(&r->sparse); if (sp && atomic_exchange(&sp[p], 0)) atomic_fetch_add(&g_sparse_writes, 1); }
 static void unprotect_page(range_t *r, uintptr_t p) {   // The caller has already changed the state from PROT to BUSY
     mp(r->base + (p << g_shift), g_pg, PROT_READ | PROT_WRITE);
-    stamp_page(r, p);
+    stamp_page(r, p); sparse_note(r, p);
     atomic_store(&r->state[p], PG_NONE);
 }
 // Unprotect one page of a range: if protected, unprotect and stamp it; if another thread is changing its protection, wait for it to finish and look again -- if the other side was setting read-only, the page is PROT after the wait and still has to be unprotected
@@ -105,7 +109,7 @@ static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t
         if (took) { if (!open) { run = i; open = 1; } continue; }
         if (open) {
             mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ | PROT_WRITE);
-            for (uintptr_t k = run; k < i; k++) { stamp_page(r, k); atomic_store(&r->state[k], PG_NONE); }
+            for (uintptr_t k = run; k < i; k++) { stamp_page(r, k); sparse_note(r, k); atomic_store(&r->state[k], PG_NONE); }
             if (count) atomic_fetch_add(count, i - run);
             open = 0;
         }
@@ -123,10 +127,9 @@ static void prep_write(void *addr, size_t len) {
     }
 }
 
-static void nvn_dirty_fault_diagnostic(const void *addr);
 void nvn_dirty_add_range(const void *mem, size_t size) {
     static int inited;
-    if (!inited) { inited = 1; g_pg = (uintptr_t)getpagesize(); g_shift = __builtin_ctzl(g_pg); mach_timebase_info(&g_tb); dm_fault_hook_register(on_fault); dm_guest_write_prep_register(prep_write); dm_fault_diagnostic_register(nvn_dirty_fault_diagnostic); }
+    if (!inited) { inited = 1; g_pg = (uintptr_t)getpagesize(); g_shift = __builtin_ctzl(g_pg); mach_timebase_info(&g_tb); dm_fault_hook_register(on_fault); dm_guest_write_prep_register(prep_write); }
     atomic_fetch_add(&g_adds_total, 1);
     pthread_mutex_lock(&g_slot_mu);
     int n = atomic_load(&g_nr);
@@ -154,9 +157,11 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
         state = calloc(np, 1); gen = calloc(np, sizeof *gen);
         if (!state || !gen) die("dirty-page table allocation failed (%zu pages)", np);
         // The old array is not freed: the signal handler may still have a very brief stale reader; leak = 9 bytes per page.
+        atomic_store(&r->sparse, NULL);   // sized for the old cap, not freed for the same reason
         r->cap = np;
     } else {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen);
+        _Atomic uint8_t *sp = atomic_load(&r->sparse); if (sp) memset((void *)sp, 0, np);
     }
     r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen;
     if (slot == n) atomic_store(&g_nr, n + 1);
@@ -171,6 +176,15 @@ void nvn_dirty_remove_range(const void *mem) {
     if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); }
     pthread_mutex_unlock(&g_slot_mu);
 }
+// A zero-copy Metal buffer made while any of its pages is read-only drops every GPU write through it, with no error, even to pages never protected and even once its pages are writable again;
+// one made over writable pages keeps working when they are protected later (M4 Pro probe; LEGO Star Wars: The Skywalker Saga's font copies inside its 1.4 GB pool, issue #1591). So every
+// protected page of [addr, addr + len) is made writable and counts as written (its textures are read again and protected again at their next use, as after a host write), and no protection
+// starts until nvn_dirty_unhold: hold, make the buffer, unhold. Protection and pool retirement wait meanwhile; the page-fault path takes no lock and is not held up
+void nvn_dirty_hold(const void *addr, size_t len) {
+    pthread_mutex_lock(&g_slot_mu);
+    prep_write((void *)addr, len);
+}
+void nvn_dirty_unhold(void) { pthread_mutex_unlock(&g_slot_mu); }
 int nvn_dirty_tracked(const void *addr, size_t len) {
     return find_span((uintptr_t)addr, len) != NULL;
 }
@@ -178,15 +192,11 @@ int nvn_dirty_tracked(const void *addr, size_t len) {
 const void *nvn_dirty_span(const void *addr, size_t len) { return len ? find_span((uintptr_t)addr, len) : NULL; }
 // Set read-only: mark the pages BUSY first and mark them PROT only after mprotect has landed (for the order and the invariant see the state notes at the top of the file)
 void nvn_dirty_protect(const void *addr, size_t len) {
-    // Keep the descriptor live until the final mprotect has landed. Otherwise
-    // retirement can restore RW and publish live=0 between lookup and PG_BUSY,
-    // after which this thread leaves retired guest memory read-only forever.
+    // Keep this descriptor live through the last mprotect. Retirement restores
+    // RW under this same mutex; it must not finish between lookup and PG_BUSY.
     pthread_mutex_lock(&g_slot_mu);
     range_t *r = len ? find_span((uintptr_t)addr, len) : NULL;
     if (!r) { pthread_mutex_unlock(&g_slot_mu); return; }
-#ifdef NVN_DIRTY_PROTECT_LOOKUP_HOOK
-    NVN_DIRTY_PROTECT_LOOKUP_HOOK(); // Deterministic pool-retirement race test.
-#endif
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     // Consecutive pages are merged into one mprotect (per-page calls reach thousands per frame on the first upload of large textures; character select page startup frame 5: 4888 calls).
     // Pages already PROT / BUSY break the consecutive run: do not protect again, and do not touch pages another thread is changing.
@@ -202,7 +212,24 @@ void nvn_dirty_protect(const void *addr, size_t len) {
     }
     pthread_mutex_unlock(&g_slot_mu);
 }
+// As nvn_dirty_protect, for the pages behind a placement sparse tile: a write to one of them moves nvn_dirty_sparse_writes, which nothing else moves, so its textures need no look at their tiles
+// until one is written (the page table's walk per look is what this replaces; nvn_mtl.m sparse_look)
+void nvn_dirty_protect_sparse(const void *addr, size_t len) {
+    nvn_dirty_protect(addr, len);
+    pthread_mutex_lock(&g_slot_mu);
+    range_t *r = len ? find_span((uintptr_t)addr, len) : NULL;
+    if (r) {
+        _Atomic uint8_t *sp = atomic_load(&r->sparse);
+        if (!sp) { sp = calloc(r->cap, 1); atomic_store(&r->sparse, sp); }
+        if (sp) for (uintptr_t i = ((uintptr_t)addr - r->base) >> g_shift, q = ((uintptr_t)addr + len - 1 - r->base) >> g_shift; i <= q; i++) atomic_store(&sp[i], 1);
+    }
+    pthread_mutex_unlock(&g_slot_mu);
+}
+uint64_t nvn_dirty_sparse_writes(void) { return atomic_load(&g_sparse_writes); }
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }
+// As nvn_dirty_since, with the caller's last range kept in *span (rechecked, scanned again only if it no longer holds the span; a slot reused by another pool over the same memory is as
+// good): a packaged texture keeps its handle (the scan over every range ran twice per texture lookup), and a sparse texture's page-table walk (hle_nvn.c vpt_walk) asks once per run of
+// physical pages, which mostly lie in one pool, where find_span scans every registered range (about 4,300 in a Mario Kart World race)
 int nvn_dirty_since_cached(const void **span, const void *addr, size_t len, uint64_t stamp) {
     if (!len) return 0;
     range_t *r = (range_t *)*span; uintptr_t a = (uintptr_t)addr;
@@ -220,21 +247,6 @@ void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total) {
     *live = active; *used_slots = n; *adds_total = atomic_load(&g_adds_total);
 }
 void nvn_dirty_stats(uint64_t *faults, uint64_t *preps) { *faults = atomic_load(&g_faults); *preps = atomic_load(&g_preps); }
-// Terminal crash diagnostics only: never changes protection or retries a fault.
-static void nvn_dirty_fault_diagnostic(const void *addr) {
-    uintptr_t a = (uintptr_t)addr; int found = 0, n = atomic_load(&g_nr);
-    for (int i = 0; i < n; i++) {
-        range_t *r = rg(i); int live = live_at(i);
-        if (a < r->base || a >= r->end) continue;
-        uintptr_t p = (a - r->base) >> g_shift;
-        if (p >= r->cap) continue;
-        LOG("fault dirty slot=%d live=%d mem=%p range=%p..%p page=%zu state=%u gen=%llu",
-            i, live, (void *)r->mem, (void *)r->base, (void *)r->end, (size_t)p,
-            (unsigned)atomic_load(&r->state[p]), (unsigned long long)atomic_load(&r->gen[p]));
-        found++;
-    }
-    if (!found) LOG("fault dirty: no current or retired slot covers %p (%d slots)", addr, n);
-}
 void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     *calls = atomic_load(&g_mp_calls); *pages = atomic_load(&g_mp_pages); *ns = atomic_load(&g_mp_ticks) * tb.numer / tb.denom;

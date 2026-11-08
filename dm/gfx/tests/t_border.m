@@ -10,13 +10,6 @@ module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 static int checks, fails;
-#ifdef DM_NVN_LEGACY_RENDERER_TEST
-#define SAMPLER_LOCK() pthread_mutex_lock(&g_rmu)
-#define SAMPLER_UNLOCK() pthread_mutex_unlock(&g_rmu)
-#else
-#define SAMPLER_LOCK() os_unfair_lock_lock(&g_rmu)
-#define SAMPLER_UNLOCK() os_unfair_lock_unlock(&g_rmu)
-#endif
 #define CHECK(c, ...) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } } while (0)
 
 enum { W = 4, H = 4, NUV = 9 };
@@ -48,9 +41,9 @@ static id<MTLTexture> g_tex;
 static void gpu_case(id<MTLComputePipelineState> p, int sid, const float B[4], int mask_on) {
     samp_par sp = {0}; sp.magf = 1; sp.minf = 1; sp.ws = sp.wt = sp.wr = 5; sp.lod_max = 0; memcpy(sp.border, B, 16);
     mtl_reg_samp(sid, &sp);
-    SAMPLER_LOCK();
+    os_unfair_lock_lock(&g_rmu);
     id<MTLSamplerState> s = samp_by_id(sid); int twin = g_sview_w[sid] != NULL; uint64_t rid = g_srid[sid], rid_w = twin ? g_srid_w[sid] : rid; float k[4]; memcpy(k, twin ? g_sbk[sid] : (float[4]){0}, 16);
-    SAMPLER_UNLOCK();
+    os_unfair_lock_unlock(&g_rmu);
     CHECK(s != nil, "sampler %d created", sid);
     int bn, bw; float kk[4]; const uint8_t w[3] = { 5, 5, 5 }; int want = nvn_border(B, w, 0, &bn, &bw, kk);
     CHECK(twin == want, "sampler %d: twin %d, nvn_border says %d", sid, twin, want);

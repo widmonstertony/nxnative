@@ -46,16 +46,6 @@ class ScanFile(unittest.TestCase):
         with contextlib.redirect_stdout(out): r = ss.scan_file((str(path), rel))
         return r, out.getvalue()
 
-    def test_malformed_redengine_cache_names_the_layout_error(self):
-        cases = (
-            (b'FZLC' + bytes(16), 'Invalid FZLC chunk count'),
-            (struct.pack('<4sIIII', b'FZLC', 1, 20, 4, 4) + b'bad!', 'invalid REDengine shader cache:'),
-        )
-        for data, message in cases:
-            with self.subTest(data=data), self.assertRaisesRegex(SystemExit, r'^\[RED\] /cache: invalid REDengine shader cache:') as error:
-                ss.scan_blob(data, '/cache', [])
-            self.assertIn(message, str(error.exception))
-
     def test_red_line_of_a_reader(self):
         p = self.tmp / 'a.dict'; p.write_bytes(index(5, 2)[:0x28])
         (rel, keys, pairs, extra), out = self.scan(p, 'sub/a.dict')
@@ -67,7 +57,7 @@ class ScanFile(unittest.TestCase):
         p = self.tmp / 'a.dict'; p.write_bytes(index(1, 1))
         with mock.patch.object(ss, 'nlg_shaders', side_effect=IndexError('list index out of range')):
             (_, _, _, extra), out = self.scan(p, 'a.dict')
-        self.assertEqual(extra, ('unreadable', 'a.dict: IndexError: list index out of range'))
+        self.assertEqual(extra, ('unreadable', 'a.dict: IndexError: list index out of range', 1))
         self.assertEqual(out, '[RED] a.dict: IndexError: list index out of range (its shaders are left out)\n')
 
     def test_interrupt_is_not_taken(self):

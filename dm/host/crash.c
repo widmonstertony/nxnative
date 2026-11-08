@@ -11,6 +11,12 @@
 #include <mach/mach.h>
 #include <stdatomic.h>
 #include <time.h>
+#if TARGET_OS_OSX
+#include <crt_externs.h>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#endif
 
 static _Atomic uint64_t g_watch_last_ns;
 static _Atomic uint64_t g_watch_count;
@@ -39,6 +45,28 @@ void crash_watch_frame(void) { if (atomic_load(&g_watch_pregame)) crash_watch_pr
 void crash_watch_pregame_done(void) { atomic_store(&g_watch_pregame, 0); }
 void crash_watch_pregame_again(void) { atomic_store(&g_watch_pregame, 1); }   // Back from a run to the front end: count progress by presented frames again (diag.c)
 void crash_dump_now(const char *why);
+#if TARGET_OS_OSX
+// Keep the output path as one argument: shell quoting breaks apostrophes and can
+// execute path contents, and a command buffer can truncate a long path.
+static int watch_sample(const char *path) {
+    char pid[32];
+    snprintf(pid, sizeof pid, "%d", (int)getpid());
+    char *argv[] = {"/usr/bin/sample", pid, "1", "-f", (char *)path, NULL};
+    posix_spawn_file_actions_t actions;
+    int error = posix_spawn_file_actions_init(&actions);
+    if (error) return -1;
+    error = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    if (!error) error = posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+    pid_t child;
+    if (!error) error = posix_spawn(&child, argv[0], &actions, NULL, argv, *_NSGetEnviron());
+    posix_spawn_file_actions_destroy(&actions);
+    if (error) return -1;
+    int status;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+#endif
 static void *watchdog_main(void *arg) {
     (void)arg;
     for (;;) {
@@ -61,7 +89,7 @@ static void *watchdog_main(void *arg) {
             if (g_wait_dump) g_wait_dump();   // State of all blocking wait points on the graphics side (registered when nvn_mtl.m initializes)
 #if TARGET_OS_OSX
             { const char *d = getenv("DM_WATCH_SAMPLE");   // Mac diagnostics: when stuck, sample itself for 1 second and write the thread stacks to this path
-              if (d) { char c[1200]; snprintf(c, sizeof c, "/usr/bin/sample %d 1 -f '%s' >/dev/null 2>&1", (int)getpid(), d); if (system(c)) LOG("watchdog: sampling failed"); else LOG("watchdog: thread stacks written to %s", d); } }
+              if (d) { if (watch_sample(d)) LOG("watchdog: sampling failed"); else LOG("watchdog: thread stacks written to %s", d); } }
 #endif
             _exit(128 + SIGALRM);
         }
@@ -99,8 +127,6 @@ void dm_backtrace(uint64_t fp) {
 static int (*g_fault_hook[MAX_FAULT_HOOK])(void *addr, int is_write, void *uc);
 static void (*g_write_prep[MAX_FAULT_HOOK])(void *addr, size_t len);
 static int g_nfault_hook, g_nwrite_prep;
-static void (*g_fault_diagnostic)(const void *);
-void dm_fault_diagnostic_register(void (*fn)(const void *)) { g_fault_diagnostic = fn; }
 void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc)) {
     if (g_nfault_hook >= MAX_FAULT_HOOK) die("too many page fault hooks");
     g_fault_hook[g_nfault_hook++] = fn;
@@ -155,21 +181,6 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     fprintf(stderr, "[dm] CRASH sig=%d", sig);
     off("addr", (uint64_t)si->si_addr); off("pc", uc->uc_mcontext->__ss.__pc); off("lr", uc->uc_mcontext->__ss.__lr);
     fprintf(stderr, " sp=%#llx\n", uc->uc_mcontext->__ss.__sp);
-    if (sig == SIGSEGV || sig == SIGBUS) {
-        fprintf(stderr, "[dm] fault si_code=%d esr=%#x write=%u\n", si->si_code,
-                uc->uc_mcontext->__es.__esr, (uc->uc_mcontext->__es.__esr >> 6) & 1);
-        vm_address_t a = (vm_address_t)si->si_addr;
-        vm_size_t size = 0; natural_t depth = 0;
-        vm_region_submap_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-        kern_return_t kr = vm_region_recurse_64(mach_task_self(), &a, &size, &depth,
-                (vm_region_recurse_info_t)&info, &count);
-        if (kr == KERN_SUCCESS)
-            fprintf(stderr, "[dm] fault VM region=%#llx..%#llx prot=%#x max=%#x submap=%d\n",
-                    (unsigned long long)a, (unsigned long long)a + size, info.protection, info.max_protection, info.is_submap);
-        else fprintf(stderr, "[dm] fault VM query failed=%d\n", kr);
-        if (g_fault_diagnostic) g_fault_diagnostic(si->si_addr);
-    }
     for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, uc->uc_mcontext->__ss.__x[i], i % 6 == 5 ? "\n" : " ");
     fprintf(stderr, "\n");
     // What the registers point at: the first six words of each readable target (read with vm_read_overwrite, which fails instead of faulting); a word inside a module prints as a module offset, so an object's vtable names its class
@@ -201,11 +212,6 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
 }
 // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)
 // The alternate stack is released when the thread exits: the pthread key destructor is called at thread exit (disable the alternate stack first, then free). The game frequently starts short-lived threads, and without releasing each one leaks 64 KiB.
-#if TARGET_OS_TV
-// tvOS does not expose sigaltstack. Keep ordinary signal diagnostics without
-// allocating an alternate stack or calling an unavailable platform API.
-void crash_thread_init(void) {}
-#else
 static pthread_key_t g_altstack_key;
 static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
 static void altstack_free(void *p) { stack_t off = {.ss_flags = SS_DISABLE}; sigaltstack(&off, 0); free(p); }
@@ -216,7 +222,6 @@ void crash_thread_init(void) {
     stack_t ss = {.ss_sp = malloc(65536), .ss_size = 65536}; sigaltstack(&ss, 0);
     pthread_setspecific(g_altstack_key, ss.ss_sp);
 }
-#endif
 void crash_install(void) {
     crash_thread_init();
     struct sigaction sa = {.sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_ONSTACK};

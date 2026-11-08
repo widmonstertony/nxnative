@@ -94,82 +94,14 @@ No `patches.py`.
   4.0.0 copy was damaged ([Scarlet, Files and builds](../0100A3D008C5C000/README.md#files-and-builds));
   whether Violet's is intact has not been checked.
 - Outdoor exploration and battles have not been validated, as on Scarlet.
+- [The freeze in Trinity's rendezvous](../../../docs/reference/threads.md#trinitys-rendezvous-loses-its-release-on-apple-cores)
+  was reported here too, by its return addresses only. No main of this game is
+  on the drive, so whether its completer matches the rewriter's rule is unchecked.
 - [Conservative rasterization](../../../docs/reference/rendering.md#conservative-rasterization-remains-unimplemented)
   is unimplemented, as on Scarlet.
 
 ## Found on this game
 
-Nothing new: the findings are Scarlet's ([Found on this game](../0100A3D008C5C000/README.md#found-on-this-game)).
+The other findings are Scarlet's ([Found on this game](../0100A3D008C5C000/README.md#found-on-this-game)).
 
-## iOS 16/17 fork observations
-
-# Pokemon Violet
-
-Current preparation: owned update 4.0.0, main build `709bfd66115298640155fcc4979dba15`, SDK 13.3.13, plus two add-on licences. The RomFS/code survey is complete; no playable profile is registered here. The provisional profile, shader work, IPA and gameplay/device validation remain open.
-
-Two exact-build observation sites adapt the camera and HUD to the actual window. Reference: the author's [Violet ultrawide source patch](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods). The camera observation follows the original `LDR S16,[x19,#0x190]` and multiplies its saved scalar lane by `device aspect / (16/9)`. The HUD observation redirects saved x8 before the original two LDP instructions, using thread-local storage instead of changing the original table. There are no runtime executable writes or borrowed code caves. The source patch's separate NOP at `main+0x1526d64` is not carried over: its role is unverified, and the owned binary has a live stack store there.
-
-The saved-frame layout was checked against `entry.S`: Q registers begin at byte 256, with NZCV/FPSR/FPCR after byte 768. Callback tests cover 76:35, 683:512 and 4:3, verify exact module/gate guards, and verify every other GPR/SIMD/flags byte stays unchanged. Instruction-level rewrite and actual device display validation must pass before declaring fullscreen complete.
-
-Frame timing, 120 fps, internal resolution scaling and interpolation are still open. The shared input surface keeps every native button and keyboard direction; compilation does not certify game compatibility.
-
-### Air update 4.0.0: startup after the shared fonts load
-
-The Air startup log reached the standard shared font and then aborted at
-`nn::bluetooth::InitializeBle` when the SDK tried to open the Horizon `bt`
-service. This matches [nxnative issue #207](https://github.com/seedds/nxnative/issues/207).
-The host backports the offline BLE hooks from `62be7fa`: scans find no
-accessory and events never fire. Pokémon GO Plus + is unavailable; this
-does not use the iPhone Bluetooth radio. All 15 hook names were found in
-the existing Violet framework. The signed Air update keeps the original
-game frameworks and assets; entering the title screen is still unverified.
-
-### M2 iPad update 4.0.0
-
-On iPadOS 16.1, the 60.83 game framework keeps the existing signed guest
-code and the installed ROM. It binds to the legacy Metal shader chain
-`b-a3a5cfdab59c`, whose 35,937 base shader libraries were validated before
-delivery. The two shared fonts and the chain's uniform tables are installed
-with the packed library. The same offline BLE fix that unblocks startup on
-Air is linked into the iPad host.
-
-The renderer also reads raster companion sources and the legacy image-atomic
-validation copy from the loose shader directory. The base shader image alone
-does not provide those paths. The pre-repair run loaded the shader image
-and reached the save mount, but rejected affected render pipelines.
-
-
-The 60.83 M2 test opened the title, entered the starting bedroom and
-accepted controller input, but models were stretched across the scene.
-Violet's capture shader uses the same reflected 64-byte vertex argument at
-slot 14 as Z-A. The 60.84 renderer binds that argument when the shader
-declares it. The signed update replaced only the host and was installed in
-place on iPadOS 16.1; the existing ROM and save inventory were verified
-before and after. The isolated test save was mounted on 60.84, but the app
-left the foreground before a new gameplay frame could be checked.
-
-The 60.84 log also showed the verified Violet 2D image-atomic shader still
-being rejected at draw time. The 60.85 candidate allows only its already
-validated read-only border constants through the runtime guard. Texture
-format and alias checks remain in effect. This candidate was built and
-signed; hardware verification is pending.
-
-### M2 iPad: uncapped render timing candidate
-
-Violet 4.0.0 (main build `709bfd66115298640155fcc4979dba15`) has separate
-controls for the presentation interval and the game clock. The timing
-candidate leaves rendering uncapped with `DM_FRAME_LIMIT=unlimited` and
-`DM_PRESENT_INTERVAL=game`; `DM_VIOLET_FPS_MODE=dynamic` makes the engine
-consume measured active frame time instead of a fixed duration each frame.
-`DM_VIOLET_TIMING=1` enables diagnostics and live A/B changes; `game`
-restores the original timing table. Existing ROM, shaders and saves do not
-need to be transferred again. This requires a host with the timing callback
-and a 4.0.0 game framework rewritten with both timing gates.
-
-The 60.86 device update and the per-game timing settings were verified in
-place. The original instructions and duration table are checked before arming.
-Local tests exercise variable 30, 60, 86 and 120 fps, verify that the
-consumed game clock tracks active elapsed time, and cover an absent gate,
-a paused channel and restoration of the original table. Actual movement,
-jump height, animations and battle timing on M2 still require device
-verification. A [fixed 60 fps mod was reported to alter jump height](https://github.com/seedds/nxnative/issues/436).
+- [Bluetooth LE at boot](../../../docs/reference/services.md#bluetooth-le-at-boot): 3.0.1 (`v720896`, a derived profile) calls `nn::bluetooth::InitializeBle` a second after boot and aborted without the `bt` service; the host answers the BLE calls offline (resolved).

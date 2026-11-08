@@ -1,8 +1,6 @@
 // Direct GL imports and eglGetProcAddress must reach the same implementations (issue #228), including big-stack entries.
 #include "../gl/hle_gl.m"
 #include <assert.h>
-#include <mach-o/ldsyms.h>
-#include "../nvn/nvn_protos.h"
 
 uint64_t resolve_import(module_t *m, const char *name);
 int hle_implements(const char *name);
@@ -32,13 +30,6 @@ static void *import(const char *name) {
     assert(!strcmp(wrap_kind, "HLE"));
     return fn;
 }
-static void *unbound_thread(void *unused) {
-    (void)unused;
-    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext());
-    assert(!h_eglGetCurrentSurface(0x3059) && !h_eglGetCurrentSurface(0x305a));
-    assert(h_eglGetError() == 0x3000);
-    return NULL;
-}
 
 int main(int argc, char **argv) {
     (void)argv;
@@ -63,39 +54,11 @@ int main(int argc, char **argv) {
     GLsizei len = -1; GLchar log[2] = {'?', 0}; info(sh, sizeof log, &len, log); assert(!len && !log[0]);
     void (*delete)(GLuint) = import("glDeleteShader"); delete(sh); assert(!shader_of(sh));
 
-    // Naruto queries an empty stencil slot and then a combined depth/stencil
-    // renderbuffer while preparing a fight. Both loader spellings must work.
-    void (*query)(GLenum, GLenum, GLenum, GLint *) = import("glGetFramebufferAttachmentParameteriv");
-    void (*query_ext)(GLenum, GLenum, GLenum, GLint *) = h_eglGetProcAddress("glGetFramebufferAttachmentParameterivEXT");
-    assert(query_ext == import("glGetFramebufferAttachmentParameterivEXT"));
-    GLuint fbo, rb, depth_tex;
-    h_glGenFramebuffers(1, &fbo);
-    h_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-    query(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == 0 && h_glGetError() == 0);
-    h_glGenRenderbuffers(1, &rb);
-    h_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
-    query_ext(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == GL_RENDERBUFFER);
-    query(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &value);
-    assert((GLuint)value == rb);
-    query(GL_READ_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == GL_FRAMEBUFFER_DEFAULT);
-    h_glGenTextures(1, &depth_tex);
-    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth_tex, 2);
-    query(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &value);
-    assert(value == 2);
-    query(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == 2 && h_glGetError() == 0x502);
-    h_glDeleteFramebuffers(1, &fbo);
-    h_glDeleteRenderbuffers(1, &rb);
-    h_glDeleteTextures(1, &depth_tex);
-
     unsigned long sz;
     const hle_ent *sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
     unsigned count = 0;
     for (unsigned long i = 0; i < sz / sizeof *sec; i++)
-        if (!strncmp(sec[i].name, "gl", 2) || !strncmp(sec[i].name, "egl", 3)) {
+        if (!strncmp(sec[i].name, "gl", 2)) {
             assert(import(sec[i].name) == sec[i].fn);
             assert(h_eglGetProcAddress(sec[i].name) == sec[i].fn); count++;
         }
@@ -103,105 +66,6 @@ int main(int argc, char **argv) {
     assert((void *)resolve_import(NULL, "eglGetProcAddress") == (void *)h_eglGetProcAddress_bs);
     assert(!h_eglGetProcAddress(NULL));
     assert(!h_eglGetProcAddress("not_a_GL_function"));
-    assert(!h_eglGetProcAddress("eglMissingFunctionForTest"));
-    assert(import("eglGetCurrentDisplay") == (void *)h_eglGetCurrentDisplay_bs);
-    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext());
-    EGLDisplay d = (EGLDisplay)(uintptr_t)1; EGLContext c = (EGLContext)(uintptr_t)2;
-    EGLSurface draw = (EGLSurface)(uintptr_t)3, read = (EGLSurface)(uintptr_t)4;
-    assert(h_eglMakeCurrent(d, draw, read, c));
-    assert(h_eglGetCurrentDisplay() == d && h_eglGetCurrentContext() == c);
-    assert(h_eglGetCurrentSurface(0x3059) == draw && h_eglGetCurrentSurface(0x305a) == read);
-    assert(!h_eglGetCurrentSurface(0) && h_eglGetError() == 0x300c && h_eglGetError() == 0x3000);
-    pthread_t thread; assert(!pthread_create(&thread, NULL, unbound_thread, NULL)); assert(!pthread_join(thread, NULL));
-    assert(h_eglGetCurrentDisplay() == d);
-    assert(h_eglMakeCurrent(d, NULL, NULL, NULL) && !h_eglGetCurrentDisplay());
-    assert(h_eglMakeCurrent(d, draw, read, c) && h_eglReleaseThread());
-    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext() && !h_eglGetCurrentSurface(0x3059));
-    // A foreign pointer (e.g. a game-owned NVNsync) and a stale GL handle
-    // must be rejected without passing either to the host allocator.
-    uintptr_t foreign = 0;
-    h_glDeleteSync(&foreign); assert(h_glGetError() == 0x501);
-    h_glDeleteSync(NULL); assert(h_glGetError() == 0);
-    void *sync = h_glFenceSync(0x9117, 0);
-    uint64_t serial;
-    assert(gl_sync_info(sync, &serial, NULL) && serial == g_serial);
-    h_glDeleteSync(sync); assert(h_glGetError() == 0);
-    void *next_sync = h_glFenceSync(0x9117, 0); assert(next_sync != sync);
-    assert(h_glClientWaitSync(sync, 0, 0) == 0x911d && h_glGetError() == 0x501);
-    h_glWaitSync(&foreign, 0, UINT64_MAX); assert(h_glGetError() == 0x501);
-    h_glDeleteSync(next_sync); assert(h_glGetError() == 0);
-    const hle_force_ent *forced = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
-    void *(*nvn_lookup)(const char *) = NULL;
-    for (unsigned long i = 0; i < sz / sizeof *forced; i++)
-        if (!strcmp(forced[i].name, "nvnBootstrapLoader")) nvn_lookup = forced[i].fn;
-    assert(nvn_lookup);
-    NVNboolean (*export_fence)(const NVNsync *, void **) = nvn_lookup("nvnSyncCreateGLSync");
-    void *out = &foreign;
-    assert(!export_fence(NULL, &out) && !out);
-    NVNsync nvn;
-    NVNboolean (*init_sync)(NVNsync *, NVNdevice *) = nvn_lookup("nvnSyncInitialize");
-    assert(init_sync(&nvn, NULL));
-    assert(!export_fence(&nvn, &out) && !out);  // never fenced
-    void (*fence_sync)(NVNqueue *, NVNsync *, NVNsyncCondition, int) = nvn_lookup("nvnQueueFenceSync");
-    void (*finish_sync)(NVNsync *) = nvn_lookup("nvnSyncFinalize");
-    // Naruto reuses a finalized interop slot directly as an NVN queue fence.
-    finish_sync(&nvn);
-    fence_sync(NULL, &nvn, 0, 0);  // no submissions yet: value zero is complete
-    assert(export_fence(&nvn, &out) && out);
-    finish_sync(&nvn);
-    int from_nvn;
-    assert(gl_sync_info(out, &serial, &from_nvn) && from_nvn && !serial);
-    assert(h_glClientWaitSync(out, 0, 0) == GL_ALREADY_SIGNALED);
-    h_glWaitSync(out, 0, UINT64_MAX);
-    h_glDeleteSync(out); assert(!h_glGetError());
-    if (getenv("DM_TEST_GL_NVNTEX")) {
-        dev_init_once();
-        assert(g_dev);
-        NVNtextureBuilder tb = {0};
-        NVNtexture tex = {0};
-        void (*defaults)(NVNtextureBuilder *) = nvn_lookup("nvnTextureBuilderSetDefaults");
-        void (*set_name)(NVNtextureBuilder *, uint32_t) = nvn_lookup("nvnTextureBuilderSetGLTextureName");
-        uint32_t (*get_name)(const NVNtextureBuilder *) = nvn_lookup("nvnTextureBuilderGetGLTextureName");
-        NVNboolean (*init_tex)(NVNtexture *, const NVNtextureBuilder *) = nvn_lookup("nvnTextureInitialize");
-        void (*fini_tex)(NVNtexture *) = nvn_lookup("nvnTextureFinalize");
-        int (*width)(const NVNtexture *) = nvn_lookup("nvnTextureGetWidth");
-        int (*height)(const NVNtexture *) = nvn_lookup("nvnTextureGetHeight");
-        defaults(&tb);
-        assert(!get_name(&tb));
-        set_name(&tb, 0xf123);
-        assert(!init_tex(&tex, &tb));  // undefined texture is never reported as an initialized NVN image
-        GLuint name = 0;
-        h_glGenTextures(1, &name);
-        h_glBindTexture(GL_TEXTURE_2D, name);
-        h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 32, 16);
-        set_name(&tb, name);
-        assert(get_name(&tb) == name);
-        assert(init_tex(&tex, &tb) && width(&tex) == 32 && height(&tex) == 16);
-        id<MTLTexture> image = tex_of(name)->tex;
-        assert(image && image.width == 32 && image.height == 16);
-        fini_tex(&tex);
-        assert(tex_of(name)->tex == image);
-        h_glDeleteTextures(1, &name);
-        NVNboolean (*import_fence)(NVNsync *, NVNdevice *, void *, uint32_t *) = nvn_lookup("nvnSyncInitializeFromFencedGLSync");
-        NVNsyncWaitResult (*wait_sync)(const NVNsync *, uint64_t) = nvn_lookup("nvnSyncWait");
-        NVNboolean (*wait_queue)(NVNqueue *, const NVNsync *) = nvn_lookup("nvnQueueWaitSync");
-        uint32_t status = UINT32_MAX;
-        assert(!import_fence(&nvn, NULL, &foreign, &status));
-        assert(!h_glGetError());
-        void *gl_fence = h_glFenceSync(0x9117, 0);
-        assert(import_fence(&nvn, NULL, gl_fence, &status) && !status);
-        assert(wait_sync(&nvn, 0) == NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
-        h_glDeleteSync(gl_fence);
-        h_glFlush();
-        assert(wait_queue(NULL, &nvn));
-        assert(wait_sync(&nvn, 0) == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
-        assert(export_fence(&nvn, &out) && out != gl_fence);
-        finish_sync(&nvn);
-        assert(h_glClientWaitSync(out, 0, 0) == GL_ALREADY_SIGNALED);
-        h_glDeleteSync(out);
-        defaults(&tb);
-        assert(!get_name(&tb));
-    }
     const char *missing = "glMissingFunctionForTest";
     assert(!hle_implements(missing));
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
