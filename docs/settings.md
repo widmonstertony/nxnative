@@ -235,7 +235,7 @@ Turn off **Show this window at launch** to start the game at once with your choi
 
 ## Cloud saves
 
-A build signed for the shared iCloud container syncs supported games automatically on iPhone, iPad, Mac and Apple TV. Sign in to the same iCloud account on each device. The game checks for your save as it starts and sends committed progress in the background. Play can continue offline; pending progress is tried again after the next save, background flush, or launch. When two devices save separately, a replaced copy is backed up locally. If iCloud has a newer copy while a game is running, the game keeps the local session intact and checks again at the next launch.
+A build signed for the shared iCloud container syncs supported games automatically on iPhone, iPad, Mac and Apple TV. Sign in to the same iCloud account on each device. The game checks for your save as it starts and sends committed progress in the background. Play can continue offline; pending progress is tried again after the next save, background flush, or launch. When two devices make separate changes, both copies are kept until an explicit choice; the automatic settings row does not yet offer a conflict picker. A copy replaced by an explicit choice is backed up locally. If iCloud has a newer copy while a game is running, the game keeps the local session intact and checks again at the next launch.
 
 Automatic sync currently covers games that use the native host save mounts. Engines with separate save folders require a dedicated integration. Each title syncs its own progress; game files, shaders, and controller settings are local. An existing legacy-folder copy is not imported directly: start with the latest progress on the device that already has it.
 

@@ -2,17 +2,20 @@
 #import <CloudKit/CloudKit.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <Foundation/Foundation.h>
+#import <TargetConditionals.h>
 #include <stdio.h>
 #include <string.h>
 #include "save_sync.h"
 
 static NSString *container_name(void) {
     NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMCloudSaveContainer"];
+#if TARGET_OS_OSX
     // The Mac game's helper executable inherits this from its signed launcher.
     if (![name isKindOfClass:NSString.class] || !name.length) {
         const char *v = getenv("DM_CLOUDKIT_CONTAINER");
         if (v) name = [NSString stringWithUTF8String:v];
     }
+#endif
     return [name isKindOfClass:NSString.class] && [name hasPrefix:@"iCloud."] ? name : nil;
 }
 

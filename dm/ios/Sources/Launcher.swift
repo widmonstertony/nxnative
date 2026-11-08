@@ -19,6 +19,18 @@ private struct CloudSavesSection: View {
     @State private var picking = false
 
     var body: some View {
+        if (info("DMCloudSaveContainer") as? String)?.hasPrefix("iCloud.") == true {
+            Section {
+                LabeledContent("Cloud saves", value: "Automatic")
+            } footer: {
+                Text("Syncs with devices signed in to the same iCloud account. No folder to choose.")
+            }
+        } else {
+            folderSection
+        }
+    }
+
+    private var folderSection: some View {
         Section {
             HStack {
                 Text("Cloud saves")

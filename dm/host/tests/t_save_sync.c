@@ -42,7 +42,6 @@ static void mkd(const char *p) { char c[1200]; snprintf(c, sizeof c, "%s", p); f
 static void set_mtime(const char *p, time_t t) { struct timeval tv[2] = {{t, 0}, {t, 0}}; utimes(p, tv); }
 static time_t mtime_of(const char *p) { struct stat st; return stat(p, &st) ? 0 : st.st_mtimespec.tv_sec; }
 static int exists(const char *p) { return !access(p, F_OK); }
-
 // A private database fixture exercises the native transport path without
 // touching a real iCloud account. Expected hashes model a concurrent writer.
 static const char *mock_db, *mock_account;
@@ -340,33 +339,38 @@ int main(void) {
     backup_of(X, "cloud", back, sizeof back); snprintf(q, sizeof q, "%s/save/game.dat", back);
     CHECK(*back && same(q, "y3"), "and the iPhone's save it replaced is kept on the Mac (%s)", back);
 
-    printf("(15) private iCloud transport with current conflict rules\n");
+    printf("(15) automatic private cloud saves\n");
     const char *scope_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", *scope_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    char db[1200], cloud_a[1400], cloud_b[1400], data[1400], peer[1200], local[1200];
+    char db[1200], cloudA[1400], cloudB[1400], data[1400], peer[1200], local[1200];
     snprintf(db, sizeof db, "%s/cloudkit", root); mock_db = db;
-    snprintf(cloud_a, sizeof cloud_a, "%s/cksave/%s/%s/save.dmsync", db, scope_a, id);
-    snprintf(cloud_b, sizeof cloud_b, "%s/cksave/%s/%s/save.dmsync", db, scope_b, id);
+    snprintf(cloudA, sizeof cloudA, "%s/cksave/%s/%s/save.dmsync", db, scope_a, id);
+    snprintf(cloudB, sizeof cloudB, "%s/cksave/%s/%s/save.dmsync", db, scope_b, id);
     snprintf(local, sizeof local, "%s/native/save", root); mkd(local);
     snprintf(peer, sizeof peer, "%s/peer/save", root); mkd(peer);
-    snprintf(data, sizeof data, "%s/game.dat", local); put(data, "initial");
+    snprintf(data, sizeof data, "%s/game.dat", local); put(data, "initial"); set_mtime(data, 1700000000);
     unsetenv("DM_SAVE_SYNC"); mock_account = scope_a;
-    CHECK(save_sync_after_exit(local, id) && cloud_has(cloud_a, root, "game.dat", "initial"), "CloudKit uses the configured private database without a folder");
+    CHECK(save_sync_after_exit(local, id) && cloud_has(cloudA, root, "game.dat", "initial"), "automatic sync uploads to the current account without a chosen folder");
     mock_account = scope_b;
-    CHECK(save_sync_after_exit(local, id) && cloud_has(cloud_b, root, "game.dat", "initial"), "a different iCloud account has a separate sync base");
-    mock_account = scope_a; put(data, "unsent");
+    CHECK(save_sync_after_exit(local, id) && cloud_has(cloudB, root, "game.dat", "initial"), "a different account has separate sync state and a separate record");
+    mock_account = scope_a; put(data, "unsent"); set_mtime(data, 1700000010);
     mock_race = 1;
-    CHECK(!save_sync_after_exit(local, id) && same(data, "unsent") && cloud_has(cloud_a, root, "game.dat", "initial"), "a rejected conditional write preserves both saves");
+    CHECK(!save_sync_after_exit(local, id) && same(data, "unsent") && cloud_has(cloudA, root, "game.dat", "initial"), "a conditional write rejected by the database preserves the local save");
     mock_race = 0;
-    CHECK(session(peer, NULL, "game.dat", "peer progress") == 0 && cloud_has(cloud_a, root, "game.dat", "peer progress"), "the peer pulls before it publishes new progress");
-    CHECK(!save_sync_after_exit(local, id) && same(data, "unsent"), "an exit does not overwrite a cloud revision that changed");
-    CHECK(run(local, NULL, NULL, NULL, "ask", NULL, READABLE) == NOT_SENT && same(data, "unsent") && cloud_has(cloud_a, root, "game.dat", "peer progress"), "both changed: an unanswered choice keeps both saves");
-    CHECK(run(local, NULL, NULL, NULL, choice_of("cloud", cloud_a), NULL, READABLE) == 0 && same(data, "peer progress"), "the chosen cloud revision comes in");
-    backup_of(local, "local", back, sizeof back); snprintf(q, sizeof q, "%s/save/game.dat", back);
-    CHECK(*back && same(q, "unsent"), "the local copy is backed up before replacement");
+    CHECK(session(peer, NULL, "game.dat", "newer") == 0 && cloud_has(cloudA, root, "game.dat", "newer"), "another device can publish newer progress");
+    CHECK(!save_sync_after_exit(local, id) && same(data, "unsent") && cloud_has(cloudA, root, "game.dat", "newer"), "a stale local upload does not overwrite newer progress");
+    CHECK(session(local, NULL, NULL, NULL) == NOT_SENT && same(data, "unsent") && cloud_has(cloudA, root, "game.dat", "newer"),
+          "the next launch keeps both divergent saves until there is an explicit choice");
+    CHECK(run(local, NULL, NULL, NULL, choice_of("cloud", cloudA), NULL, READABLE) == 0 && same(data, "newer"),
+          "choosing the exact cloud revision restores it");
+    CHECK(session(peer, NULL, "game.dat", "next") == 0 && cloud_has(cloudA, root, "game.dat", "next"),
+          "a second device can send another revision");
+    CHECK(session(local, NULL, NULL, NULL) == 0 && same(data, "next"),
+          "an unchanged local save automatically pulls the newer cloud revision");
+    backup_of(local, "local", back, sizeof back); snprintf(p, sizeof p, "%s/save/game.dat", back);
+    CHECK(*back && same(p, "unsent"), "the replaced local copy is backed up");
     mock_account = NULL;
-    CHECK(!save_sync_after_exit(local, id) && same(data, "peer progress"), "an unavailable account leaves the committed save local");
+    CHECK(!save_sync_after_exit(local, id) && same(data, "next"), "iCloud account unavailable leaves the save local and reports that sync is pending");
     mock_db = NULL;
-
     printf("== save sync: %d checks, %d failed ==\n", checks, fails);
     if (!fails) { char c[1200]; snprintf(c, sizeof c, "rm -rf '%s'", root); system(c); }
     return fails != 0;

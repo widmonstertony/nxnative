@@ -4,12 +4,12 @@ Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game
 
 It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
 
-Switch 2 games have started too: [Donkey Kong Bananza](dm/games/040074A01BF12000/README.md), [Splatoon Raiders](dm/games/0400380020056000/README.md), [Fire Emblem Fortune's Weave](dm/games/04007EF01F8AE000/README.md), [Pokémon Pokopia](dm/games/0400A3A01EE4C000/README.md), [Hyrule Warriors: Age of Imprisonment](dm/games/04003F40232DE000/README.md), [Mario Kart World](dm/games/0400C3F00006E000/README.md) and [Mario Tennis Fever](dm/games/0400D4201C6EA000/README.md) play on the Mac, packed from one [`.nup` file](#switch-2-games) or a dump of the game; iPhone and iPad are untested.
+Switch 2 games have started too: [Donkey Kong Bananza](dm/games/040074A01BF12000/README.md), [Splatoon Raiders](dm/games/0400380020056000/README.md), [Fire Emblem Fortune's Weave](dm/games/04007EF01F8AE000/README.md), [Pokémon Pokopia](dm/games/0400A3A01EE4C000/README.md), [Hyrule Warriors: Age of Imprisonment](dm/games/04003F40232DE000/README.md), [Mario Kart World](dm/games/0400C3F00006E000/README.md) and [Mario Tennis Fever](dm/games/0400D4201C6EA000/README.md) play on the Mac, packed from one [`.nup` file](#switch-2-games) or a dump of the game; the upstream results are Mac results. See the TonTon device checks below.
 
 ## TonTon Gamebox build tracks
 
 - **New builds:** this `main` integrates [nxnative upstream `eddae74f`](https://github.com/seedds/nxnative/commit/eddae74f39fefda00f4117700136fef5456821f3). Use a separate checkout at the selected commit and a new per-title job directory. See [the Rust build workflow](docs/tonton-new-builds.md).
-- **Installed and in-progress titles:** keep the exact engine, shader chain and artifact set already recorded by each job. The [pre-sync compatibility source](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5) and [iPadOS 16.1/17 maintenance branch](https://github.com/widmonstertony/nxnative/tree/ios16-ios17-compat) retain the legacy renderer and TonTon device work. This merge does not port those changes into the new engine, change a device install, or reuse an old shader cache.
+- **Installed and in-progress titles:** keep the exact engine, shader chain and artifact set already recorded by each job. The [pre-sync compatibility source](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5) and [iPadOS 16.1/17 maintenance branch](https://github.com/widmonstertony/nxnative/tree/ios16-ios17-compat) retain the legacy renderer and TonTon device work. The new engine and the compatibility engine keep separate shader caches and build receipts. Source updates do not update an installed engine.
 
 ## TonTon Gamebox: game fixes and verification
 
@@ -26,10 +26,10 @@ MetalFX path: local GPU validation covered both 1280×720 and 960×540 input,
 including color and aspect-ratio bars. Deployment and game-by-game validation
 of that renderer on iPad are pending.
 
-On M2, build 60.86 is installed in place. Pokémon Violet 4.0.0 and
-Pokémon Legends: Z-A now select uncapped rendering with a separate
-elapsed-time game clock. The settings and retained game data were read
-back; gameplay speed still needs device verification.
+M2 build 60.86 introduced uncapped rendering with a separate elapsed-time
+game clock for Pokémon Violet 4.0.0 and Pokémon Legends: Z-A. Settings
+and retained game data were read back; normal simulation speed still needs
+a gameplay check.
 
 The M2 delivery also trialed a targeted Metal 3 mesh fix for Ocarina of
 Time and Mario Kart World. It turns an invalid generated triangle into a
@@ -37,17 +37,23 @@ degenerate triangle without changing valid indices or the shader
 argument layout. The four Ocarina libraries and the two Kart libraries
 with matching descriptors were read back on-device with rollback copies
 retained. This is an installation result: Ocarina's first 3D scene and
-Kart race stability and frame rate remain open.
+Kart race stability and frame rate remain open. The old iPad's Kart game data is present, but the runnable framework is still missing.
 
 | Game | What this fork changed | Verified result and open issues |
 | --- | --- | --- |
 | Mario Kart World | Restored movie texture views, terrain uploads and sparse mappings; fixed black scenery with conditional clears; reduced upload and pipeline work; restored Air's 60 Hz pacing ([movie](https://github.com/widmonstertony/nxnative/commit/3d0a3a0), [clears](https://github.com/widmonstertony/nxnative/commit/381ed5f), [upload cache](https://github.com/widmonstertony/nxnative/commit/e221694), [pacing](https://github.com/widmonstertony/nxnative/commit/e847a4c)) | Air player confirmed the black scenery was gone, but reported low race performance and intermittent race-entry crashes. Air logs still show 1080p input to MetalFX even in handheld mode. On M2, free roam rendered in a prior test; mesh faults and race performance remain open. |
-| Zelda: Ocarina of Time | Corrected opening movie decoding on Metal 3 and handled the offline play-report request that aborted at the end of the opening ([movie](https://github.com/widmonstertony/nxnative/commit/4f25737), [M2](https://github.com/widmonstertony/nxnative/commit/ed552f8), [Air](https://github.com/widmonstertony/nxnative/commit/4ecd063)) | M2 60.62 reaches the save list, but loading the forest save still faults in a GPU render pass. The Air fix is installed; completion of the affected section has not been reverified by the player. |
+| Zelda: Ocarina of Time | Corrected opening movie decoding on Metal 3 and handled the offline play-report request that aborted at the end of the opening ([movie](https://github.com/widmonstertony/nxnative/commit/4f25737), [M2](https://github.com/widmonstertony/nxnative/commit/ed552f8), [Air](https://github.com/widmonstertony/nxnative/commit/4ecd063)) | M2 60.90 installed the [scoped 60 Hz pacing fix](https://github.com/widmonstertony/nxnative/pull/3) and reached the title in an isolated device test; the forest save and first controllable 3D scene are still unverified on that build. Air previously reached the title; the player later reported a crash. |
 | Zelda: Tears of the Kingdom | Restored missing shared-font assets; exposed a real 3D render-scale control and corrected the FPS overlay toggle for data-only games ([controls](https://github.com/widmonstertony/nxnative/commit/86e676d), [overlay](https://github.com/widmonstertony/nxnative/commit/acb19b6)) | Air player confirmed the game opened and later reported less stutter and no FPS overlay. Sustained 60 fps has not been verified. |
 | Pokémon Violet | Restored the shared fonts and offline Pokémon GO Plus + startup; on legacy Metal, bound the existing iPad game framework to its validated shader chain and supplied the matching raster and image-atomic companions. | M2 60.84 is installed with the existing 4.0.0 ROM and saves verified unchanged. The legacy character capture binding is included; the post-load scene still needs verification. See the [device test notes](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5/dm/games/01008F6008C5E000/README.md#m2-ipad-update-400) for the scope of verification. Air title entry still needs a player retest. The [uncapped timing candidate](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5/dm/games/01008F6008C5E000/README.md#m2-ipad-uncapped-render-timing-candidate) passed local clock tests; device gameplay is pending. |
 | Pokémon Legends: Z-A, Switch 2 Edition | Bound the newer transform-feedback parameters on legacy Metal without changing shaders using the old ABI. Earlier repairs filled missing Metal 3 shader variants and added a Metal 4 compute archive path ([shader loading](https://github.com/widmonstertony/nxnative/commit/2d1396b), [pipeline cache](https://github.com/widmonstertony/nxnative/commit/d24d7c2)) | M2 build 60.82 restored the third-person player model in the same hotel room and save where 60.81 omitted it. Camera rotation and player movement were checked on the device; later city scenes were not part of this check. The uncapped timing path has a local regression test; player movement speed in the reported scene still needs an A/B check. |
+| Hyrule Warriors: Age of Imprisonment | New build uses the upstream field and shader fixes below. | The Air shader build and signed candidate are complete locally. The full game image has not been imported or launched on Air. |
+| Fate/Samurai Remnant | Resumable shader compilation and validated transfer batches. | A completed batch is staged; the full Air build and first launch are still pending. |
+| Crisis Core: Final Fantasy VII Reunion | Adjusted Air address-space reservation and added an M2 renderer repair for buffer atomics. | Air reached the title and later passed the previously crashing scene, with stutter reported. On M2, 20 runtime components were installed and read back with the existing ROM and saves intact; gameplay on that build is unverified. |
+| Animal Crossing: New Horizons | Restored the missing M2 runtime components for the existing game data. | Eight runtime components were installed and read back on M2; gameplay on that build is unverified. The Air player confirmed the title launched. |
+| Pokkén Tournament DX | Repaired the old iPad's rendering path for its existing installation. | Old iPad 60.97 reached the training HUD; fighters were still missing. This is not a gameplay pass. |
+| NieR:Automata | Tracked separately on the legacy renderer. | Old iPad game data is present; the A10X runtime is still missing. |
 | Pokémon Pokopia | Restored missing graphics libraries and fixed Switch 2 virtual microphone enumeration ([service fix](https://github.com/widmonstertony/nxnative/commit/646c4ab)) | Reached gameplay in device testing; the player reported character-preview rendering defects on Air and M2. |
-| The Witcher 3 | Repaired Air startup after tracing the executable's address-space reservation; verified the exact installed framework ([Air repair](https://github.com/widmonstertony/nxnative/commit/33b0df4)) | Air player confirmed title/game entry. M2 character materials still render incorrectly in some scenes. |
+| The Witcher 3 | Repaired Air startup after tracing the executable's address-space reservation; verified the exact installed framework ([Air repair](https://github.com/widmonstertony/nxnative/commit/33b0df4)) | Air player confirmed title/game entry. M2 character materials still render incorrectly in some scenes. Old iPad game data is present; its A10X runtime is still missing. |
 | Naruto Shippuden: Ultimate Ninja Storm 4 | Fixed the OpenGL ES startup path, framebuffer queries, and NVN/GL texture and fence sharing ([startup](https://github.com/widmonstertony/nxnative/commit/f691081), [framebuffer](https://github.com/widmonstertony/nxnative/commit/2eddd56), [texture sharing](https://github.com/widmonstertony/nxnative/commit/175301f)) | Air player reached battle on one build. Later reports of black characters and another battle-entry crash are still open. |
 | Fate visual novels | Repaired native OpenGL framebuffer entry points needed during story initialization ([framebuffer aliases](https://github.com/widmonstertony/nxnative/commit/845c721)) | Air player verified both title screens display at the correct size and Hollow Ataraxia can enter the story. This does not cover the rest of each title. |
 | Need for Speed Hot Pursuit Remastered | Fixed initial texture content, race button mapping, audio buffering and elapsed game time ([textures](https://github.com/widmonstertony/nxnative/commit/ffed898), [input and audio](https://github.com/widmonstertony/nxnative/commit/16cecc6), [timing](https://github.com/widmonstertony/nxnative/commit/d59fd00)) | Device gameplay confirmed; no long race performance guarantee. |
@@ -58,11 +64,25 @@ Library changes include [private CloudKit save transport](https://github.com/wid
 [independent game engines](https://github.com/widmonstertony/nxnative/commit/2798a14),
 [verified single-file shader images](https://github.com/widmonstertony/nxnative/commit/b51852e),
 and [Air game-paced presentation](https://github.com/widmonstertony/nxnative/commit/75f30d7).
-CloudKit cross-platform delivery is tracked separately from code integration:
-the Mac and Apple TV builds must use the same private container and environment
-as the mobile builds, and live save exchange on those devices remains to be verified.
+The [private CloudKit setup](docs/tonton-cloudkit.md) reuses the same
+per-account container for iPhone, iPad, Mac and the Apple TV compatibility
+build. Automatic synchronization needs no iCloud Drive folder.
 
-M2 build 60.90 subsequently installed the [scoped Ocarina pacing fix](https://github.com/widmonstertony/nxnative/pull/3). Existing ROM and save fingerprints were unchanged. Gameplay timing in the first controllable scene still needs verification.
+### Upstream game fixes on main
+
+These commits are in `main` for new builds. The device checks above apply
+only to the cited compatibility builds; an upstream Mac fix does not
+establish that the same scene works on an iPhone or iPad.
+
+| Game | Integrated upstream fix |
+| --- | --- |
+| Ocarina of Time | [60 Hz simulation on slow frames](https://github.com/seedds/nxnative/commit/7d8dcdf8), [dynamic resolution and timing improvements measured on M4 Pro](https://github.com/seedds/nxnative/commit/04419bc2), and [mist depth artifacts](https://github.com/seedds/nxnative/commit/877c7eca). |
+| Mario Kart World | [Slow-frame simulation timing](https://github.com/seedds/nxnative/commit/7d8dcdf8), [shadow mip texture views](https://github.com/seedds/nxnative/commit/32335650), [missing vegetation](https://github.com/seedds/nxnative/commit/e07cba1c), and [Mac sparse textures and mesh pipelines](https://github.com/seedds/nxnative/commit/1d4b8e82). |
+| Hyrule Warriors: Age of Imprisonment | [First playable field on Mac](https://github.com/seedds/nxnative/commit/d70ee900), [constant-bank performance](https://github.com/seedds/nxnative/commit/3ace3df3), and [two remaining shader translations](https://github.com/seedds/nxnative/commit/c94ce657). |
+| Pokémon Pokopia | [Faster shader translation](https://github.com/seedds/nxnative/commit/ed3c93ee) and [lower build memory use](https://github.com/seedds/nxnative/commit/e70fd69d). These changes do not fix the character-preview defect reported on devices. |
+| Pokémon Violet | [Offline Bluetooth LE startup on 3.0.1](https://github.com/seedds/nxnative/commit/235eb516). The M2 4.0.0 renderer repair is tracked separately above. |
+| Animal Crossing: New Horizons | [Native aspect ratio for taller screens](https://github.com/seedds/nxnative/commit/b6e1f005). |
+| Tears of the Kingdom | [Mac Game Mode opt-out for GPU clock throttling](https://github.com/seedds/nxnative/commit/cb59a672). |
 
 ## Discussions
 
@@ -70,7 +90,7 @@ Questions, how a game runs on your Mac or iPhone, and ideas go in [Discussions](
 
 ## How to play
 
-Switch 2 games are built from one `.nup` file or a folder of their files, not from NSPs, and are tested on the Mac only: see [Switch 2 games](#switch-2-games).
+Switch 2 games are built from one `.nup` file or a folder of their files, not from NSPs, and use the Mac workflow described in [Switch 2 games](#switch-2-games).
 
 ### With a Mac app
 
@@ -125,7 +145,7 @@ Controls, saves and settings: [Playing](docs/playing.md).
 
 ### Switch 2 games
 
-A Switch 2 game is built from one [NUP](https://github.com/a55uka/nup) container (a `.nup` file) or a folder of its files, not from NSPs. Neither needs `prod.keys`. A game this project has no profile for is surveyed and gets a provisional profile, as NSPs do ([Port another game](docs/development.md#port-another-game)), which may not boot. You get a Mac app; iPhone and iPad are untested.
+A Switch 2 game is built from one [NUP](https://github.com/a55uka/nup) container (a `.nup` file) or a folder of its files, not from NSPs. Neither needs `prod.keys`. A game this project has no profile for is surveyed and gets a provisional profile, as NSPs do ([Port another game](docs/development.md#port-another-game)), which may not boot. This upstream workflow builds a Mac app. See [TonTon device verification](#tonton-gamebox-game-fixes-and-verification) for the separately maintained mobile builds.
 
 **From a `.nup` file**, which holds the base game, its updates and DLC in one file. Give the file, or a folder that holds it:
 

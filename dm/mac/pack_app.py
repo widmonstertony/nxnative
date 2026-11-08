@@ -17,6 +17,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'tools'))
+import cloudkit_signing
 import romfs as rfs
 import romfs_image
 import shader_lib
@@ -153,16 +154,20 @@ def strip_detritus(app):   # the "._name" files a copy from or onto an exFAT vol
                 except OSError: pass   # a ._ file the volume maps to the attributes of the file it belongs to: gone with them
 
 
-def sign(app, identity, codesign):   # the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
+def sign(app, identity, codesign, cloud_entitlements=None, bundle_id=None):   # the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
     strip_detritus(app)   # before codesign reads the bundle, so that a build folder or an output folder on exFAT is not a signing failure
     host = app / 'Contents/MacOS/dmhost'
     for target in (host, app):
-        try: run([codesign, '--force', '--sign', identity, target])
+        command = [codesign, '--force', '--sign', identity]
+        if cloud_entitlements:
+            command += ['--entitlements', cloud_entitlements, '--identifier', bundle_id]
+        command.append(target)
+        try: run(command)
         except SystemExit as e:
             if not any(s in str(e) for s in ('detritus', '._', 'not signed at all')): raise
             subprocess.run(['xattr', '-cr', str(app)], capture_output=True)   # Finder information or resource forks on copied files: codesign refuses them
             strip_detritus(app)
-            run([codesign, '--force', '--sign', identity, target])
+            run(command)
     strip_detritus(app)   # codesign sets an attribute on what it signs, which is a "._name" file again on exFAT: the signature still verifies without it, and a later --force would refuse it
 
 
@@ -273,6 +278,19 @@ def pack(a):
         a = argparse.Namespace(**vars(a))
         for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html'):
             if getattr(a, name): setattr(a, name, str(Path(getattr(a, name)).resolve()))
+        profile_path = getattr(a, 'cloudkit_profile', None)
+        cloudkit = None
+        if profile_path:
+            if a.sign == '-':
+                raise SystemExit('CloudKit requires a real signing identity (--sign)')
+            profile_path = Path(profile_path).resolve()
+            profile = cloudkit_signing.read_profile(profile_path)
+            bundle_info = info_plist(a, '', False)
+            app_id = a.cloudkit_app_identifier
+            bundle_id = bundle_info['CFBundleIdentifier']
+            cloudkit = cloudkit_signing.configure(
+                profile, bundle_info, {'com.apple.application-identifier': app_id},
+                app_id, a.cloudkit_container, a.cloudkit_environment)
         if a.external_romfs and (a.program or not rfs.is_image(a.romfs)):
             raise SystemExit('--external-romfs requires a single-program app and a RomFS image file')
         mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a)
@@ -287,6 +305,7 @@ def pack(a):
             pa = argparse.Namespace(**{**vars(a), 'patched': patched, 'romfs': prom, 'msl': pmsl, 'tables': ptab, 'pso': None, 'pso_pairs': None, 'aoc': None, 'marker': None})
             pmods, pmsls, _, ptables, _, _, pfiles = selected_inputs(pa)
             programs.append((n, Path(prom), Path(pmsl), Path(phtml), pmods, pmsls, ptables)); files += pfiles
+        if profile_path: files += [profile_path, Path(cloudkit_signing.__file__)]
         clang = Path(run(['xcrun', '--find', 'clang']).strip()).resolve()
         swiftc = Path(run(['xcrun', '--find', 'swiftc']).strip())   # not resolved: the driver is a link to swift-frontend, which acts by its name
         sdk = Path(run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()).resolve()
@@ -378,9 +397,20 @@ def pack(a):
     commit = source_commit()
     if commit: info['DMCommit'] = commit
     if msl_dst.name.startswith('b-'): info['DMChain'] = msl_dst.name[2:]   # the library chain the app carries (a Vulkan or GL game's vk / gl has none)
+    if cloudkit:
+        info['DMCloudSaveContainer'] = cloudkit[0]['DMCloudSaveContainer']
+        shutil.copyfile(profile_path, c / 'embedded.provisionprofile')
     (c / 'Info.plist').write_bytes(plistlib.dumps(info))
     (c / 'PkgInfo').write_text('APPL????')
-    step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})'); sign(tmp, a.sign, codesign)
+    step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})')
+    if cloudkit:
+        with tempfile.TemporaryDirectory(dir=tmp.parent) as t:
+            ent = Path(t) / 'CloudKit.entitlements'
+            ent.write_bytes(plistlib.dumps(cloudkit[1]))
+            sign(tmp, a.sign, codesign, ent, bundle_id)
+        run([codesign, '--verify', '--deep', '--strict', tmp])
+    else:
+        sign(tmp, a.sign, codesign)
     had_old = out.exists()
     replace_app(tmp, out)
     key_tmp = key_file.with_name(key_file.name + '.partial')
@@ -421,7 +451,17 @@ def parse(argv):
     ap.add_argument('--version'); ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
     ap.add_argument('--icon', help='the game icon (icon.jpg from the control data)')
     ap.add_argument('--sign', default='-', help='codesign identity (default: - = ad-hoc)')
-    return ap.parse_args(argv)
+    ap.add_argument('--cloudkit-profile', type=Path, help='Apple provisioning profile for this existing Mac app')
+    ap.add_argument('--cloudkit-app-identifier', help='exact app identifier, including its App ID prefix')
+    ap.add_argument('--cloudkit-container', help='existing iCloud container shared with the mobile builds')
+    ap.add_argument('--cloudkit-environment', choices=('Development', 'Production'))
+    a = ap.parse_args(argv)
+    cloudkit = (a.cloudkit_profile, a.cloudkit_app_identifier, a.cloudkit_container, a.cloudkit_environment)
+    if any(cloudkit) and not all(cloudkit):
+        ap.error('all four --cloudkit-* options are required together')
+    if a.cloudkit_profile:
+        a.cloudkit_profile = str(a.cloudkit_profile.resolve())
+    return a
 
 
 if __name__ == '__main__':
