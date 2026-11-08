@@ -10,7 +10,7 @@ import tempfile
 REPO = Path(__file__).resolve().parents[1]
 MAC = REPO / 'dm/mac'
 sys.path.insert(0, str(MAC))
-from pack_app import make_icns, run
+from pack_app import make_icns, run, swift_sources
 
 
 def main():
@@ -29,11 +29,11 @@ def main():
         resources = contents / 'Resources'
         executable.parent.mkdir(parents=True)
         resources.mkdir()
-        min_os = '14.0'
+        min_os = '15.0'
         sdk = run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()
         run(['xcrun', '--sdk', 'macosx', 'swiftc', '-parse-as-library', '-O', '-sdk', sdk,
              '-target', f'arm64-apple-macosx{min_os}', '-module-cache-path', Path(temp) / 'modules',
-             MAC / 'Gamebox.swift', '-o', executable])
+             '-swift-version', '5', MAC / 'Gamebox.swift', *swift_sources(), '-o', executable])
         icon = MAC / 'GameboxIcon.png'
         make_icns(icon, resources / 'AppIcon.icns')
         if args.catalog:
@@ -47,8 +47,8 @@ def main():
                 'CFBundleExecutable': executable.name,
                 'CFBundleIconFile': 'AppIcon',
                 'CFBundlePackageType': 'APPL',
-                'CFBundleShortVersionString': '0.1',
-                'CFBundleVersion': '1',
+                'CFBundleShortVersionString': '0.3',
+                'CFBundleVersion': '3',
                 'LSMinimumSystemVersion': min_os,
                 'LSApplicationCategoryType': 'public.app-category.games',
             }, info)

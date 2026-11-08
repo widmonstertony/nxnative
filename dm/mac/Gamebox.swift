@@ -43,6 +43,54 @@ private func gameLibrary() -> [Game] {
     return planned + installed.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 }
 
+private struct GameSettings: Identifiable {
+    let game: Game
+    let app: URL
+    let version: String
+    let defaults: UserDefaults
+    let model: LauncherModel
+    let environment: [String: String]
+    var id: String { game.id }
+
+    init?(_ game: Game) {
+        guard let app = game.app, let bundle = Bundle(url: app),
+              let domain = bundle.bundleIdentifier, let defaults = UserDefaults(suiteName: domain),
+              let dm = bundle.resourceURL?.appendingPathComponent("dm"),
+              let data = try? Data(contentsOf: dm.appendingPathComponent("launcher.json")),
+              let file = try? JSONDecoder().decode(SettingsFile.self, from: data),
+              !file.settings.isEmpty else { return nil }
+        self.game = game
+        self.app = app
+        self.version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        self.defaults = defaults
+        let support = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/nxnative")
+            .appendingPathComponent(game.id)
+        let env = Self.readEnvironment([support, dm].map { $0.appendingPathComponent("env.txt") })
+        self.environment = env
+        self.model = LauncherModel(file.settings, defaults: defaults, environment: env)
+    }
+
+    // Match launcher.c: the user's file takes precedence and the first definition wins.
+    private static func readEnvironment(_ urls: [URL]) -> [String: String] {
+        let whitespace = CharacterSet(charactersIn: " \t\r")
+        var result: [String: String] = [:]
+        for url in urls {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for rawLine in text.components(separatedBy: "\n") {
+                let line = rawLine.trimmingCharacters(in: whitespace)
+                guard !line.hasPrefix("#"), let equals = line.firstIndex(of: "=") else { continue }
+                let key = line[..<equals].trimmingCharacters(in: whitespace)
+                guard !key.isEmpty, result[key] == nil else { continue }
+                result[key] = String(line[line.index(after: equals)...])
+            }
+        }
+        result["DM_ENV_FILE_KEYS"] = result.keys.sorted().joined(separator: " ")
+        result["DM_ENV_LAUNCH_KEYS"] = ""
+        return result
+    }
+}
+
 @main
 struct TonTonGamebox: App {
     var body: some Scene {
@@ -57,9 +105,12 @@ struct TonTonGamebox: App {
 private struct GameboxLibrary: View {
     @State private var games: [Game] = []
     @State private var launchError: String?
+    @State private var settings: GameSettings?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        let installed = games.filter { $0.app != nil }
+        let pending = games.filter { $0.app == nil }
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(spacing: 16) {
@@ -74,10 +125,10 @@ private struct GameboxLibrary: View {
                     }
                     Spacer()
                     VStack(spacing: 4) {
-                        Text("\(games.filter { $0.app != nil }.count) / \(games.count)")
+                        Text("\(installed.count) / \(games.count)")
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .monospacedDigit()
-                        Text("可启动").font(.caption).foregroundStyle(.secondary)
+                        Text("已安装 / 游戏总数").font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 16)
                 }
@@ -89,14 +140,8 @@ private struct GameboxLibrary: View {
                                            description: Text("已安装的 nxnative macOS 游戏会显示在这里。"))
                         .padding(.vertical, 45)
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 174), spacing: 16)], alignment: .leading, spacing: 22) {
-                        ForEach(games) { game in
-                            Button { open(game) } label: { GameCard(game: game) }
-                                .buttonStyle(.plain)
-                                .disabled(game.app == nil)
-                                .help(game.app == nil ? "待构建" : "启动 \(game.name)")
-                        }
-                    }
+                    if !installed.isEmpty { gameGrid("已安装", games: installed) }
+                    if !pending.isEmpty { gameGrid("待构建", games: pending) }
                 }
             }
             .padding(24)
@@ -108,16 +153,73 @@ private struct GameboxLibrary: View {
         }
         .onAppear { games = gameLibrary() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { games = gameLibrary() } }
-        .alert("无法启动游戏", isPresented: Binding(get: { launchError != nil }, set: { if !$0 { launchError = nil } })) {
+        .sheet(item: $settings) { state in
+            LauncherView(m: state.model, name: state.game.name, version: state.version,
+                         icon: NSWorkspace.shared.icon(forFile: state.app.path), cancelTitle: "取消",
+                         environment: state.environment, done: { play in
+                settings = nil
+                if play {
+                    state.model.saveChoices()
+                    open(state.game, skipSettings: true)
+                }
+            }, fit: { _ in })
+            .defaultAppStorage(state.defaults)
+            .frame(width: 560, height: 620)
+        }
+        .alert("游戏匣", isPresented: Binding(get: { launchError != nil }, set: { if !$0 { launchError = nil } })) {
             Button("好", role: .cancel) { launchError = nil }
         } message: {
             Text(launchError ?? "")
         }
     }
 
-    private func open(_ game: Game) {
+    private func gameGrid(_ title: String, games: [Game]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("\(title) · \(games.count)").font(.title3.weight(.semibold))
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 174), spacing: 16)], alignment: .leading, spacing: 22) {
+                ForEach(games) { game in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button { open(game) } label: { GameCard(game: game) }
+                            .buttonStyle(.plain)
+                            .disabled(game.app == nil)
+                            .help(game.app == nil ? "待构建" : "启动 \(game.name)")
+                        if let app = game.app {
+                            HStack {
+                                Button("游戏设置", systemImage: "gearshape") { showSettings(game) }
+                                    .help("打开 \(game.name) 的启动设置")
+                                Menu {
+                                    Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([app]) }
+                                    Button("查看运行日志") { showLog(game) }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                }
+                                .fixedSize()
+                                .accessibilityLabel("更多游戏操作")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func showSettings(_ game: Game) {
+        if let state = GameSettings(game) { settings = state }
+        else { launchError = "这款游戏的应用没有可读取的启动设置。你仍可直接启动游戏。" }
+    }
+
+    private func showLog(_ game: Game) {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/nxnative")
+            .appendingPathComponent(game.id + ".log")
+        if !NSWorkspace.shared.open(url) { launchError = "还没有可打开的运行日志。" }
+    }
+
+    private func open(_ game: Game, skipSettings: Bool = false) {
         guard let app = game.app else { return }
-        NSWorkspace.shared.openApplication(at: app, configuration: .init()) { _, error in
+        let configuration = NSWorkspace.OpenConfiguration()
+        if skipSettings { configuration.arguments = ["--no-launcher"] }
+        NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, error in
             if let error { Task { @MainActor in launchError = error.localizedDescription } }
         }
     }

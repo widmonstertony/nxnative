@@ -132,9 +132,9 @@ static pthread_cond_t g_done_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_n_draw, g_n_pass, g_n_submit, g_n_copy, g_n_pso, g_mem_bytes;
 
 // Shader table (<DM_MSL_DIR>/vk/vk_shaders.tsv): resource kind u / b / t / s / c, its (set, binding) in the game's SPIR-V and the Metal slot it was moved to;
-// kind p is the push-constant block (set and binding 0), whose bytes are set straight into its buffer slot
-typedef struct { char kind; uint8_t set, slot, count; uint16_t binding; } shres;   // count: an array of descriptors, elements in slots slot … slot + count − 1
-typedef struct { char key[17]; int frag, nres; shres res[24]; } shinfo;
+// kind p is the push-constant block; kind a maps a set to its argument buffer, and that set's resource entries then give argument IDs.
+typedef struct { char kind; uint8_t set; uint16_t binding, slot, count; } shres;
+typedef struct { char key[17], forwarding_vertex[17]; int frag, nres; uint8_t arg_slot[8]; shres res[24]; uint32_t local[3]; } shinfo;   // arg_slot stores slot + 1, zero is direct binding
 static shinfo *g_sh; static int g_nsh;
 static id<MTLLibrary> g_lib;
 static int sh_cmp(const void *a, const void *b) { return memcmp(((const shinfo *)a)->key, ((const shinfo *)b)->key, 16); }
@@ -153,9 +153,25 @@ static void sh_load(void) {
         shinfo *s = &g_sh[g_nsh++]; memset(s, 0, sizeof *s);
         memcpy(s->key, key, 16); s->frag = !strcmp(stage, "frag");
         for (char *t = res ? strtok(res, " ") : NULL; t; t = strtok(NULL, " ")) {
+            if (t[0] == 'g' && !strcmp(stage, "geom")) {
+                if (strlen(t) == 18) sscanf(t, "g:%16[0123456789abcdef]", s->forwarding_vertex);
+                continue;
+            }
+            if (t[0] == 'l' && !strcmp(stage, "comp")) {
+                unsigned x, y, z;
+                if (sscanf(t, "l:%u,%u,%u", &x, &y, &z) == 3 && x && y && z && x <= 1024 && y <= 1024 && z <= 64) {
+                    s->local[0] = x; s->local[1] = y; s->local[2] = z;
+                } else LOG("[vk] [RED] invalid workgroup dimensions for shader %s: %s", s->key, t);
+                continue;
+            }
             char k; unsigned st, b, sl, n = 1;
-            if (sscanf(t, "%c:%u.%u=%u*%u", &k, &st, &b, &sl, &n) < 4 || !n || sl + n > 31 || s->nres == 24) { LOG("[vk] [RED] cannot parse a resource entry of shader table %s: %s", s->key, t); continue; }
-            s->res[s->nres++] = (shres){k, (uint8_t)st, (uint8_t)sl, (uint8_t)n, (uint16_t)b};
+            if (sscanf(t, "%c:%u.%u=%u*%u", &k, &st, &b, &sl, &n) < 4 || st >= 8 || b > UINT16_MAX || !n ||
+                n > UINT16_MAX || sl > UINT16_MAX - n || !strchr("abcpstu", k) ||
+                (k == 'a' ? sl >= 17 || n != 1 || b != 0 : s->nres == 24)) {
+                LOG("[vk] [RED] cannot parse a resource entry of shader table %s: %s", s->key, t); continue;
+            }
+            if (k == 'a') s->arg_slot[st] = sl + 1;
+            else s->res[s->nres++] = (shres){k, (uint8_t)st, (uint16_t)b, (uint16_t)sl, (uint16_t)n};
         }
     }
     fclose(f);
@@ -225,10 +241,12 @@ struct VkRenderPass_T { uint32_t natt, ncol; ratt att[16]; int col[8], res[8], d
 struct VkFramebuffer_T { uint32_t n, w, h, layers; VkImageView v[16]; };
 struct VkPipeline_T {
     __strong id<MTLRenderPipelineState> pso; __strong id<MTLDepthStencilState> dss;
-    const shinfo *vs, *fs; uint32_t vb_mask; VkPipelineLayout layout;
+    __strong id<MTLComputePipelineState> compute;
+    __strong id<MTLArgumentEncoder> args[3][8];
+    const shinfo *vs, *fs, *cs; uint32_t vb_mask, blend_mask; VkPipelineLayout layout;
     MTLPrimitiveType prim; MTLCullMode cull; MTLWinding wind; MTLTriangleFillMode fill; MTLDepthClipMode clip;
     int bias; float bias_c, bias_s, bias_cl; float blend[4]; uint32_t sref_f, sref_b;
-    int dyn_vp, dyn_sc, has_vp, has_sc; MTLViewport vp; VkRect2D sc;
+    int dyn_vp, dyn_sc, dyn_bias, dyn_blend, has_vp, has_sc, viewport_index; MTLViewport vp; VkRect2D sc;
     // Dynamic stencil state (Super Mario 3D All-Stars' Super Mario 64): the reference is the encoder's; the masks are part of a Metal depth-stencil state, so the
     // pipeline keeps its depth-stencil description and builds the state for the masks set (one cached)
     VkLogicOp logic;   // not implemented (0 = none: VK_LOGIC_OP_CLEAR is not met)
@@ -348,7 +366,9 @@ VK(vkGetPhysicalDeviceQueueFamilyProperties, void, VkPhysicalDevice pd, uint32_t
 }
 VK(vkGetPhysicalDeviceFormatProperties, void, VkPhysicalDevice pd, VkFormat format, VkFormatProperties *p) {
     (void)pd; memset(p, 0, sizeof *p);
-    const fmt_t *f = fmt_of(format); if (!f) return;
+    const fmt_t *f = fmt_of(format);
+    OLOG("format properties query %d (%s)", format, f && f->pf != MTLPixelFormatInvalid ? "image" : "no image support");
+    if (!f) return;
     if (f->vf != MTLVertexFormatInvalid) p->bufferFeatures |= VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
     if (f->pf == MTLPixelFormatInvalid) return;
     VkFormatFeatureFlags t = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT;
@@ -361,6 +381,7 @@ VK(vkGetPhysicalDeviceFormatProperties, void, VkPhysicalDevice pd, VkFormat form
     if (f->kind == K_DEPTH || f->kind == K_DS || f->kind == K_STENCIL) t |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     p->optimalTilingFeatures = t;
     p->linearTilingFeatures = f->kind == K_COLOR || f->kind == K_INT ? t : 0;
+    if (f->pf == MTLPixelFormatRGBA8Unorm) p->optimalTilingFeatures |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
 }
 VK(vkGetPhysicalDeviceImageFormatProperties, VkResult, VkPhysicalDevice pd, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage,
    VkImageCreateFlags flags, VkImageFormatProperties *p) {
@@ -704,6 +725,7 @@ VKB(vkCreateSampler, VkResult, VkDevice d, const VkSamplerCreateInfo *ci, const 
                          ci->borderColor >= VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK ? MTLSamplerBorderColorOpaqueBlack : MTLSamplerBorderColorTransparentBlack;
         sd.lodMinClamp = ci->minLod; sd.lodMaxClamp = ci->maxLod;
         sd.normalizedCoordinates = !ci->unnormalizedCoordinates;
+        sd.supportArgumentBuffers = YES;
         sd.lodBias = fminf(fmaxf(ci->mipLodBias, -15), 15);   // Metal 26's sampler bias; the device reports maxSamplerLodBias 15
         VkSampler s = zalloc(sizeof *s); s->s = [g_dev newSamplerStateWithDescriptor:sd];
         if (!s->s) LOG("[vk] [RED] cannot create the sampler");
@@ -896,8 +918,9 @@ VKB(vkCreateShaderModule, VkResult, VkDevice d, const VkShaderModuleCreateInfo *
     for (int i = 0; i < 8; i++) snprintf(m->key + 2 * i, 3, "%02x", h[i]);
     sh_capture(m->key, ci->pCode, ci->codeSize);
     m->si = sh_find(m->key);
-    @autoreleasepool { if (m->si && g_lib) m->fn = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s", m->key]]; }
-    if (!m->fn) LOG("[vk] [RED] shader %s (%zu bytes of SPIR-V) is not in the library", m->key, ci->codeSize);
+    int forwarding = m->si && m->si->forwarding_vertex[0];
+    @autoreleasepool { if (m->si && g_lib && !forwarding) m->fn = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s", m->key]]; }
+    if (!m->fn && !forwarding) LOG("[vk] [RED] shader %s (%zu bytes of SPIR-V) is not in the library", m->key, ci->codeSize);
     else OLOG("CreateShaderModule %s", m->key);
     *out = m; return VK_SUCCESS;
 }
@@ -939,7 +962,7 @@ static int dual_source(const VkPipelineColorBlendStateCreateInfo *cb) {   // a b
 }
 // Specialization constants: SPIRV-Cross keeps each SpecId as a Metal function constant of the same index, and Metal builds no pipeline from a function that has constants
 // until they are given (Super Mario 3D All-Stars' Super Mario 64). The values the pipeline gives are set; the others keep the defaults the translation wrote
-static id<MTLFunction> spec_fn(id<MTLFunction> fn, const char *key, int dual, const VkSpecializationInfo *si) {
+static id<MTLFunction> spec_fn(id<MTLFunction> fn, const char *key, const VkSpecializationInfo *si) {
     if (!fn || !fn.functionConstantsDictionary.count) return fn;
     MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new];
     for (MTLFunctionConstant *c in fn.functionConstantsDictionary.allValues)
@@ -952,30 +975,57 @@ static id<MTLFunction> spec_fn(id<MTLFunction> fn, const char *key, int dual, co
             else RED1("specialization constant of Metal type %lu not handled", (unsigned long)c.type);
         }
     NSError *err = nil;
-    id<MTLFunction> f = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s%s", key, dual ? "_d" : ""] constantValues:cv error:&err];
+    id<MTLFunction> f = [g_lib newFunctionWithName:fn.name constantValues:cv error:&err];
     if (!f) LOG("[vk] [RED] shader %s with its specialization constants: %s", key, err.localizedDescription.UTF8String);
     return f;
+}
+enum { ST_VERTEX, ST_FRAGMENT, ST_COMPUTE };
+static int pipe_arguments(VkPipeline p, const shinfo *si, id<MTLFunction> fn, int stage) {
+    for (int st = 0; si && st < 8; st++) if (si->arg_slot[st]) {
+        p->args[stage][st] = [fn newArgumentEncoderWithBufferIndex:si->arg_slot[st] - 1];
+        if (!p->args[stage][st]) {
+            LOG("[vk] [RED] shader %s: cannot encode argument buffer for set %d", si->key, st);
+            return 0;
+        }
+    }
+    return 1;
 }
 static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
     VkPipeline p = zalloc(sizeof *p); p->layout = ci->layout;
     @autoreleasepool {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         char keys[64] = ""; int dual = dual_source(ci->pColorBlendState);
+        const shinfo *geometry = NULL;
+        for (uint32_t s = 0; s < ci->stageCount; s++)
+            if (ci->pStages[s].stage == VK_SHADER_STAGE_GEOMETRY_BIT) geometry = ci->pStages[s].module->si;
         for (uint32_t s = 0; s < ci->stageCount; s++) {
             const VkPipelineShaderStageCreateInfo *st = &ci->pStages[s]; VkShaderModule m = st->module;
-            if (st->stage == VK_SHADER_STAGE_VERTEX_BIT) { pd.vertexFunction = spec_fn(m->fn, m->key, 0, st->pSpecializationInfo); p->vs = m->si; }
+            if (st->stage == VK_SHADER_STAGE_VERTEX_BIT) {
+                id<MTLFunction> fn = m->fn;
+                if (geometry && !strcmp(geometry->forwarding_vertex, m->key)) {
+                    fn = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s_vp", m->key]];
+                    p->viewport_index = fn != nil;
+                }
+                pd.vertexFunction = spec_fn(fn, m->key, st->pSpecializationInfo);
+                p->vs = m->si;
+            }
             else if (st->stage == VK_SHADER_STAGE_FRAGMENT_BIT) {
                 if (dual && m->fn) {   // pipelines may be built on several threads
                     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; pthread_mutex_lock(&mu);
                     if (!m->tried_d) { m->tried_d = 1; m->fn_d = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s_d", m->key]]; }
                     pthread_mutex_unlock(&mu);
                 }
-                pd.fragmentFunction = spec_fn(dual && m->fn_d ? m->fn_d : m->fn, m->key, dual && m->fn_d, st->pSpecializationInfo); p->fs = m->si;
+                pd.fragmentFunction = spec_fn(dual && m->fn_d ? m->fn_d : m->fn, m->key, st->pSpecializationInfo); p->fs = m->si;
             }
-            else RED1("shader stage %#x not implemented", st->stage);
+            else if (st->stage != VK_SHADER_STAGE_GEOMETRY_BIT) RED1("shader stage %#x not implemented", st->stage);
             strlcat(keys, s ? " " : "", sizeof keys); strlcat(keys, m->key, sizeof keys);
         }
+        for (uint32_t s = 0; s < ci->stageCount; s++)
+            if (ci->pStages[s].stage == VK_SHADER_STAGE_GEOMETRY_BIT && !p->viewport_index)
+                RED1("geometry stage %s not implemented", ci->pStages[s].module->key);
         if (!pd.vertexFunction) { LOG("[vk] [RED] pipeline has no usable vertex shader (%s)", keys); return p; }
+        if (!pipe_arguments(p, p->vs, pd.vertexFunction, ST_VERTEX) ||
+            !pipe_arguments(p, p->fs, pd.fragmentFunction, ST_FRAGMENT)) return p;
         const VkPipelineVertexInputStateCreateInfo *vi = ci->pVertexInputState;
         MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
         uint32_t used = 0;   // bindings some mapped attribute reads: Metal's validation rejects a buffer layout no attribute uses
@@ -1003,6 +1053,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
             case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: p->prim = MTLPrimitiveTypeTriangle; break;
             default: RED1("primitive topology %d not implemented", ci->pInputAssemblyState->topology); p->prim = MTLPrimitiveTypeTriangle; break;
         }
+        if (p->viewport_index) pd.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
         const VkPipelineRasterizationStateCreateInfo *rs = ci->pRasterizationState;
         p->cull = !rs || rs->cullMode == VK_CULL_MODE_NONE ? MTLCullModeNone : rs->cullMode == VK_CULL_MODE_FRONT_BIT ? MTLCullModeFront : rs->cullMode == VK_CULL_MODE_BACK_BIT ? MTLCullModeBack : MTLCullModeNone;
         if (rs && rs->cullMode == VK_CULL_MODE_FRONT_AND_BACK) RED1("culling both front and back faces not implemented");
@@ -1025,6 +1076,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
                 const VkPipelineColorBlendAttachmentState *b = &cb->pAttachments[cb->attachmentCount > 1 ? i : 0];
                 ca.writeMask = write_mask(b->colorWriteMask);
                 if (b->blendEnable && f && f->kind == K_COLOR) {
+                    p->blend_mask |= 1u << i;
                     ca.blendingEnabled = YES;
                     ca.sourceRGBBlendFactor = blend_f(b->srcColorBlendFactor); ca.destinationRGBBlendFactor = blend_f(b->dstColorBlendFactor); ca.rgbBlendOperation = (MTLBlendOperation)b->colorBlendOp;
                     ca.sourceAlphaBlendFactor = blend_f(b->srcAlphaBlendFactor); ca.destinationAlphaBlendFactor = blend_f(b->dstAlphaBlendFactor); ca.alphaBlendOperation = (MTLBlendOperation)b->alphaBlendOp;
@@ -1049,11 +1101,14 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
             VkDynamicState s = dy->pDynamicStates[i];
             if (s == VK_DYNAMIC_STATE_VIEWPORT) p->dyn_vp = 1; else if (s == VK_DYNAMIC_STATE_SCISSOR) p->dyn_sc = 1;
             else if (s == VK_DYNAMIC_STATE_STENCIL_REFERENCE) p->dyn_sref = 1;
+            else if (s == VK_DYNAMIC_STATE_DEPTH_BIAS) p->dyn_bias = 1;
+            else if (s == VK_DYNAMIC_STATE_BLEND_CONSTANTS) p->dyn_blend = 1;
             else if (s == VK_DYNAMIC_STATE_LINE_WIDTH) continue;   // Metal draws lines one pixel wide whatever the width (Super Mario 64 sets 1)
             else if (s == VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK || s == VK_DYNAMIC_STATE_STENCIL_WRITE_MASK) p->dyn_smask |= s == VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK ? 1 : 2;
             else RED1("dynamic state %d not implemented (the imports have no matching set function)", s);
         }
         const VkPipelineViewportStateCreateInfo *vs = ci->pViewportState;
+        if (p->viewport_index) OLOG("geometry viewport forwarding: %s", keys);
         if (!p->dyn_vp && vs && vs->pViewports && vs->viewportCount) { p->vp = vp_of(&vs->pViewports[0]); p->has_vp = 1; }
         if (!p->dyn_sc && vs && vs->pScissors && vs->scissorCount) { p->sc = vs->pScissors[0]; p->has_sc = 1; }
         NSError *err = nil;
@@ -1068,23 +1123,58 @@ VKB(vkCreateGraphicsPipelines, VkResult, VkDevice d, VkPipelineCache c, uint32_t
     for (uint32_t i = 0; i < n; i++) out[i] = pipe_make(&ci[i]);   // a pipeline Metal refuses is still handed out: its draws are skipped
     return VK_SUCCESS;
 }
-VKB(vkDestroyPipeline, void, VkDevice d, VkPipeline p, const VkAllocationCallbacks *a) { (void)d; (void)a; if (p) { p->pso = nil; p->dss = nil; free(p); } }
+VKB(vkDestroyPipeline, void, VkDevice d, VkPipeline p, const VkAllocationCallbacks *a) {
+    (void)d; (void)a;
+    if (!p) return;
+    p->pso = nil; p->dss = nil; p->dss_dyn = nil; p->compute = nil;
+    for (int stage = 0; stage < 3; stage++) for (int st = 0; st < 8; st++) p->args[stage][st] = nil;
+    free(p);
+}
+VKB(vkCreateComputePipelines, VkResult, VkDevice d, VkPipelineCache c, uint32_t n, const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *a, VkPipeline *out) {
+    (void)c; dev_init();
+    VkResult result = VK_SUCCESS;
+    @autoreleasepool {
+        for (uint32_t i = 0; i < n; i++) {
+            out[i] = NULL;
+            const VkPipelineShaderStageCreateInfo *stage = &ci[i].stage;
+            VkShaderModule m = stage->module;
+            const shinfo *si = m ? m->si : NULL;
+            if (!si || !si->local[0]) {
+                LOG("[vk] [RED] compute pipeline has no usable shader (%s)", m ? m->key : "none");
+                result = VK_ERROR_INITIALIZATION_FAILED; continue;
+            }
+            VkPipeline p = zalloc(sizeof *p); p->layout = ci[i].layout; p->cs = si;
+            id<MTLFunction> fn = spec_fn(m->fn, m->key, stage->pSpecializationInfo);
+            NSError *err = nil;
+            if (fn && pipe_arguments(p, si, fn, ST_COMPUTE)) p->compute = [g_dev newComputePipelineStateWithFunction:fn error:&err];
+            if (!p->compute || (uint64_t)si->local[0] * si->local[1] * si->local[2] > p->compute.maxTotalThreadsPerThreadgroup) {
+                LOG("[vk] [RED] cannot build compute pipeline %s (%ux%ux%u): %s", m->key, si->local[0], si->local[1], si->local[2],
+                    err ? err.localizedDescription.UTF8String : "missing function or workgroup too large");
+                h_vkDestroyPipeline(d, p, a);
+                result = VK_ERROR_INITIALIZATION_FAILED;
+            } else { out[i] = p; g_n_pso++; }
+        }
+    }
+    return result;
+}
 
 // ---------- Command buffers: recording ----------
-enum { C_BRP = 1, C_ERP, C_PIPE, C_SETS, C_VB, C_IB, C_VP, C_SC, C_DRAWI, C_COPYB, C_COPYB2I, C_DRAW, C_PUSH, C_COPYI, C_COPYI2B, C_QRESET, C_QTS, C_QBEGIN, C_QEND, C_CLEARI, C_STENCIL };
+enum { C_BRP = 1, C_ERP, C_PIPE, C_SETS, C_VB, C_IB, C_VP, C_SC, C_DRAWI, C_COPYB, C_COPYB2I, C_DRAW, C_PUSH, C_COPYI, C_COPYI2B, C_QRESET, C_QTS, C_QBEGIN, C_QEND, C_CLEARI, C_STENCIL, C_DISPATCH, C_DEPTHBIAS, C_BLEND };
 typedef struct { uint32_t op, size; } chdr;
 typedef struct { VkRenderPass rp; VkFramebuffer fb; VkRect2D area; uint32_t nclear; VkClearValue clear[]; } c_brp;
-typedef struct { VkPipeline p; } c_pipe;
-typedef struct { uint32_t first, n, ndyn; VkDescriptorSet s[8]; uint32_t dyn[]; } c_sets;
+typedef struct { VkPipeline p; int compute; } c_pipe;
+typedef struct { uint32_t first, n, ndyn; int compute; VkDescriptorSet s[8]; uint32_t dyn[]; } c_sets;
 typedef struct { uint32_t first, n; VkBuffer b[14]; VkDeviceSize o[14]; } c_vb;
 typedef struct { VkBuffer b; VkDeviceSize o; VkIndexType t; } c_ib;
-typedef struct { VkViewport v; } c_vp;
-typedef struct { VkRect2D r; } c_sc;
+#define VK_VIEW_SLOTS 16
+typedef struct { uint32_t first, n; VkViewport v[]; } c_vp;
+typedef struct { uint32_t first, n; VkRect2D r[]; } c_sc;
 typedef struct { uint32_t count, inst, first; int32_t voff; uint32_t first_inst; } c_drawi;
 typedef struct { VkBuffer src, dst; uint32_t n; VkBufferCopy r[]; } c_copyb;
 typedef struct { VkBuffer src; VkImage dst; uint32_t n; VkBufferImageCopy r[]; } c_copyb2i;
 typedef struct { uint32_t count, inst, first, first_inst; } c_draw;
-typedef struct { uint32_t off, size; uint8_t data[]; } c_push;
+typedef struct { uint32_t off, size; VkShaderStageFlags stages; uint8_t data[]; } c_push;
+typedef struct { uint32_t x, y, z; } c_dispatch;
 typedef struct { VkImage src, dst; uint32_t n; VkImageCopy r[]; } c_copyi;
 typedef struct { VkImage src; VkBuffer dst; uint32_t n; VkBufferImageCopy r[]; } c_copyi2b;
 typedef struct { VkQueryPool q; uint32_t first, n; } c_query;
@@ -1132,21 +1222,36 @@ VK(vkCmdBeginRenderPass, void, VkCommandBuffer cb, const VkRenderPassBeginInfo *
 }
 VK(vkCmdEndRenderPass, void, VkCommandBuffer cb) { rec(cb, C_ERP, 0); }
 VK(vkCmdBindPipeline, void, VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
-    if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS) { RED1("compute pipelines not implemented"); return; }
-    ((c_pipe *)rec(cb, C_PIPE, sizeof(c_pipe)))->p = p;
+    if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS && bp != VK_PIPELINE_BIND_POINT_COMPUTE) { RED1("pipeline bind point %u not implemented", bp); return; }
+    *(c_pipe *)rec(cb, C_PIPE, sizeof(c_pipe)) = (c_pipe){p, bp == VK_PIPELINE_BIND_POINT_COMPUTE};
 }
 VK(vkCmdBindDescriptorSets, void, VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout l, uint32_t first, uint32_t n, const VkDescriptorSet *s, uint32_t ndyn, const uint32_t *dyn) {
-    (void)l; if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS) return;
+    (void)l; if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS && bp != VK_PIPELINE_BIND_POINT_COMPUTE) return;
     c_sets *c = rec(cb, C_SETS, sizeof *c + ndyn * sizeof(uint32_t));
-    c->first = first; c->n = umin(n, 8); c->ndyn = ndyn; memcpy(c->s, s, c->n * sizeof *s); if (ndyn) memcpy(c->dyn, dyn, ndyn * sizeof *dyn);
+    c->first = first; c->n = umin(n, 8); c->ndyn = ndyn; c->compute = bp == VK_PIPELINE_BIND_POINT_COMPUTE;
+    memcpy(c->s, s, c->n * sizeof *s); if (ndyn) memcpy(c->dyn, dyn, ndyn * sizeof *dyn);
 }
 VK(vkCmdBindVertexBuffers, void, VkCommandBuffer cb, uint32_t first, uint32_t n, const VkBuffer *b, const VkDeviceSize *o) {
     c_vb *c = rec(cb, C_VB, sizeof *c); c->first = first; c->n = first < 14 ? umin(n, 14 - first) : 0;
     memcpy(c->b, b, c->n * sizeof *b); memcpy(c->o, o, c->n * sizeof *o);
 }
 VK(vkCmdBindIndexBuffer, void, VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkIndexType t) { c_ib *c = rec(cb, C_IB, sizeof *c); c->b = b; c->o = o; c->t = t; }
-VK(vkCmdSetViewport, void, VkCommandBuffer cb, uint32_t first, uint32_t n, const VkViewport *v) { if (!first && n) ((c_vp *)rec(cb, C_VP, sizeof(c_vp)))->v = v[0]; }
-VK(vkCmdSetScissor, void, VkCommandBuffer cb, uint32_t first, uint32_t n, const VkRect2D *r) { if (!first && n) ((c_sc *)rec(cb, C_SC, sizeof(c_sc)))->r = r[0]; }
+VK(vkCmdSetViewport, void, VkCommandBuffer cb, uint32_t first, uint32_t n, const VkViewport *v) {
+    if (!n || first >= VK_VIEW_SLOTS || n > VK_VIEW_SLOTS - first) return;
+    c_vp *c = rec(cb, C_VP, sizeof *c + n * sizeof *v);
+    c->first = first; c->n = n; memcpy(c->v, v, n * sizeof *v);
+}
+VK(vkCmdSetScissor, void, VkCommandBuffer cb, uint32_t first, uint32_t n, const VkRect2D *r) {
+    if (!n || first >= VK_VIEW_SLOTS || n > VK_VIEW_SLOTS - first) return;
+    c_sc *c = rec(cb, C_SC, sizeof *c + n * sizeof *r);
+    c->first = first; c->n = n; memcpy(c->r, r, n * sizeof *r);
+}
+VK(vkCmdSetDepthBias, void, VkCommandBuffer cb, float constant, float clamp, float slope) {
+    const float values[3] = {constant, clamp, slope};
+    memcpy(rec(cb, C_DEPTHBIAS, sizeof values), values, sizeof values);
+}
+VK(vkCmdSetBlendConstants, void, VkCommandBuffer cb, const float values[4]) { memcpy(rec(cb, C_BLEND, 4 * sizeof(float)), values, 4 * sizeof(float)); }
+VK(vkCmdSetLineWidth, void, VkCommandBuffer cb, float width) { (void)cb; if (width != 1.0f) RED1("line width %.2f is unsupported", width); }
 VK(vkCmdDrawIndexed, void, VkCommandBuffer cb, uint32_t count, uint32_t inst, uint32_t first, int32_t voff, uint32_t first_inst) {
     *(c_drawi *)rec(cb, C_DRAWI, sizeof(c_drawi)) = (c_drawi){count, inst, first, voff, first_inst};
 }
@@ -1160,9 +1265,12 @@ VK(vkCmdDraw, void, VkCommandBuffer cb, uint32_t count, uint32_t inst, uint32_t 
     *(c_draw *)rec(cb, C_DRAW, sizeof(c_draw)) = (c_draw){count, inst, first, first_inst};
 }
 VK(vkCmdPushConstants, void, VkCommandBuffer cb, VkPipelineLayout l, VkShaderStageFlags st, uint32_t off, uint32_t size, const void *v) {
-    (void)l; (void)st;
+    (void)l;
     if (off >= 256 || size > 256 - off) { RED1("push constant out of range: offset %u length %u", off, size); return; }
-    c_push *c = rec(cb, C_PUSH, sizeof *c + size); c->off = off; c->size = size; memcpy(c->data, v, size);
+    c_push *c = rec(cb, C_PUSH, sizeof *c + size); c->off = off; c->size = size; c->stages = st; memcpy(c->data, v, size);
+}
+VK(vkCmdDispatch, void, VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
+    if (x && y && z) *(c_dispatch *)rec(cb, C_DISPATCH, sizeof(c_dispatch)) = (c_dispatch){x, y, z};
 }
 VK(vkCmdCopyImage, void, VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, uint32_t n, const VkImageCopy *r) {
     (void)sl; (void)dl; c_copyi *c = rec(cb, C_COPYI, sizeof *c + n * sizeof *r); c->src = src; c->dst = dst; c->n = n; memcpy(c->r, r, n * sizeof *r);
@@ -1197,19 +1305,24 @@ VK(vkCmdPipelineBarrier, void, VkCommandBuffer cb, VkPipelineStageFlags s, VkPip
 // Queries of one submit: its event value (the ticket every query it writes gets) and, when it has occlusion queries, a visibility buffer that every render pass
 // of the submit counts into (one 8-byte slot per BeginQuery), copied to the pools when the submit completes
 typedef struct { VkQueryPool q; uint32_t idx, slot; } occ_t;
-typedef struct { uint64_t v; id<MTLBuffer> vis; uint32_t nvis, cap; occ_t *occ; } subq_t;
+typedef struct { uint64_t v; id<MTLBuffer> vis; uint32_t nvis, cap; occ_t *occ; NSMutableSet<id<MTLSamplerState>> *samplers; } subq_t;
+typedef struct { VkDescriptorSet s; uint32_t dyn[16]; } bound_set;
 typedef struct {
     id<MTLCommandBuffer> cb; id<MTLRenderCommandEncoder> re; id<MTLBlitCommandEncoder> be;
-    VkPipeline pipe, applied; uint32_t rt_w, rt_h;
-    struct { VkDescriptorSet s; uint32_t dyn[16]; } set[8];
+    id<MTLComputeCommandEncoder> ce;
+    VkPipeline pipe, applied, compute; uint32_t rt_w, rt_h;
+    bound_set set[8], cset[8];
     VkBuffer vb[14]; VkDeviceSize vbo[14];
     VkBuffer ib; VkDeviceSize ibo; MTLIndexType it; uint32_t isz;
-    VkViewport vp; VkRect2D sc; int have_vp, have_sc, vp_dirty, sc_dirty;
-    uint8_t pc[256];
+    VkViewport vp[VK_VIEW_SLOTS]; VkRect2D sc[VK_VIEW_SLOTS];
+    uint32_t vp_set, sc_set, vp_count; int vp_dirty, sc_dirty;
+    float depth_bias[3], blend[4]; int bias_dirty, blend_dirty;
+    uint8_t pc[256], cpc[256];
     subq_t *sq;
     // The current render pass: its descriptor (attachments created with deferred store actions) and the store actions it ends with; cut = its encoder was ended
     // for a copy in the middle of the pass and is resumed (loading the attachments) at the next draw
     MTLRenderPassDescriptor *rpd; MTLStoreAction st_col[8], st_d, st_s; int cut;
+    id<MTLTexture> previous_color[8];
     VkQueryPool aq; uint32_t aq_first;   // the occlusion query running (occ_start)
     uint32_t sdyn[3][2]; int sdyn_set[3], s_dirty;   // dynamic stencil compare mask / write mask / reference, front and back (C_STENCIL)
 } rs_t;
@@ -1220,7 +1333,12 @@ static MTLStoreAction keep(MTLStoreAction a) { return a == MTLStoreActionMultisa
 static void end_rp(rs_t *s, int final) {   // final: the pass's own store actions; otherwise everything is stored, to be loaded again when the pass resumes
     if (!s->re) return;
     MTLRenderPassDescriptor *d = s->rpd;
-    for (int i = 0; i < 8; i++) if (d.colorAttachments[i].texture) [s->re setColorStoreAction:final ? s->st_col[i] : keep(s->st_col[i]) atIndex:i];
+    for (int i = 0; i < 8; i++) {
+        id<MTLTexture> texture = d.colorAttachments[i].texture;
+        MTLStoreAction store = s->st_col[i];
+        if (texture) [s->re setColorStoreAction:final ? store : keep(store) atIndex:i];
+        if (final) s->previous_color[i] = store == MTLStoreActionStore || store == MTLStoreActionStoreAndMultisampleResolve ? texture : nil;
+    }
     if (d.depthAttachment.texture) [s->re setDepthStoreAction:final ? s->st_d : MTLStoreActionStore];
     if (d.stencilAttachment.texture) [s->re setStencilStoreAction:final ? s->st_s : MTLStoreActionStore];
     [s->re endEncoding]; s->re = nil;
@@ -1252,17 +1370,42 @@ static void resume_rp(rs_t *s) {
 }
 static MTLLoadAction load_a(VkAttachmentLoadOp o) { return o == VK_ATTACHMENT_LOAD_OP_CLEAR ? MTLLoadActionClear : o == VK_ATTACHMENT_LOAD_OP_LOAD ? MTLLoadActionLoad : MTLLoadActionDontCare; }
 static MTLStoreAction store_a(VkAttachmentStoreOp o) { return o == VK_ATTACHMENT_STORE_OP_DONT_CARE ? MTLStoreActionDontCare : MTLStoreActionStore; }
-static void begin_rp(rs_t *s, const c_brp *c) {
+static uint32_t pass_blend_mask(VkCommandBuffer cb, size_t offset, VkPipeline pipe) {
+    uint32_t mask = 0;
+    while (offset < cb->n) {
+        const chdr *h = (const chdr *)(cb->buf + offset); offset += h->size;
+        if (h->op == C_ERP || h->op == C_BRP) break;
+        if (h->op == C_PIPE) {
+            const c_pipe *c = (const c_pipe *)(h + 1);
+            if (!c->compute) pipe = c->p;
+        } else if (pipe && (h->op == C_DRAW || h->op == C_DRAWI)) {
+            mask |= pipe->blend_mask;
+        }
+    }
+    return mask;
+}
+static void begin_rp(rs_t *s, const c_brp *c, VkCommandBuffer cb, size_t offset) {
     end_blit(s);
     end_rp(s, 1); s->cut = 0;
     VkRenderPass rp = c->rp; VkFramebuffer fb = c->fb;
     MTLRenderPassDescriptor *d = [MTLRenderPassDescriptor renderPassDescriptor];
     uint32_t w = fb->w, h = fb->h;
+    int blend_mask = -1;
     for (uint32_t i = 0; i < rp->ncol; i++) {
         int a = rp->col[i]; if (a < 0 || (uint32_t)a >= fb->n) continue;
         const ratt *at = &rp->att[a]; MTLRenderPassColorAttachmentDescriptor *ca = d.colorAttachments[i];
         ca.texture = fb->v[a]->tex; w = umin(w, (uint32_t)ca.texture.width); h = umin(h, (uint32_t)ca.texture.height);
         ca.loadAction = load_a(at->load); s->st_col[i] = store_a(at->store); ca.storeAction = MTLStoreActionUnknown;
+        // Re:ZERO blends its low-resolution effects over the previous pass's stored scene. Its DONT_CARE load keeps
+        // the destination on Switch, but may discard it on Metal. Preserve it only for a reused attachment that blends.
+        if (at->load == VK_ATTACHMENT_LOAD_OP_DONT_CARE && ca.texture) {
+            for (int j = 0; j < 8; j++) {
+                if (ca.texture != s->previous_color[j]) continue;
+                if (blend_mask < 0) blend_mask = (int)pass_blend_mask(cb, offset, s->pipe);
+                if (blend_mask & (1u << i)) ca.loadAction = MTLLoadActionLoad;
+                break;
+            }
+        }
         if (at->load == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)a < c->nclear) { const float *f = c->clear[a].color.float32; ca.clearColor = MTLClearColorMake(f[0], f[1], f[2], f[3]); }
         int r = rp->res[i];
         if (r >= 0 && (uint32_t)r < fb->n) { ca.resolveTexture = fb->v[r]->tex; s->st_col[i] = at->store == VK_ATTACHMENT_STORE_OP_DONT_CARE ? MTLStoreActionMultisampleResolve : MTLStoreActionStoreAndMultisampleResolve; }
@@ -1283,27 +1426,50 @@ static void begin_rp(rs_t *s, const c_brp *c) {
     if (s->sq->vis) d.visibilityResultBuffer = s->sq->vis;
     s->rpd = d; s->re = [s->cb renderCommandEncoderWithDescriptor:d];
     s->applied = NULL; s->rt_w = w; s->rt_h = h;
-    // Dynamic viewport and scissor persist across render passes within a command buffer, as in Vulkan; the render target's size stands in only until the game sets them.
-    // Resetting them at every pass drew Super Mario Galaxy's handheld UI 1.5x too big: it sets a 1280x720 viewport once and then draws through several passes into its 1920x1080 swapchain
-    if (!s->have_vp) s->vp = (VkViewport){0, 0, (float)w, (float)h, 0, 1};
-    if (!s->have_sc) s->sc = (VkRect2D){{0, 0}, {w, h}};
+    // Dynamic viewport and scissor persist across render passes. pre_draw uses the target size for slots the game has not set.
     s->vp_dirty = s->sc_dirty = 1;
     g_n_pass++;
     occ_start(s);
 }
-static void bind_res(rs_t *s, const shinfo *si, int frag) {
-    if (!si) return;
+static void bind_buffer(rs_t *s, int stage, id<MTLBuffer> buffer, NSUInteger off, NSUInteger slot) {
+    if (stage == ST_COMPUTE) [s->ce setBuffer:buffer offset:off atIndex:slot];
+    else if (stage == ST_FRAGMENT) [s->re setFragmentBuffer:buffer offset:off atIndex:slot];
+    else [s->re setVertexBuffer:buffer offset:off atIndex:slot];
+}
+static void bind_sampler(rs_t *s, int stage, id<MTLSamplerState> sampler, NSUInteger slot) {
+    if (stage == ST_COMPUTE) [s->ce setSamplerState:sampler atIndex:slot];
+    else if (stage == ST_FRAGMENT) [s->re setFragmentSamplerState:sampler atIndex:slot];
+    else [s->re setVertexSamplerState:sampler atIndex:slot];
+}
+static int bind_res(rs_t *s, const shinfo *si, int stage) {
+    if (!si) return 1;
     id<MTLRenderCommandEncoder> re = s->re;
+    id<MTLComputeCommandEncoder> ce = s->ce;
+    VkPipeline p = stage == ST_COMPUTE ? s->compute : s->pipe;
+    const bound_set *sets = stage == ST_COMPUTE ? s->cset : s->set;
+    MTLRenderStages render_stage = stage == ST_FRAGMENT ? MTLRenderStageFragment : MTLRenderStageVertex;
+    uint32_t arg_bound = 0;
     for (int i = 0; i < si->nres; i++) {
         const shres *r = &si->res[i];
         if (r->kind == 'p') continue;   // bind_push
-        VkDescriptorSet ds = r->set < 8 ? s->set[r->set].s : NULL;
+        id<MTLArgumentEncoder> args = si->arg_slot[r->set] ? p->args[stage][r->set] : nil;
+        if (args && !(arg_bound & (1u << r->set))) {
+            id<MTLBuffer> buffer = [g_dev newBufferWithLength:args.encodedLength options:MTLResourceStorageModeShared];
+            if (!buffer) { RED1("shader %s: cannot allocate an argument buffer for set %u", si->key, r->set); return 0; }
+            // Vulkan can leave unused array elements unwritten. Clear the whole buffer so a prior draw's bindings cannot carry over.
+            memset(buffer.contents, 0, buffer.length);
+            [args setArgumentBuffer:buffer offset:0];
+            NSUInteger slot = si->arg_slot[r->set] - 1;
+            bind_buffer(s, stage, buffer, 0, slot);
+            arg_bound |= 1u << r->set;
+        }
+        VkDescriptorSet ds = sets[r->set].s;
         if (!ds) { RED1("shader %s: set %u is not bound", si->key, r->set); continue; }
         const VkDescriptorSetLayout L = ds->L; int bi = r->binding < 128 ? L->idx[r->binding] : -1;
         if (bi < 0 || !L->b[bi].count) {
             char have[256] = ""; size_t o = 0;
             for (uint32_t k = 0; k < L->n && o + 8 < sizeof have; k++) o += snprintf(have + o, sizeof have - o, " %u", L->b[k].binding);
-            const VkPipelineLayout pl = s->pipe->layout; const VkDescriptorSetLayout PL = pl && r->set < pl->nset ? pl->set[r->set] : NULL;
+            const VkPipelineLayout pl = p ? p->layout : NULL; const VkDescriptorSetLayout PL = pl && r->set < pl->nset ? pl->set[r->set] : NULL;
             RED1("shader %s: %u.%u is not in the bound set's layout %p (it has:%s); the pipeline layout's set %u is %p%s", si->key, r->set, r->binding, (void *)L, have, r->set, (void *)PL,
                  PL && r->binding < 128 && PL->idx[r->binding] >= 0 ? ", which has this binding: the set was not rebound with the pipeline" : "");
             continue;
@@ -1314,31 +1480,57 @@ static void bind_res(rs_t *s, const shinfo *si, int frag) {
             switch (r->kind) {
                 case 'u': case 'b': {
                     if (!e->buf) { RED1("shader %s: buffer %u.%u[%u] is empty", si->key, r->set, r->binding, k); break; }
-                    VkDeviceSize off = e->off; if (lb->dyn >= 0 && lb->dyn + k < 16) off += s->set[r->set].dyn[lb->dyn + k];
-                    if (frag) [re setFragmentBuffer:e->buf offset:off atIndex:slot]; else [re setVertexBuffer:e->buf offset:off atIndex:slot];
+                    VkDeviceSize off = e->off; if (lb->dyn >= 0 && lb->dyn + k < 16) off += sets[r->set].dyn[lb->dyn + k];
+                    if (args) {
+                        [args setBuffer:e->buf offset:off atIndex:slot];
+                        MTLResourceUsage usage = r->kind == 'b' ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead;
+                        if (ce) [ce useResource:e->buf usage:usage]; else [re useResource:e->buf usage:usage stages:render_stage];
+                    } else bind_buffer(s, stage, e->buf, off, slot);
                     break;
                 }
                 case 't': case 'c': {
-                    if (!e->tex) { RED1("shader %s: texture %u.%u[%u] is empty", si->key, r->set, r->binding, k); break; }
-                    if (frag) [re setFragmentTexture:e->tex atIndex:slot]; else [re setVertexTexture:e->tex atIndex:slot];
-                    if (r->kind == 'c' && e->smp) { if (frag) [re setFragmentSamplerState:e->smp atIndex:slot]; else [re setVertexSamplerState:e->smp atIndex:slot]; }
+                    if (!e->tex) { if (!args || r->count == 1) RED1("shader %s: texture %u.%u[%u] is empty", si->key, r->set, r->binding, k); break; }
+                    if (args) {
+                        [args setTexture:e->tex atIndex:slot];
+                        MTLResourceUsage usage = MTLResourceUsageRead;
+                        if (e->tex.usage & MTLTextureUsageShaderWrite) usage |= MTLResourceUsageWrite;
+                        if (ce) [ce useResource:e->tex usage:usage]; else [re useResource:e->tex usage:usage stages:render_stage];
+                    } else if (ce) [ce setTexture:e->tex atIndex:slot];
+                    else if (stage == ST_FRAGMENT) [re setFragmentTexture:e->tex atIndex:slot];
+                    else [re setVertexTexture:e->tex atIndex:slot];
+                    if (r->kind == 'c' && e->smp) bind_sampler(s, stage, e->smp, slot);
                     break;
                 }
                 case 's':
-                    if (!e->smp) { RED1("shader %s: sampler %u.%u[%u] is empty", si->key, r->set, r->binding, k); break; }
-                    if (frag) [re setFragmentSamplerState:e->smp atIndex:slot]; else [re setVertexSamplerState:e->smp atIndex:slot];
+                    if (!e->smp) { if (!args || r->count == 1) RED1("shader %s: sampler %u.%u[%u] is empty", si->key, r->set, r->binding, k); break; }
+                    if (args) {
+                        [args setSamplerState:e->smp atIndex:slot];
+                        if (!s->sq->samplers) s->sq->samplers = [NSMutableSet new];
+                        [s->sq->samplers addObject:e->smp];
+                    } else bind_sampler(s, stage, e->smp, slot);
                     break;
             }
         }
     }
+    return 1;
 }
-static void bind_push(rs_t *s, const shinfo *si, int frag) {   // the push-constant block (kind p): the whole range of the pipeline layout, at least 16 bytes
+static void bind_push(rs_t *s, const shinfo *si, int stage) {   // the push-constant block (kind p): the whole range of the pipeline layout, at least 16 bytes
     if (!si) return;
     for (int i = 0; i < si->nres; i++) {
         if (si->res[i].kind != 'p') continue;
-        const VkPipelineLayout l = s->pipe->layout; uint32_t n = (umax(l ? l->pc_size : 0, 16) + 15) & ~15u;
-        if (frag) [s->re setFragmentBytes:s->pc length:n atIndex:si->res[i].slot]; else [s->re setVertexBytes:s->pc length:n atIndex:si->res[i].slot];
+        const VkPipelineLayout l = (stage == ST_COMPUTE ? s->compute : s->pipe)->layout;
+        uint32_t n = (umax(l ? l->pc_size : 0, 16) + 15) & ~15u;
+        NSUInteger slot = si->res[i].slot;
+        if (stage == ST_COMPUTE) [s->ce setBytes:s->cpc length:n atIndex:slot];
+        else if (stage == ST_FRAGMENT) [s->re setFragmentBytes:s->pc length:n atIndex:slot];
+        else [s->re setVertexBytes:s->pc length:n atIndex:slot];
     }
+}
+static MTLScissorRect scissor_of(VkRect2D r, uint32_t w, uint32_t h) {
+    int64_t x0 = r.offset.x, y0 = r.offset.y, x1 = x0 + r.extent.width, y1 = y0 + r.extent.height;
+    x0 = x0 < 0 ? 0 : x0 > w ? w : x0; y0 = y0 < 0 ? 0 : y0 > h ? h : y0;
+    x1 = x1 < x0 ? x0 : x1 > w ? w : x1; y1 = y1 < y0 ? y0 : y1 > h ? h : y1;
+    return (MTLScissorRect){x0, y0, x1 - x0, y1 - y0};
 }
 static int pre_draw(rs_t *s) {
     if (!s->re && s->cut) resume_rp(s);
@@ -1349,13 +1541,22 @@ static int pre_draw(rs_t *s) {
     if (s->applied != p) {
         [re setRenderPipelineState:p->pso]; [re setDepthStencilState:p->dss ? p->dss : g_dss_off];
         [re setCullMode:p->cull]; [re setFrontFacingWinding:p->wind]; [re setTriangleFillMode:p->fill]; [re setDepthClipMode:p->clip];
-        [re setDepthBias:p->bias ? p->bias_c : 0 slopeScale:p->bias ? p->bias_s : 0 clamp:p->bias ? p->bias_cl : 0];
-        [re setBlendColorRed:p->blend[0] green:p->blend[1] blue:p->blend[2] alpha:p->blend[3]];
+        s->bias_dirty = s->blend_dirty = 1;
         [re setStencilFrontReferenceValue:p->sref_f backReferenceValue:p->sref_b];
         s->s_dirty = 1;
-        if (p->has_vp && (!s->applied || !s->applied->has_vp || memcmp(&s->applied->vp, &p->vp, sizeof p->vp))) s->vp_dirty = 1;
-        if (p->has_sc) s->sc_dirty = 1;
+        s->vp_dirty = s->sc_dirty = 1;
         s->applied = p;
+    }
+    if (s->bias_dirty) {
+        const float fixed[3] = {p->bias_c, p->bias_cl, p->bias_s};
+        const float *v = p->dyn_bias ? s->depth_bias : fixed;
+        [re setDepthBias:p->bias ? v[0] : 0 slopeScale:p->bias ? v[2] : 0 clamp:p->bias ? v[1] : 0];
+        s->bias_dirty = 0;
+    }
+    if (s->blend_dirty) {
+        const float *v = p->dyn_blend ? s->blend : p->blend;
+        [re setBlendColorRed:v[0] green:v[1] blue:v[2] alpha:v[3]];
+        s->blend_dirty = 0;
     }
     if (s->s_dirty && p->stencil && (p->dyn_sref || p->dyn_smask)) {   // dynamic stencil state, after the pipeline's own
         if (p->dyn_sref) [re setStencilFrontReferenceValue:s->sdyn_set[2] ? s->sdyn[2][0] : p->sref_f backReferenceValue:s->sdyn_set[2] ? s->sdyn[2][1] : p->sref_b];
@@ -1373,21 +1574,20 @@ static int pre_draw(rs_t *s) {
         }
     }
     s->s_dirty = 0;
-    if (s->vp_dirty) {
-        MTLViewport v = p->has_vp ? p->vp : vp_of(&s->vp);
-        [re setViewport:v]; s->vp_dirty = 0;
+    if (s->vp_dirty || s->sc_dirty) {
+        uint32_t count = p->viewport_index ? umax(s->vp_count, 1) : 1;
+        MTLViewport vp[VK_VIEW_SLOTS]; MTLScissorRect sc[VK_VIEW_SLOTS];
+        VkRect2D full = {{0, 0}, {s->rt_w, s->rt_h}};
+        for (uint32_t i = 0; i < count; i++) {
+            vp[i] = p->has_vp ? p->vp : (s->vp_set & (1u << i)) ? vp_of(&s->vp[i]) : (MTLViewport){0, 0, s->rt_w, s->rt_h, 0, 1};
+            uint32_t slot = (s->sc_set & (1u << i)) ? i : 0;   // a single scissor can cover all the viewports
+            sc[i] = scissor_of(p->has_sc ? p->sc : (s->sc_set & (1u << slot)) ? s->sc[slot] : full, s->rt_w, s->rt_h);
+        }
+        [re setViewports:vp count:count]; [re setScissorRects:sc count:count];
+        s->vp_dirty = s->sc_dirty = 0;
     }
-    if (s->sc_dirty) {   // Metal requires the scissor to lie inside the render target
-        VkRect2D r = p->has_sc ? p->sc : s->sc;
-        int32_t x0 = r.offset.x < 0 ? 0 : r.offset.x, y0 = r.offset.y < 0 ? 0 : r.offset.y;
-        int64_t x1 = (int64_t)r.offset.x + r.extent.width, y1 = (int64_t)r.offset.y + r.extent.height;
-        if (x1 > s->rt_w) x1 = s->rt_w;
-        if (y1 > s->rt_h) y1 = s->rt_h;
-        if (x0 > x1) x0 = (int32_t)x1;
-        if (y0 > y1) y0 = (int32_t)y1;
-        [re setScissorRect:(MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)}]; s->sc_dirty = 0;
-    }
-    bind_res(s, p->vs, 0); bind_res(s, p->fs, 1); bind_push(s, p->vs, 0); bind_push(s, p->fs, 1);
+    if (!bind_res(s, p->vs, ST_VERTEX) || !bind_res(s, p->fs, ST_FRAGMENT)) return 0;
+    bind_push(s, p->vs, ST_VERTEX); bind_push(s, p->fs, ST_FRAGMENT);
     for (uint32_t i = 0; i < 14; i++)
         if (p->vb_mask >> i & 1) {
             VkBuffer b = s->vb[i]; if (!b || !b->mem) { RED1("vertex buffer %u not bound", i); return 0; }
@@ -1399,21 +1599,41 @@ static void replay(rs_t *s, VkCommandBuffer cb) {
     for (size_t o = 0; o < cb->n;) {
         const chdr *h = (const chdr *)(cb->buf + o); const void *c = h + 1; o += h->size;
         switch (h->op) {
-            case C_BRP: begin_rp(s, c); break;
+            case C_BRP: begin_rp(s, c, cb, o); break;
             case C_ERP: end_rp(s, 1); s->cut = 0; s->rpd = nil; break;
-            case C_PIPE: s->pipe = ((const c_pipe *)c)->p; break;
+            case C_PIPE: {
+                const c_pipe *x = c;
+                if (x->compute) s->compute = x->p; else s->pipe = x->p;
+                break;
+            }
             case C_SETS: {
                 const c_sets *x = c; uint32_t k = 0;
+                bound_set *sets = x->compute ? s->cset : s->set;
                 for (uint32_t i = 0; i < x->n && x->first + i < 8; i++) {
-                    uint32_t si = x->first + i; VkDescriptorSet ds = x->s[i]; s->set[si].s = ds;
-                    for (uint32_t j = 0; ds && j < ds->L->ndyn; j++, k++) if (j < 16) s->set[si].dyn[j] = k < x->ndyn ? x->dyn[k] : 0;
+                    uint32_t si = x->first + i; VkDescriptorSet ds = x->s[i]; sets[si].s = ds;
+                    for (uint32_t j = 0; ds && j < ds->L->ndyn; j++, k++) if (j < 16) sets[si].dyn[j] = k < x->ndyn ? x->dyn[k] : 0;
                 }
                 break;
             }
             case C_VB: { const c_vb *x = c; for (uint32_t i = 0; i < x->n; i++) { s->vb[x->first + i] = x->b[i]; s->vbo[x->first + i] = x->o[i]; } break; }
             case C_IB: { const c_ib *x = c; s->ib = x->b; s->ibo = x->o; s->it = x->t == VK_INDEX_TYPE_UINT32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16; s->isz = x->t == VK_INDEX_TYPE_UINT32 ? 4 : 2; break; }
-            case C_VP: s->vp = ((const c_vp *)c)->v; s->vp_dirty = 1; s->have_vp = 1; break;
-            case C_SC: s->sc = ((const c_sc *)c)->r; s->sc_dirty = 1; s->have_sc = 1; break;
+            case C_VP: {
+                const c_vp *x = c;
+                memcpy(s->vp + x->first, x->v, x->n * sizeof *x->v);
+                s->vp_set |= ((1u << x->n) - 1) << x->first;
+                s->vp_count = x->first ? umax(s->vp_count, x->first + x->n) : x->n;
+                s->vp_dirty = 1;
+                break;
+            }
+            case C_SC: {
+                const c_sc *x = c;
+                memcpy(s->sc + x->first, x->r, x->n * sizeof *x->r);
+                s->sc_set |= ((1u << x->n) - 1) << x->first;
+                s->sc_dirty = 1;
+                break;
+            }
+            case C_DEPTHBIAS: memcpy(s->depth_bias, c, sizeof s->depth_bias); s->bias_dirty = 1; break;
+            case C_BLEND: memcpy(s->blend, c, sizeof s->blend); s->blend_dirty = 1; break;
             case C_DRAWI: {
                 const c_drawi *x = c;
                 if (!x->count || !x->inst || !pre_draw(s)) break;
@@ -1457,7 +1677,27 @@ static void replay(rs_t *s, VkCommandBuffer cb) {
                 g_n_draw++;
                 break;
             }
-            case C_PUSH: { const c_push *x = c; memcpy(s->pc + x->off, x->data, x->size); break; }
+            case C_PUSH: {
+                const c_push *x = c;
+                if (x->stages & VK_SHADER_STAGE_ALL_GRAPHICS) memcpy(s->pc + x->off, x->data, x->size);
+                if (x->stages & VK_SHADER_STAGE_COMPUTE_BIT) memcpy(s->cpc + x->off, x->data, x->size);
+                break;
+            }
+            case C_DISPATCH: {
+                const c_dispatch *x = c; VkPipeline p = s->compute;
+                if (s->re || s->cut || !p || !p->compute) { RED1("compute dispatch without a pipeline or inside a render pass"); break; }
+                end_blit(s);
+                s->ce = [s->cb computeCommandEncoder];
+                [s->ce setComputePipelineState:p->compute];
+                if (bind_res(s, p->cs, ST_COMPUTE)) {
+                    bind_push(s, p->cs, ST_COMPUTE);
+                    const uint32_t *l = p->cs->local;
+                    [s->ce dispatchThreadgroups:MTLSizeMake(x->x, x->y, x->z) threadsPerThreadgroup:MTLSizeMake(l[0], l[1], l[2])];
+                }
+                // End the encoder at each dispatch so Metal tracks dependencies at the boundary.
+                [s->ce endEncoding]; s->ce = nil;
+                break;
+            }
             case C_COPYI: {
                 const c_copyi *x = c; VkImage a = x->src, b = x->dst;
                 if (!a->tex || !b->tex) { RED1("a copied image was not created"); break; }
@@ -1594,7 +1834,7 @@ VKB(vkQueueSubmit, VkResult, VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFe
                 for (uint32_t k = 0; k < sq->nvis; k++) sq->occ[k].q->val[sq->occ[k].idx] = 0;
                 for (uint32_t k = 0; k < sq->nvis; k++) sq->occ[k].q->val[sq->occ[k].idx] += r[sq->occ[k].slot];
             }
-            sq->vis = nil; free(sq->occ); free(sq);
+            sq->vis = nil; sq->samplers = nil; free(sq->occ); free(sq);
             done_advance(v);   // after the results: a query is read as available once g_done reaches its ticket
         }];
         [cb commit];

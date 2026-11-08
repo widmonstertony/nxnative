@@ -18,6 +18,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'tools'))
 import romfs as rfs
+import romfs_image
 import shader_lib
 MODULE_FILES = ('*.patched.bin', '*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv', '*.changed.tsv', 'nro.tsv')   # what the host reads from the module folder (build_ipa.sh copies the same tables but changed.tsv: the iPhone's cheats never write code)
 MSL_FILES = ('*.metallib', '*.json', '*.tsv')   # what the host reads from msl/ (not the Mac build's .metal sources or _b_build.json); an NVN game's b-<chain> goes in as one file of them (shader_lib.py)
@@ -270,7 +271,13 @@ def pack(a):
         a = argparse.Namespace(**vars(a))
         for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html'):
             if getattr(a, name): setattr(a, name, str(Path(getattr(a, name)).resolve()))
+        if a.external_romfs and (a.program or not rfs.is_image(a.romfs)):
+            raise SystemExit('--external-romfs requires a single-program app and a RomFS image file')
         mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a)
+        if a.external_shaders and (a.program or not is_chain_library(a.msl) or len(msls) != 1 or
+                                   msls[0].resolve().name != f'{shader_lib.name_of(a.msl)}.img' or not rfs.is_image(msls[0]) or
+                                   (a.msl_name and a.msl_name != shader_lib.name_of(a.msl))):
+            raise SystemExit('--external-shaders requires a single-program app and a complete NVN shader image')
         # --program: the other programs of a game of several programs (index, rewritten modules, RomFS, shader libraries, tables, offline pages; tab-separated), which go in beside the first's as one app
         programs = []
         for row in a.program or []:
@@ -286,7 +293,8 @@ def pack(a):
         if not codesign: raise SystemExit('codesign is not available')
         codesign = Path(codesign).resolve()
         minos = min_os(a.host)
-        sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py'] + swift_sources()
+        sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/romfs_identity.h',
+                   HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources()
         inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + sources],
                   'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
@@ -306,14 +314,15 @@ def pack(a):
     for d in (mac, dm / 'font'): d.mkdir(parents=True)
     romfs, msl, aoc = Path(a.romfs), Path(a.msl), Path(a.aoc) if a.aoc else None
     # each source is probed on its own, as they may lie on different volumes; cp -c copies what it cannot clone, so a probe decides only the free-space check and the step line
-    trees, lists = {'romfs': romfs, 'aoc': aoc}, {'mods': mods, 'msl': msls, 'pso': pso}
+    trees, lists = {'romfs': None if a.external_romfs else romfs, 'aoc': aoc}, {'mods': mods, 'msl': [] if a.external_shaders else msls, 'pso': pso}
     clone = {k: bool(d) and can_clone(d, res) for k, d in trees.items()} | {k: bool(ps) and can_clone(ps[0], res) for k, ps in lists.items()}
-    if is_chain_library(msl): clone['msl'] = False   # copy_msl writes it, which the free-space check below counts
+    share_msl = a.share_shader_image and is_chain_library(msl) and len(msls) == 1 and msls[0].suffix == '.img' and clone['msl']
+    if is_chain_library(msl) and not share_msl: clone['msl'] = False   # copy_msl writes a filtered image
     need = sum(tree_bytes(d) for k, d in trees.items() if d and not clone[k]) + sum(p.stat().st_size for k, ps in lists.items() if not clone[k] for p in ps)
     if need:
         free = shutil.disk_usage(res).free
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
-    step(f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
+    step('launcher and host (external game image)' if a.external_romfs else f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
     build_launcher(mac / EXE, minos, clang, swiftc, sdk)
     shutil.copy(a.host, mac / 'dmhost')   # data and mode, not the build's extended attributes (copy2 would carry them into the app)
     copy(mods, dm, clone['mods'])
@@ -322,10 +331,24 @@ def pack(a):
     if fonts: copy(fonts, dm / 'font', False)
     if a.env_file: shutil.copyfile(a.env_file, dm / 'env.txt')
     if a.settings: shutil.copyfile(a.settings, dm / 'launcher.json')
-    step('shader libraries'); msl_dst = res / 'msl' / (a.msl_name or msl.name); msl_dst.parent.mkdir(exist_ok=True); copy_msl(msl, msls, msl_dst, clone['msl'])
+    msl_dst = res / 'msl' / (a.msl_name or msl.name)
+    if a.external_shaders:
+        step('shader libraries (external image)')
+    elif share_msl:
+        step('shader libraries (APFS clone)')
+        msl_dst.parent.mkdir(exist_ok=True)
+        dst = Path(f'{msl_dst}.img')
+        if ctypes.CDLL(None, use_errno=True).clonefile(os.fsencode(msls[0]), os.fsencode(dst), 0) != 0:
+            e = ctypes.get_errno()
+            raise OSError(e, os.strerror(e), dst)
+    else:
+        step('shader libraries')
+        msl_dst.parent.mkdir(exist_ok=True)
+        copy_msl(msl, msls, msl_dst, clone['msl'])
     if aoc: step('add-on content'); copy([aoc], res / 'aoc', clone['aoc'])
     if pso: step('pipeline archive'); (res / 'pso').mkdir(); copy(pso, res / 'pso', clone['pso'])
-    step('game files'); copy([romfs], res / ('romfs.img' if romfs.is_file() else 'romfs'), clone['romfs'])
+    if not a.external_romfs:
+        step('game files'); copy([romfs], res / ('romfs.img' if romfs.is_file() else 'romfs'), clone['romfs'])
     if a.html and Path(a.html).is_dir(): copy([Path(a.html)], res / 'html', False)   # the offline pages, beside the RomFS where the host looks for them (hle_web.c)
     # The other programs: p<N>/ (RomFS, offline pages), msl/p<N>/<library>, dm/p<N>/ (modules, tables), and the table of them all, which the launcher makes DM_PROGRAMS (launcher.c, hle_oe.c): @R@ Resources, @C@ Contents, @S@ the app's Application Support folder
     if programs:
@@ -342,6 +365,13 @@ def pack(a):
     icon = bool(a.icon)
     if icon: step('icon'); make_icns(a.icon, res / 'AppIcon.icns')
     info = info_plist(a, minos, icon)
+    if a.external_romfs:
+        info['DMExternalRomfs'] = str(romfs)
+        (res / 'romfs.id').write_text(romfs_image.identity(romfs, a.title_id, a.version or '') + '\n')
+    if a.external_shaders:
+        shader_image = msls[0].resolve()
+        info['DMExternalShaders'] = str(shader_image)
+        (res / 'shaders.id').write_text(romfs_image.identity(shader_image, a.title_id, a.version or '') + '\n')
     info['DMModuleFiles'] = [p.name for p in mods]
     commit = source_commit()
     if commit: info['DMCommit'] = commit
@@ -371,8 +401,11 @@ def parse(argv):
     ap.add_argument('--host', required=True, help='the Mac host built for the profile')
     ap.add_argument('--patched', required=True, help='the rewritten modules (patch_nso.py output)')
     ap.add_argument('--romfs', required=True, help='the RomFS of the packed version')
+    ap.add_argument('--external-romfs', action='store_true', help='read the RomFS image from its current absolute path instead of copying it into the app')
     ap.add_argument('--msl', required=True, help='the Mac shader libraries: <shader>/cache/b-<chain>, or a Vulkan or GL game\'s <shader>/vk or gl')
     ap.add_argument('--msl-name', help='its folder name in the app (default: its own)')
+    ap.add_argument('--share-shader-image', action='store_true', help='on the same APFS volume, clone the complete Mac shader image instead of writing a filtered copy')
+    ap.add_argument('--external-shaders', action='store_true', help='keep the complete NVN Metal shader image at its build path; its drive must remain available')
     ap.add_argument('--tables', required=True, help='the game profile folder (shader_map.tsv and the tables beside it)')
     ap.add_argument('--font', required=True, help='the folder of the shared-font stand-ins (nintendo_ext.ttf)')
     ap.add_argument('--aoc', help='the DLC RomFS images or folders by index')

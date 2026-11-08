@@ -433,6 +433,8 @@ The shader libraries are one file, `shader/cache/b-<chain>.img` for the Mac and 
 
 The compile cache is one file too, `shader/cache/cas.db` (`dm/tools/shader_cache.py`), which a build reads and writes in place, and into which a `cas/` or `cas.tar` from before it moves by itself ([The compile cache was unpacked for each build](reference/packing.md#the-compile-cache-was-unpacked-for-each-build)). Xcode's derived data, which Xcode wants as a folder, is one uncompressed file between builds, `ipa/build/ios/pkg/dd.tar` (`dm/tools/tree_tar.py`): the step that runs unpacks it first and packs it at the end, and a reused step does not touch it ([Build folders of many small files](reference/packing.md#a-build-folder-holds-hundreds-of-thousands-of-small-files)).
 
+For a new build directory, set `DMSH_CAS` to an absolute path ending in `.zstd.db` to store the same cache entries with Zstandard compression. Use that path on retries to keep the completed work.
+
 The Python tools need one venv, for every game: `python3 -m venv <drive with the games>/venv`, then `<that>/bin/pip install -r .github/requirements/tools.txt`. A game's work folder can link to it (`ln -s <drive>/venv <NSP folder>/<id>-work/venv`), so a script keeps running `venv/bin/python`.
 
 Derived profiles keep generated files while `<id>.derived.key` matches and every source-generated data row remains intact, including repeated rows. Provisional and derived shader keys include their profile files and each RomFS or capture file's path, size and modification time. Re-extraction or a new capture timestamp therefore runs the split or Vulkan/GL translation again, even with identical bytes. Registered RomFS keys use paths and sizes; NVN split tables are still checked against the profile.

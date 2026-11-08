@@ -29,6 +29,9 @@ One [NUP container](../../../docs/development.md#the-packing-script-in-detail) o
 
 ## Frame rate
 
+- The Mac launcher offers **Uncapped** when the rewritten frame ratio supports elapsed time. Gameplay has no host present interval. The ratio consumes the elapsed microseconds between presents, scaled by the game's own base rate. The host keeps the movie period and limits a single simulation step to 100 ms after a long stall.
+- In windowless 1.1.1 tests on an M5 Max with the same copied save, the bedroom rendered 98.63 fps through walking and camera input and 99.49 fps in the following steady interval. The two stable clock samples after the turn were 6.004 game seconds in 6.003 real seconds and 5.990 in 5.990. A 697.5 ms frame during the route triggered the long-step limit. The test did not measure physical display refresh.
+
 Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk.sh` in the work folder).
 
 - Current: the title and menu, a movie behind them, are a locked 60 fps (p50 16.67 ms, GPU span 15.6 ms).

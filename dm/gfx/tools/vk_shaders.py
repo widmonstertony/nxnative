@@ -6,20 +6,22 @@
 #   · its descriptor bindings are renumbered per kind (uniform / storage buffers → [[buffer(n)]], images → [[texture(n)]], samplers → [[sampler(n)]], n from 0 in binding order)
 #     by rewriting the Binding decorations in a copy of the SPIR-V, then translated with spirv-cross --msl-decoration-binding: the slots stay below Metal's limits whatever the
 #     game's set / binding numbers are (Hades uses set 1 bindings up to 49), and the table records which (set, binding) each slot came from
+#   · when the texture or sampler table exceeds the direct slots, each descriptor set uses a Tier 2 argument buffer, with an ID for every array element
 #   · vertex shaders get --flip-vert-y: Vulkan's clip space has y pointing down, Metal's up, and the viewports stay as the game gives them
 #   · vertex buffers are bound by the host from slot 30 downwards (30 - Vulkan binding), above every shader's buffer slots
 #   · only resources the translated entry point takes are listed (a declared but unused one has no Metal slot to bind)
 #   · a push-constant block gets the buffer slot after the descriptor buffers (spirv-cross puts it at buffer(0), where the first uniform buffer goes), listed as p:0.0=slot;
 #     the host sets the pushed bytes there (Super Mario Galaxy: 54 of its 56 built-in shaders have one)
-#   · stages other than vertex and fragment are skipped and counted: Metal has no geometry shaders (Super Mario Galaxy has 2)
+#   · compute shaders record their fixed workgroup dimensions; other stages are counted and skipped (Metal has no geometry shaders)
 #   · a fragment shader with an output at location 1 also gets a variant vk_<key>_d where that output is [[color(0), index(1)]]: Super Mario Galaxy's GX shaders write
 #     the second blend source at location 1 (no Index decoration), which NVIDIA's hardware feeds to dual-source blending; the host picks the variant for pipelines
 #     whose blend factors read source 1
 # Super Mario Galaxy generates its GX shaders at run time; they come from a capture folder (the Mac host's DM_VK_CAPTURE), read like a RomFS: every input folder is
 # searched for SPIR-V files by their magic
 # Output: <out>/vk/vk_shaders.metallib and <out>/vk/vk_shaders.tsv; --ios <dir> also writes <dir>/vk/ with an iPhone library (same table)
-# Table rows: key <TAB> stage (vert / frag) <TAB> resources, space-separated kind:set.binding=slot[*count] (count: an array of descriptors in consecutive slots; u uniform buffer, b storage buffer, t image, s sampler, c combined image sampler = texture and sampler slot n,
-#   p push constants)
+# Table rows: key <TAB> stage (vert / frag / comp) <TAB> resources, space-separated kind:set.binding=slot[*count] (count: an array of descriptors in consecutive slots; u uniform buffer, b storage buffer, t image, s sampler, c combined image sampler = texture and sampler slot n,
+#   p push constants, a argument buffer with its set and Metal buffer slot; entries for that set then use argument IDs)
+#   A compute row also has l:x,y,z for its workgroup dimensions.
 # Usage: vk_shaders.py <SPIR-V dir>... <out dir> [--ios <dir>]   (SPIR-V dirs: the RomFS, capture folders)
 import concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../tools'))
@@ -32,6 +34,10 @@ OP_DECORATE, OP_MEMBER_DECORATE, OP_TYPE_ARRAY, OP_TYPE_RTARRAY, OP_TYPE_STRUCT 
 DEC_ARRAY_STRIDE, DEC_BINDING, DEC_SET = 6, 33, 34
 KINDS = {'ubos': 'u', 'ssbos': 'b', 'separate_images': 't', 'images': 't', 'separate_samplers': 's', 'textures': 'c'}
 SLOT_CLASS = {'u': 'buffer', 'b': 'buffer', 't': 'texture', 's': 'sampler', 'c': 'texture', 'p': 'buffer'}
+# This shadow geometry stage emits the input triangle unchanged and sets only ViewportIndex
+# from location 1. The paired vertex stage computes it from the instance ID, so it is
+# uniform across the triangle and can write Metal's built-in directly.
+VIEWPORT_FORWARD = {'287e364d4b97a5be': '5dad8be0fb07c39e'}
 # GLSL's FMin / FMax / FClamp, which spirv-cross writes as fast::min / max / clamp, leave a NaN operand's result to the GPU; the Switch's GPU returns the other operand, as Metal's
 # precise:: functions (IEEE fmin / fmax) do on every GPU. Super Mario Galaxy 2's GX lighting normalizes light directions the game leaves at (0, 0, 0) (the key and fill lights of
 # its characters) and takes max(0, dot(ldir, NaN)) as the spot term: 0 on the Switch and on the M4 Pro, so the attenuation is 1; on an A20 Pro (iPhone) the half of Mario
@@ -89,7 +95,13 @@ def one(path, tmp, root):
     eps = refl.get('entryPoints', [])
     if len(eps) != 1: red(f'{path}: entry points {eps} are not exactly one')
     stage = eps[0]['mode']
-    if stage not in ('vert', 'frag'): return stage   # skipped (main counts them)
+    if stage == 'geom' and key in VIEWPORT_FORWARD:
+        return key, stage, ['g:' + VIEWPORT_FORWARD[key]], [], '/' + os.path.relpath(path, root)
+    if stage not in ('vert', 'frag', 'comp'): return stage   # skipped (main counts them)
+    group = eps[0].get('workgroup_size', ())
+    if stage == 'comp' and (len(group) != 3 or any(n < 1 for n in group)
+                            or any(eps[0].get('workgroup_size_is_spec_constant_id', ()))):
+        red(f'{path}: compute shaders need a fixed workgroup size, got {group}')
     dec = decorations(words)
     by_pair, count = {}, {}
     for k, kind in KINDS.items():
@@ -98,9 +110,16 @@ def one(path, tmp, root):
             dims = r.get('array') or [1]
             if len(dims) != 1 or not dims[0]: red(f'{path}: array dimensions {dims} of resource {r.get("name")} are not implemented')
             count[pair] = dims[0]   # an array of n descriptors takes n consecutive slots (Super Mario Galaxy: 4 position-matrix uniform buffers, 8 textures)
+    use_arguments = (
+        sum(count[pair] for pair, kind in by_pair.items() if kind in ('t', 'c')) > 31
+        or sum(count[pair] for pair, kind in by_pair.items() if kind in ('s', 'c')) > 16
+    )
+    if use_arguments and ('c' in by_pair.values() or any(st >= 8 for st, _ in by_pair)):
+        red(f'{path}: argument buffers require separate textures and samplers in sets 0 through 7')
     pcs = refl.get('push_constants', [])
     if len(pcs) > 1: red(f'{path}: {len(pcs)} push constant blocks')
     slots, nxt, res = {}, {'buffer': 0, 'texture': 0, 'sampler': 0}, []
+    arg_ids = {}
     for vid, d in sorted(dec.items(), key=lambda t: (t[1].get('set', 0), t[1].get('binding', 0))):
         if 'binding_at' not in d: continue
         pair = (d.get('set', 0), d['binding'])
@@ -108,16 +127,23 @@ def one(path, tmp, root):
         if not kind: continue   # declared but unused: spirv-cross drops it
         if pair in slots: n = slots[pair]
         else:
-            cls, k = SLOT_CLASS[kind], count[pair]; n = nxt[cls]; nxt[cls] += k
-            if kind == 'c': nxt['sampler'] = max(nxt['sampler'], n + k)
+            k = count[pair]
+            if use_arguments:
+                n = arg_ids.get(pair[0], 0)
+                arg_ids[pair[0]] = n + k
+            else:
+                cls = SLOT_CLASS[kind]; n = nxt[cls]; nxt[cls] += k
+                if kind == 'c': nxt['sampler'] = max(nxt['sampler'], n + k)
             slots[pair] = n; res.append(f'{kind}:{pair[0]}.{pair[1]}={n}' + (f'*{k}' if k > 1 else ''))
         words[d['binding_at']] = n
-    pc_slot = nxt['buffer'] if pcs else None
+    pc_slot = (max(arg_ids) + 1 if use_arguments else nxt['buffer']) if pcs else None
     if pcs: nxt['buffer'] += 1
     if nxt['buffer'] > 16 or nxt['texture'] > 31 or nxt['sampler'] > 16: red(f'{path}: resource slots exceeded {nxt}')
     spv = os.path.join(tmp, key + '.spv'); msl = os.path.join(tmp, key + '.metal')
     open(spv, 'wb').write(struct.pack(f'<{len(words)}I', *words))
-    cmd = [SPIRV_CROSS, spv, '--msl', '--msl-version', '20300', '--msl-decoration-binding', '--rename-entry-point', 'main', f'vk_{key}', stage, '--output', msl]
+    cmd = [SPIRV_CROSS, spv, '--msl', '--msl-version', '20300', '--msl-decoration-binding',
+           '--rename-entry-point', eps[0]['name'], f'vk_{key}', stage, '--output', msl]
+    if use_arguments: cmd.extend(('--msl-argument-buffers', '--msl-argument-buffer-tier', '1'))
     if stage == 'vert': cmd.append('--flip-vert-y')
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode: red(f'{path}: spirv-cross failed: {r.stderr.strip()[:300]}')
@@ -126,7 +152,8 @@ def one(path, tmp, root):
     src = open(msl).read(); m = re.search(r'\bvk_' + key + r'\((.*?)\)\s*\{', src, re.S)
     if not m: red(f'{path}: entry point vk_{key} not found in the translated MSL')
     if pcs:   # the push-constant argument is `constant <block type>& name [[buffer(0)]]`: move it to its own slot
-        tname = refl['types'][pcs[0]['type']]['name']
+        # HLSL's type names may contain dots, which SPIRV-Cross replaces with underscores in MSL.
+        tname = re.sub(r'\W', '_', refl['types'][pcs[0]['type']]['name'])
         a = re.search(r'constant\s+' + re.escape(tname) + r'&\s+\w+\s+\[\[buffer\((\d+)\)\]\]', m.group(1))
         if a:
             s0, s1 = m.start(1) + a.start(1), m.start(1) + a.end(1)
@@ -134,10 +161,30 @@ def one(path, tmp, root):
             m = re.search(r'\bvk_' + key + r'\((.*?)\)\s*\{', src, re.S)
             res.append(f'p:0.0={pc_slot}')
     used = {(c, int(n)) for c, n in re.findall(r'\[\[(buffer|texture|sampler)\((\d+)\)\]\]', m.group(1))}
-    res = [x for x in res if (SLOT_CLASS[x[0]], int(x.rsplit('=', 1)[1].split('*')[0])) in used]
+    if use_arguments:
+        arg_slots = {int(st): int(n) for st, n in re.findall(r'\bspvDescriptorSet(\d+)\s+\[\[buffer\((\d+)\)\]\]', m.group(1))}
+        arg_used = {}
+        for st in arg_slots:
+            body = re.search(r'\bstruct spvDescriptorSetBuffer' + str(st) + r'\s*\{(.*?)\};', src, re.S)
+            if not body: red(f'{path}: argument buffer for set {st} has no resource structure')
+            arg_used[st] = {int(n) for n in re.findall(r'\[\[id\((\d+)\)\]\]', body.group(1))}
+        res = [x for x in res if x[0] == 'p' or int(x.split('=', 1)[1].split('*')[0]) in arg_used.get(int(x[2:].split('.', 1)[0]), ())]
+        res.extend(f'a:{st}.0={n}' for st, n in sorted(arg_slots.items()))
+    else:
+        res = [x for x in res if (SLOT_CLASS[x[0]], int(x.rsplit('=', 1)[1].split('*')[0])) in used]
+    if stage == 'comp':
+        res.append('l:' + ','.join(map(str, group)))
     src = PRECISE.sub(r'precise::\1(', src); open(msl, 'w').write(src)
     msls = [msl]
-    if stage == 'frag' and '[[color(1)]]' in src:   # dual-source variant vk_<key>_d: the output at location 1 becomes the second blend source of attachment 0
+    if stage == 'vert' and key in VIEWPORT_FORWARD.values():
+        variant, n = re.subn(r'(\buint\s+\w+\s+)\[\[user\(locn1\)\]\]', r'\1[[viewport_array_index]]', src)
+        if n != 1: red(f'{path}: expected one uint viewport output at location 1, found {n}')
+        msl_vp = os.path.join(tmp, key + '_vp.metal')
+        open(msl_vp, 'w').write(variant.replace(f'vk_{key}', f'vk_{key}_vp'))
+        msls.append(msl_vp)
+    colors = re.findall(r'\b(\w+)\s+\w+\s+\[\[color\((\d+)\)\]\]', src) if stage == 'frag' else []
+    if len(colors) == 2 and colors[0][0] == colors[1][0] and {loc for _, loc in colors} == {'0', '1'}:
+        # Metal's two blend sources must have the same type. A mixed-type MRT shader has no dual-source variant.
         msl_d = os.path.join(tmp, key + '_d.metal'); msls.append(msl_d)
         open(msl_d, 'w').write(src.replace(f'vk_{key}', f'vk_{key}_d').replace('[[color(1)]]', '[[color(0), index(1)]]'))
     return key, stage, res, msls, '/' + os.path.relpath(path, root)

@@ -77,6 +77,7 @@ def write(files, dst):
     part = dst + '.part'
     names = sorted((n.encode() for n in files))
     ents, off = [], romfs.HEAD.size
+    zstd = romfs.shader_zstd() if os.environ.get('DMSH_COMPACT_MAC_SOURCES') == '1' and name_of(dst).startswith('b-') else None
     with builtins.open(part, 'wb') as out:
         out.write(b'\0' * off)
         for name in names:
@@ -85,6 +86,11 @@ def write(files, dst):
             n, source = 0, files[name.decode()]
             if callable(source): source = source()
             if source is None: raise OSError(f'{name.decode()}: no bytes to write')
+            if zstd is not None and name.endswith(b'.metal'):
+                if not isinstance(source, bytes):
+                    with romfs.open(source, 'rb') as f: source = f.read()
+                packed = romfs.MSL_ZSTD + zstd.compress(source, level=1)
+                if len(packed) < len(source): source = packed
             if isinstance(source, bytes): out.write(source); n = len(source)
             elif not isinstance(source, (str, os.PathLike)): raise TypeError(f'{name.decode()}: {type(source).__name__} is not a path, bytes or a function')
             else:

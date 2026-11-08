@@ -10,6 +10,8 @@ Do not stop at the obvious archive. In Mario the main `bfsha` held 4,888 of the 
 
 Validate a new title's coverage at run time: `DM_NVN_SHDUMP=<dir>` makes the host dump the control section and code of every program it can't find in the map; the host makes the directory if it is missing; search those bytes in the game files to find the container that was missed.
 
+For a bring-up build, set `DM_NVN_CAPTURE=<dir>` to include those exact shader pairs from a run of the matching build in the offline split. Keep the `.ctl` and `.code` files together under their original hash names. The split checks the stage and key and prefers a matching shader from the game files. This can cover the scenes exercised so far while a reader for the original container is being developed.
+
 ## 2. Key shaders by control section + code
 
 The host key is `sha256(control[0:0x880] + code)[:16]` (`prog_get` in `nvn_mtl.m`, `shader_split.py`). D2R keyed by the control section alone; in Mario, 6,367 shader pairs share a control section but differ in code. A different code length or layout in a new title must be reflected in both places.

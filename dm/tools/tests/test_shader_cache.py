@@ -94,6 +94,48 @@ class Writers(Base):
         self.assertEqual(self.store.names(''), {'done'})
 
 
+class Compact(Base):
+    def compact(self):
+        store = shader_cache.Store(self.root / 'cas.zstd.db', self.said.append)
+        self.addCleanup(store.close)
+        return store
+
+    def test_reopens_with_original_bytes_and_deduplicates(self):
+        large, small = b'Metal shader\0' * 8192, b'abc'
+        store = self.compact()
+        for name, data in (('shader', large), ('alias', large), ('short', small), ('empty', b'')):
+            store.put(name, data)
+        packed = store.db.execute('SELECT data FROM blob ORDER BY id').fetchall()
+        self.assertEqual(len(packed), 3)
+        self.assertEqual(packed[0][0][0], 1)
+        self.assertLess(len(packed[0][0]), len(large) // 2)
+        self.assertEqual(packed[1][0], b'\0abc')
+        store.close()
+        reopened = self.compact()
+        self.assertEqual([reopened.get(k) for k in ('shader', 'alias', 'short', 'empty')], [large, large, small, b''])
+
+    def test_only_damaged_blob_becomes_a_cache_miss(self):
+        store = self.compact()
+        store.put('good', b'other')
+        store.put('shader', b'bytes')
+        store.put('alias', b'bytes')
+        store.db.execute('UPDATE blob SET data=? WHERE id=(SELECT blob FROM entry WHERE name=?)', (b'\1broken', 'shader'))
+        self.assertIsNone(store.get('shader'))
+        self.assertIsNone(store.get('alias'))
+        self.assertEqual(store.get('good'), b'other')
+        store.put('shader', b'bytes')
+        self.assertEqual(store.get('shader'), b'bytes')
+
+    def test_old_raw_cache_with_compact_name_is_preserved(self):
+        self.store.put('old', b'raw Metal library')
+        self.store.close()
+        self.path.rename(self.root / 'cas.zstd.db')
+        store = self.compact()
+        self.assertEqual(store.get('old'), b'raw Metal library')
+        store.put('new', b'x' * 10000)
+        self.assertEqual(store.db.execute('SELECT data FROM blob ORDER BY id DESC LIMIT 1').fetchone()[0], b'x' * 10000)
+
+
 class Damage(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory(); self.addCleanup(t.cleanup)

@@ -25,6 +25,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "romfs_image.h"
+#include "romfs_identity.h"
 #include "save_sync.h"
 
 extern char **environ;
@@ -160,10 +161,18 @@ static void programs_table(const char *contents, const char *res, const char *su
     fclose(f); fclose(o); setenv("DM_PROGRAMS", out, 0);
 }
 
+static int external_image_matches(const char *path, const char *identity) {
+    romfs_id want, got;
+    romfs_img *image = romfs_id_check(identity, path, &want, &got) == ROMFS_ID_OK ? romfs_image_open(path) : NULL;
+    int valid = image && !image->damaged;
+    romfs_image_close(image);
+    return valid;
+}
+
 int main(int argc, char **argv) {
     char self[PATH_MAX], exe[PATH_MAX]; uint32_t n = sizeof self;
     if (_NSGetExecutablePath(self, &n) || !realpath(self, exe)) return 1;
-    char contents[PATH_MAX], res[PATH_MAX], host[PATH_MAX], dm[PATH_MAX], romfs[PATH_MAX], p[PATH_MAX];
+    char contents[PATH_MAX], res[PATH_MAX], host[PATH_MAX], dm[PATH_MAX], romfs[PATH_MAX], msl[PATH_MAX], p[PATH_MAX];
     snprintf(contents, sizeof contents, "%s", exe); *strrchr(contents, '/') = 0; *strrchr(contents, '/') = 0;   // .../Contents/MacOS/<launcher> → .../Contents
     snprintf(res, sizeof res, "%s/Resources", contents); snprintf(host, sizeof host, "%s/MacOS/dmhost", contents);
     snprintf(dm, sizeof dm, "%s/dm", res); snprintf(romfs, sizeof romfs, "%s/romfs", res);
@@ -173,10 +182,35 @@ int main(int argc, char **argv) {
     if (!info_string("DMTitleID", id, sizeof id) || strchr(id, '/')) { alert(name, "This app has no title ID in its Info.plist (DMTitleID): pack it again with build_ipa_from_nsp.py --platform mac-app."); return 1; }
     struct stat st; snprintf(p, sizeof p, "%s/romfs.img", res);
     int valid_romfs;
-    if (!stat(p, &st)) {
+    if (info_string("DMExternalRomfs", romfs, sizeof romfs)) {
+        if (romfs[0] != '/' || stat(romfs, &st) || !S_ISREG(st.st_mode)) {
+            alert(name, "The external game image is unavailable. Reconnect the drive containing the image used to build this app.");
+            return 1;
+        }
+        snprintf(p, sizeof p, "%s/romfs.id", res);
+        if (!external_image_matches(romfs, p)) {
+            alert(name, "The external game image has changed or is incomplete. Restore the matching image used to build this app.");
+            return 1;
+        }
+        valid_romfs = 1;
+    } else if (!stat(p, &st)) {
         romfs_img *image = romfs_image_open(p); valid_romfs = image != NULL;
         romfs_image_close(image); snprintf(romfs, sizeof romfs, "%s", p);
     } else { snprintf(p, sizeof p, "%s/%s", romfs, marker); valid_romfs = !stat(p, &st); }
+    if (info_string("DMExternalShaders", msl, sizeof msl)) {
+        if (msl[0] != '/' || stat(msl, &st) || !S_ISREG(st.st_mode)) {
+            alert(name, "The external Metal shader image is unavailable. Reconnect the drive containing the build cache used by this app.");
+            return 1;
+        }
+        snprintf(p, sizeof p, "%s/shaders.id", res);
+        if (!external_image_matches(msl, p)) {
+            alert(name, "The external Metal shader image has changed or is incomplete. Restore the matching shader image used to build this app.");
+            return 1;
+        }
+        char *filename = strrchr(msl, '/');
+        if (filename == msl) filename++;
+        *filename = 0;
+    } else snprintf(msl, sizeof msl, "%s/msl", res);
     if (access(host, X_OK) || !valid_romfs || !modules_present(dm)) {
         alert(name, "The game data inside this app is missing or incomplete (Contents/Resources/romfs.img, Contents/Resources/dm or Contents/MacOS/dmhost): pack it again with build_ipa_from_nsp.py --platform mac-app.");
         return 1;
@@ -206,7 +240,7 @@ int main(int argc, char **argv) {
     if (shown == 2) saved_choices();
     cloud_saves_folder();
     setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_SAVE", save, 0); setenv("DM_TEMP", temp, 0);
-    snprintf(p, sizeof p, "%s/msl", res); setenv("DM_MSL_DIR", p, 0);
+    setenv("DM_MSL_DIR", msl, 0);
     snprintf(p, sizeof p, "%s/font", dm); setenv("DM_FONT_DIR", p, 0);
     snprintf(p, sizeof p, "%s/shader_map.tsv", dm); if (!stat(p, &st)) setenv("DM_NVN_SHMAP", p, 0);
     snprintf(p, sizeof p, "%s/aoc", res); if (!stat(p, &st)) setenv("DM_AOC_DIR", p, 0);

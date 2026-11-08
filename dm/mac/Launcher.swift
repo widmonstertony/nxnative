@@ -14,23 +14,43 @@ struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let done: (Bool) -> Void
     let fit: (CGFloat) -> Void
+    let name: String
+    let version: String
+    let icon: NSImage
+    let cancelTitle: LocalizedStringKey
+    let environment: [String: String]
     @AppStorage("window.show") private var show = true
     @AppStorage("window.advanced") private var advanced = false
+
+    init(m: LauncherModel, name: String = info("CFBundleName") ?? "Game",
+         version: String = info("CFBundleShortVersionString") ?? "1.0",
+         icon: NSImage = NSApp.applicationIconImage, cancelTitle: LocalizedStringKey = "Quit",
+         environment: [String: String] = ProcessInfo.processInfo.environment,
+         done: @escaping (Bool) -> Void, fit: @escaping (CGFloat) -> Void) {
+        self.m = m
+        self.name = name
+        self.version = version
+        self.icon = icon
+        self.cancelTitle = cancelTitle
+        self.environment = environment
+        self.done = done
+        self.fit = fit
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
+                Image(nsImage: icon).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(info("CFBundleName") ?? "Game").font(.title2.weight(.semibold))
-                    Text("Version \(info("CFBundleShortVersionString") ?? "1.0")").foregroundStyle(.secondary)
+                    Text(name).font(.title2.weight(.semibold))
+                    Text("Version \(version)").foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .padding([.horizontal, .top], 20)
             Form {
                 settingSections(basic: true)
-                CloudSavesSection()
+                CloudSavesSection(environment: environment)
                 Section {
                     DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
                 }
@@ -53,7 +73,7 @@ struct LauncherView: View {
             HStack {
                 Toggle("Show this window at launch", isOn: $show).toggleStyle(.checkbox)
                 Spacer()
-                Button("Quit") { done(false) }
+                Button(cancelTitle) { done(false) }.keyboardShortcut(.cancelAction)
                 Button("Play") { done(true) }.keyboardShortcut(.defaultAction)
             }
             .padding(20)
@@ -77,11 +97,12 @@ struct LauncherView: View {
 /// preferences as cloudSaves.folder, which launcher.c puts into DM_SAVE_SYNC before the host starts; a DM_SAVE_SYNC an env file or the launch environment set wins, and is shown here.
 struct CloudSavesSection: View {
     @AppStorage("cloudSaves.folder") private var folder = ""
-    private let fixed: String? = {
-        let env = ProcessInfo.processInfo.environment
+    private let fixed: String?
+
+    init(environment env: [String: String]) {
         let keys = ((env["DM_ENV_FILE_KEYS"] ?? "") + " " + (env["DM_ENV_LAUNCH_KEYS"] ?? "")).split(separator: " ")
-        return keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
-    }()
+        fixed = keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
+    }
 
     var body: some View {
         Section {

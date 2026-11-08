@@ -2,6 +2,7 @@
 # A game's shader libraries as one file (dm/tools/shader_lib.py): the folder and image states, and a read by the host's C reader (dm/gfx/nvn/msl_image.h, dm/host/romfs_image.h).
 import os, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'dm/tools'))
@@ -44,6 +45,20 @@ class Base(unittest.TestCase):
 
 
 class States(Base):
+    def test_compact_sources_keep_the_logical_source_bytes(self):
+        source = b'kernel void example() {}\n' * 4096
+        self.folder(k_b__metallib=b'lib', k_b__json=b'{}', k_b__metal=source)
+        with mock.patch.dict(os.environ, {'DMSH_COMPACT_MAC_SOURCES': '1'}):
+            self.assertTrue(self.pack())
+        image = romfs.Image(self.image)
+        self.assertLess(image.entry(image.find('k_b.metal'))[1], len(source) // 10)
+        v = shader_lib.view(self.lib)
+        self.assertEqual((v / 'k_b.metal').read_bytes(), source)
+        self.assertEqual((v / 'k_b.metallib').read_bytes(), b'lib')
+        self.assertEqual((v / 'k_b.json').read_bytes(), b'{}')
+        shader_lib.expand(self.lib)
+        self.assertEqual((self.lib / 'k_b.metal').read_bytes(), source)
+
     def test_pack_replaces_the_folder_and_reads_in_place(self):
         self.folder(k_b__metallib=b'lib', k_b__json=b'{}', k_b__metal=b'src')
         self.assertTrue(self.pack())

@@ -118,7 +118,8 @@ class PackReuse(unittest.TestCase):
             'font/nintendo_ext.ttf': b'font', 'aoc/1/data': b'dlc', 'pso/gpu.mtl4a': b'archive',
             'pso/prebuilt.tsv': b'prebuilt', 'pso/rest_pairs.tsv': b'rest', 'pso/archive.tsv': b'index',
             'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
-            'host/romfs_image.h': b'validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'tools/romfs.py': b'reader',
+            'host/romfs_image.h': b'validator', 'host/romfs_identity.h': b'identity validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api',
+            'tools/romfs.py': b'reader', 'tools/romfs_image.py': b'identity writer',
             'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
         }
         for n in pack_app.TABLES: files['profile/' + n] = n.encode()
@@ -585,6 +586,89 @@ class App(unittest.TestCase):
             d = subprocess.run(['codesign', '-dv', target], capture_output=True, text=True).stderr
             self.assertIn('Signature=adhoc', d); self.assertNotIn('runtime', d.split('CodeDirectory', 1)[1].split('\n')[0])
 
+    def test_external_romfs_is_signed_and_read_in_place(self):
+        import romfs_image
+        with tempfile.TemporaryDirectory(dir=self.tmp) as folder:
+            root = Path(folder)
+            image = root / 'External Game Data.img'
+            romfs_image.pack(self.tmp / 'romfs', image)
+            app = root / 'External.app'
+            a = types.SimpleNamespace(**vars(self.args))
+            a.out, a.romfs, a.external_romfs, a.icon = str(app), str(image), True, None
+            with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(a)
+            contents = app / 'Contents'
+            info = plistlib.loads((contents / 'Info.plist').read_bytes())
+            self.assertEqual(info['DMExternalRomfs'], str(image))
+            self.assertTrue((contents / 'Resources/romfs.id').is_file())
+            self.assertFalse((contents / 'Resources/romfs.img').exists())
+            subprocess.run(['codesign', '--verify', '--strict', app], check=True, capture_output=True)
+            p = self.launch(app=app); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)
+            self.assertEqual(self.host_run()['DM_ROMFS'], str(image))
+            image.rename(root / 'offline.img')
+            p = self.launch(app=app); output, _ = p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn(b'The external game image is unavailable', output)
+            other = root / 'other-data'
+            shutil.copytree(self.tmp / 'romfs', other)
+            (other / 'region_common/audio/edward.bfsar').rename(other / 'region_common/audio/harold.bfsar')
+            romfs_image.pack(other, image)
+            self.assertEqual(image.stat().st_size, (root / 'offline.img').stat().st_size)
+            p = self.launch(app=app); output, _ = p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn(b'The external game image has changed or is incomplete', output)
+
+    def test_mac_app_can_clone_the_compact_shader_image(self):
+        with tempfile.TemporaryDirectory(dir=self.tmp) as folder:
+            root = Path(folder)
+            library = root / 'b-0123456789ab'
+            shutil.copytree(self.tmp / 'cache/b-0123456789ab', library)
+            with mock.patch.dict(os.environ, {'DMSH_COMPACT_MAC_SOURCES': '1'}):
+                self.assertTrue(pack_app.shader_lib.pack(library))
+            image = library.with_suffix('.img')
+            if not pack_app.can_clone(image, root): self.skipTest('APFS clones are unavailable')
+            app = root / 'Clone.app'
+            a = types.SimpleNamespace(**vars(self.args))
+            a.out, a.msl, a.share_shader_image, a.icon = str(app), str(library), True, None
+            with contextlib.redirect_stdout(io.StringIO()) as result: pack_app.pack(a)
+            self.assertIn('shader libraries (APFS clone)', result.getvalue())
+            bundled = app / 'Contents/Resources/msl' / image.name
+            original = image.read_bytes()
+            self.assertEqual(bundled.read_bytes(), original)
+            self.assertNotEqual(image.stat().st_ino, bundled.stat().st_ino)
+            image.write_bytes(b'replaced build image')
+            self.assertEqual(bundled.read_bytes(), original)
+            subprocess.run(['codesign', '--verify', '--strict', app], check=True, capture_output=True)
+
+    def test_external_shader_image_is_signed_and_read_in_place(self):
+        with tempfile.TemporaryDirectory(dir=self.tmp) as folder:
+            root = Path(folder)
+            library = root / 'b-0123456789ab'
+            shutil.copytree(self.tmp / 'cache/b-0123456789ab', library)
+            self.assertTrue(pack_app.shader_lib.pack(library))
+            image = library.with_suffix('.img')
+            app = root / 'External Shaders.app'
+            a = types.SimpleNamespace(**vars(self.args))
+            a.out, a.msl, a.external_shaders, a.icon = str(app), str(library), True, None
+            with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(a)
+            contents = app / 'Contents'
+            info = plistlib.loads((contents / 'Info.plist').read_bytes())
+            self.assertEqual(info['DMExternalShaders'], str(image))
+            self.assertTrue((contents / 'Resources/shaders.id').is_file())
+            self.assertFalse((contents / 'Resources/msl').exists())
+            subprocess.run(['codesign', '--verify', '--strict', app], check=True, capture_output=True)
+            process = self.launch(app=app); process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 7)
+            self.assertEqual(self.host_run()['DM_MSL_DIR'], str(root))
+            image.rename(root / 'offline.img')
+            process = self.launch(app=app); output, _ = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 1)
+            self.assertIn(b'The external Metal shader image is unavailable', output)
+            image.write_bytes(b'replaced shader image')
+            process = self.launch(app=app); output, _ = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 1)
+            self.assertIn(b'The external Metal shader image has changed or is incomplete', output)
+
     def test_launch(self):
         home = self.tmp / 'home'; sup = home / f'Library/Application Support/nxnative/{TID}'; logs = home / 'Library/Logs/nxnative'
         sup.mkdir(parents=True, exist_ok=True); (sup / 'env.txt').write_text('DM_BOTH=player\n')
@@ -747,10 +831,20 @@ class Script(unittest.TestCase):
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'PROG', self.prog), mock.patch.object(nsp, 'chain_of', lambda repo: '0123456789ab'), \
              mock.patch.object(nsp, 'mac_gpu_arch', lambda *a: 'applegpu_g14s'), mock.patch.object(nsp, 'say', self.said.append):
             nsp.mac_app(sys.executable, REPO, out, 0x01008CF01BAAC000, tmp, tmp / 'ex', tmp / 'patched', tmp / 'dmhost', tmp / 'font', tmp / 'shader/cache' if gfx == 'nvn' else tmp / 'shader',
-                        kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''))
+                        kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''),
+                        external_romfs=kw.get('external_romfs', False), external_shaders=kw.get('external_shaders', False))
         self.pso_cmd = next((c for c in ran if c[1].endswith('pso_offline.py')), None)   # before the packer
         self.settings_cmd = next(c for c in ran if c[1].endswith('dm/games/settings.py'))
+        self.pack_args = ran[-1]
         c = ran[-1]; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
+
+    def test_external_romfs_passes_through_to_packer(self):
+        self.pack_cmd('nvn', external_romfs=True)
+        self.assertIn('--external-romfs', self.pack_args)
+
+    def test_external_shaders_passes_through_to_packer(self):
+        self.pack_cmd('nvn', external_shaders=True)
+        self.assertIn('--external-shaders', self.pack_args)
 
     def test_pack_command(self):
         o, tmp = self.pack_cmd('nvn')

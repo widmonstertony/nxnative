@@ -6,6 +6,7 @@
 # one file it would be two copies, so bytes are stored by their hash. A file removed from the cache gives its pages back at the next prune (incremental vacuum), with no copy of the file.
 # It only saves work: a damaged file costs the work it held and is made anew, and a full drive is one [RED] line. An entry is written and read whole, so its file is never seen half written.
 # Names, as in the folder this replaces: metallib/<target>/<digest>[_x].metallib (dmsh_mtlcache.py), shader/<digest>/<mac|ios>/<output>, index/<key>.json, variant/<digest>/<file> (dmsh_build.py).
+# A separate *.zstd.db cache stores a one-byte codec before each blob. Hashes still name the original bytes.
 # Not part of the translation chain: it decides no output (dmsh_chain.py), like dmsh_mtlcache.py.
 import contextlib, hashlib, json, os, re, shutil, sqlite3, tarfile, threading, time
 
@@ -21,17 +22,26 @@ class Store:
         self.path, self.say = os.fspath(path), say
         self.lock = threading.RLock()   # one connection, for dmsh_build.py's threads: a read or a write of an entry takes microseconds next to a compile
         self.full = False
+        self.zstd = None
         self._open()
 
     def _open(self):
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=WAIT, check_same_thread=False, isolation_level=None)
         try:
-            self.db.execute('PRAGMA page_size=16384'); self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')   # both only before the first table
+            compact = self.path.endswith('.zstd.db')
+            self.db.execute(f'PRAGMA page_size={4096 if compact else 16384}'); self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')   # both only before the first table
             # WAL: a reader in another process does not wait for a writer, and a commit needs no fsync. A drive that cannot share its memory file stays on the rollback journal, unsynced: a stop costs the cache at worst
             if self.db.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal': self.db.execute('PRAGMA synchronous=NORMAL')
             else: self.db.execute('PRAGMA synchronous=OFF')
             for s in SCHEMA: self.db.execute(s)
+            if compact:
+                first = self.db.execute('SELECT hash, data FROM blob ORDER BY id LIMIT 1').fetchone()
+                # Older tools let DMSH_CAS point to any name. Keep an existing raw cache under that name readable.
+                if not first or hashlib.blake2b(first[1], digest_size=16).digest() != first[0]:
+                    try: from compression import zstd
+                    except ImportError: from backports import zstd
+                    self.zstd = zstd
         except sqlite3.DatabaseError as e:
             if not self._damage(e): raise
 
@@ -54,8 +64,21 @@ class Store:
     def has(self, name): return bool(self._run('SELECT 1 FROM entry WHERE name=?', name))
 
     def get(self, name):   # an entry's bytes, None when there is none
-        rows = self._run('SELECT b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name)
-        return bytes(rows[0][0]) if rows else None
+        rows = self._run('SELECT b.id, b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name)
+        if not rows: return None
+        blob, data = rows[0]
+        if self.zstd is None: return bytes(data)
+        if data[:1] == b'\0': return data[1:]
+        try:
+            if data[:1] == b'\1': return self.zstd.decompress(data[1:])
+        except self.zstd.ZstdError:
+            pass
+        self.say(f'[RED] invalid compressed shader cache blob for {name}; rebuilding it')
+        with self.batch():
+            if self._run('SELECT 1 FROM blob WHERE id=? AND data=?', blob, data):
+                self._run('DELETE FROM entry WHERE blob=?', blob)
+                self._run('DELETE FROM blob WHERE id=?', blob)
+        return None
 
     def names(self, prefix):   # the set of names starting with prefix
         return {r[0] for r in self._run('SELECT name FROM entry WHERE name>=? AND name<?', prefix, prefix + '\U0010ffff')}
@@ -67,7 +90,13 @@ class Store:
             try:
                 with self.batch():
                     row = self.db.execute('SELECT id FROM blob WHERE hash=?', (digest,)).fetchone()
-                    blob = row[0] if row else self.db.execute('INSERT INTO blob(hash, data) VALUES(?, ?)', (digest, data)).lastrowid
+                    if row:
+                        blob = row[0]
+                    else:
+                        if self.zstd is not None:
+                            packed = self.zstd.compress(data, level=1)
+                            data = b'\1' + packed if len(packed) < len(data) else b'\0' + data
+                        blob = self.db.execute('INSERT INTO blob(hash, data) VALUES(?, ?)', (digest, data)).lastrowid
                     self.db.execute('INSERT OR REPLACE INTO entry(name, blob, mtime) VALUES(?, ?, ?)', (name, blob, time.time() if when is None else when))
             except sqlite3.OperationalError as e:
                 if any(w in str(e) for w in _DAMAGED): self._damage(e)

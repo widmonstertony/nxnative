@@ -3074,6 +3074,20 @@ def uniq_keys(found):
         uniq.setdefault(key, (where, st, ctl, code))
     return uniq
 
+def nvn_captures(directory):
+    """Paired control and code dumps from the matching game's DM_NVN_SHDUMP run."""
+    for path in sorted(glob.glob(os.path.join(directory, '*.ctl'))):
+        key = os.path.basename(path).removesuffix('.ctl')
+        if key.startswith('._'): continue   # AppleDouble
+        label = f'/nvn_capture/{key}'
+        with open(path, 'rb') as f: ctl = f.read()
+        with open(path.removesuffix('.ctl') + '.code', 'rb') as f: code = f.read()
+        if len(ctl) < (NVN2_KEY_CTL if nvn2_ctl(ctl) else 0x760): red(f'{label}: short control section')
+        st = glslc_stage(ctl, code)
+        if not st or (why := check(label, st, ctl, code)): red(f'{label}: {why if st else "unknown stage"}')
+        if key not in (skey(ctl, code), hashlib.sha256(ctl + code).hexdigest()[:16]): red(f'{label}: shader hash does not match the dump name')
+        yield label, st, ctl, code
+
 def nso_image(path):   # an NSO's image (dm/tools/nso.py); nso.Error (a ValueError) on a damaged file
     import nso
     with open(path, 'rb') as f: return bytes(nso.load(f.read(), path).image)
@@ -3104,7 +3118,7 @@ def main():
     # The first version's source column is unchanged; later versions are prefixed with their workspace directory name (e.g. v327680): /v327680/Shader/…, main@v327680. They sort after the first version, so existing rows keep their package indices.
     romfs_v, main_v = romfs_l.split(','), main_l.split(',')
     if len(romfs_v) != len(main_v): red(f'{len(romfs_v)} RomFS and {len(main_v)} main: they must pair one to one')
-    files, results, common = [], [], None
+    files, results, captures, common = [], [], [], None
     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
         tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
         files += sorted((os.path.join(dp, f), (tag + '/' if tag else '') + os.path.relpath(os.path.join(dp, f), romfs)) for dp, _, fs in os.walk(romfs) for f in fs)
@@ -3135,6 +3149,8 @@ def main():
         if not names and uepak.unreal_paks(romfs, inline=False, mains=[mainnso]): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
         for nm in names: found += ue_shaders(open(os.path.join(ued, nm), 'rb').read(), f'/ue_shaders/{nm}')
         results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
+        capture = os.environ.get('DM_NVN_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'nvn_capture')
+        captures.extend(nvn_captures(capture))
     for romfs in dlc_v:
         name = os.path.basename(os.path.normpath(romfs))
         tag = 'aoc/' + (name.removesuffix('.img') if is_image(romfs) else name)
@@ -3174,6 +3190,7 @@ def main():
         for rel, uniq, pr, extra in again:
             if extra == 'defer': red(f'{rel}: Unity serialized file without type trees, and no bundle has a Shader type tree of the same hash to borrow')
         results = [r for r in results if r[3] != 'defer'] + again
+    results.append(('nvn_capture', uniq_keys(captures), set(), {}))
     bad = [extra for *_, extra in results if isinstance(extra, tuple)]
     if bad: print(f'[RED] {sum(e[2] for e in bad)} file(s) could not be read, their shaders are left out (first: {bad[0][1]})', flush=True)   # build_ipa_from_nsp.py reads this line
     per_src = collections.Counter(); pairs = set()

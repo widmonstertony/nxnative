@@ -1535,7 +1535,8 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
         rt_comp_tick(rtp);
         uint64_t p0 = now_ns(); int snap = mtl_snap_on();
-        if (snap && mtl_link_active() && mtl_link_stalled()) { if (wait) sleep_until_ns(at); }   // present snapshots (nvn_mtl.m) while the display link is silent (the window in the background or covered):
+        if (dm_fps_realtime) { if (wait) sleep_until_ns(at); }   // uncapped gameplay; the native movie period still applies
+        else if (snap && mtl_link_active() && mtl_link_stalled()) { if (wait) sleep_until_ns(at); }   // present snapshots (nvn_mtl.m) while the display link is silent (the window in the background or covered):
             // frames are dropped as fast as they come and nothing frees a ring slot later, so the texture's slot time paces the game: unpaced, Breath of the Wild ran 3 to 4.5 times real time there.
             // Otherwise snapshots take the display link's wait below like any present. The wait for a free ring slot (mtl_snap_acquire_wait) alone did not pace: the link takes frames in
             // order and drops all but the newest two, and a dropped frame frees its slot, so Donkey Kong Bananza at the 30 fps cap ran 43-65 fps of game time and dropped about 110 of every 300 frames
@@ -1825,6 +1826,7 @@ static _Atomic uint64_t g_itv2_since;   // start of the game's current run of ev
 // Frame step (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0): the game no longer picks an interval. The host hands it each frame's step in whole vsyncs
 // (fstep_tick, nvn_fstep.h) and presents follow the hold k it decides with it
 __attribute__((weak)) uint8_t *dm_fps_state;   // loader.c; graphics unit tests have no loader
+__attribute__((weak)) int dm_fps_realtime;
 __attribute__((weak)) void dm_fps_lock_tick(void) {}   // hle_fpslock.c: engine frame limits in game memory (Monster Hunter Rise); graphics unit tests have no host
 static int g_engine_stub = 1;   // the weak dm_fps_lock_engine's answer, for graphics unit tests (t_nvn sets it)
 __attribute__((weak)) int dm_fps_lock_engine(void) { return g_engine_stub; }   // hle_fpslock.c: the host writes fps_target into an engine limiter of this main
@@ -1958,6 +1960,7 @@ static int link_wait(const win_t *o, uint64_t timeout_ns) {
 }
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
+    if (dm_fps_realtime) return dm_movie_playing() ? 1000000000ull / 30 : 0;
     int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
     if (want != was) {
         atomic_store(&g_game_itv, want);
@@ -2069,6 +2072,24 @@ static void fstep_tick(const win_t *o, int c) {
         t0 = t; v0 = vs; memset(held, 0, sizeof held);
     }
 }
+// Elapsed time between updates, measured at the surrounding presents. An
+// exceptional gap (sleep, debugger stop or long load) must not become a
+// single huge physics step on resume.
+static void fstep_realtime_tick(const win_t *o) {
+    static uint64_t prev, first, first_game_us;
+    uint64_t now = now_ns(), elapsed = prev ? now - prev : 16667000;
+    uint32_t step_us = elapsed > 100000000 ? 100000 : (uint32_t)((elapsed + 500) / 1000);
+    __atomic_store_n((uint32_t *)(dm_fps_state + 0xa0), step_us ? step_us : 1, __ATOMIC_RELAXED);
+    g_fs_start = g_fs_wait = 0;
+    prev = now;
+    if (o->presents % 600 != 0) return;
+    uint64_t game_us = __atomic_load_n((uint64_t *)(dm_fps_state + 0xa8), __ATOMIC_RELAXED);
+    if (first && now > first) {
+        double game = (game_us - first_game_us) / 1e6, wall = (now - first) / 1e9;
+        LOG("[nvn] real-time frame step: game time %.3f s in %.3f s (%.3f of real time)", game, wall, game / wall);
+    }
+    first = now; first_game_us = game_us;
+}
 // The crop a present shows: the window's own (nvnWindowSetCrop), else the vi layer's (vi::SetLayerCrop, hle_vi.c); on the Switch both become the crop of the buffer queued to the layer.
 // Link's Awakening crops only its layer: in handheld mode it draws 1280x720 into its 1920x1080 window textures and crops the layer to that. A layer crop that does not fit the
 // texture is reported once and the whole texture shown, as before the layer crop was read here. lc receives the layer crop
@@ -2090,7 +2111,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (dm_fps_state) __atomic_store_n((uint32_t *)(dm_fps_state + 4), (uint32_t)dm_movie_playing(), __ATOMIC_RELAXED);   // the stubs' copy of the movie state (hle.h)
     int c = fps_step_cap();
     if (dm_fps_state) { static int was; if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? (dm_movie_playing() ? " (movie playing)" : thermal_capped() ? " (thermal state serious)" : "") : ""); was = c; } }
-    if (c) fstep_tick(o, c);
+    if (dm_fps_realtime) fstep_realtime_tick(o);
+    else if (c) fstep_tick(o, c);
     dm_fps_lock_tick();   // after the frame step: at 120 fps the target follows the hold just decided
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     present_cfg(o);

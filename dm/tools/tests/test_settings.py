@@ -21,6 +21,17 @@ class ResolutionSetting(unittest.TestCase):
                 self.assertEqual(fps['options'],[['30','30 fps'],['60','60 fps']])
 
 class FrameRateOption(unittest.TestCase):
+    def test_uncapped_requires_the_mac_and_the_rewritten_frame_ratio(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=['en-US']):
+            fixups = Path(tmp) / 'main.fixups.tsv'
+            for platform, capability in [('mac', True), ('mac', False), ('ios', True)]:
+                fixups.write_text('# FPS_REALTIME\t1\n' if capability else '')
+                with patch.dict(settings.os.environ, {'SETTINGS_PLATFORM': platform}):
+                    rows = settings.build('0400486024DEC000', tmp, 'unused')['settings']
+                fps = next(row for row in rows if row['env'] == 'DM_FPS_TARGET')
+                self.assertEqual(fps['default'], '60')
+                self.assertEqual('uncapped' in [value for value, _ in fps['options']], platform == 'mac' and capability)
+
     def test_120_only_on_the_mac_for_a_game_checked_at_that_speed(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
             (Path(tmp)/'main.fixups.tsv').write_text('')

@@ -43,10 +43,10 @@ final class LauncherModel: ObservableObject {
 
     private let defaults: UserDefaults
 
-    init(_ settings: [Setting], defaults: UserDefaults = .standard) {
+    init(_ settings: [Setting], defaults: UserDefaults = .standard,
+         environment env: [String: String] = ProcessInfo.processInfo.environment) {
         self.defaults = defaults
         self.settings = settings
-        let env = ProcessInfo.processInfo.environment
         fromLaunch = Set((env["DM_ENV_LAUNCH_KEYS"] ?? "").split(separator: " ").map(String.init))
         fixed = fromLaunch.union((env["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init))
         ignoreSaved = env["DM_SAVED_CHOICES"] == "0"
@@ -105,6 +105,13 @@ final class LauncherModel: ObservableObject {
     }
     private func store(_ s: Setting, _ v: String) {
         if !ignoreSaved { if s.isDefault(v) { defaults.removeObject(forKey: "launcher." + s.env) } else { defaults.set(v, forKey: "launcher." + s.env) } }
+    }
+
+    func saveChoices() {
+        for s in settings where !fixed.contains(s.env) {
+            let value = values[s.env] ?? s.def
+            if s.accepts(value) { store(s, value) }
+        }
     }
 
     // A choice made while the game runs (the iOS in-game menu, GameMenu.swift): saved as Play saves it, so the settings screen shows it at the next start, and put in the environment.
