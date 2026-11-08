@@ -66,7 +66,11 @@ Library changes include [private CloudKit save transport](https://github.com/wid
 and [Air game-paced presentation](https://github.com/widmonstertony/nxnative/commit/75f30d7).
 The [private CloudKit setup](docs/tonton-cloudkit.md) reuses the same
 per-account container for iPhone, iPad, Mac and the Apple TV compatibility
-build. Automatic synchronization needs no iCloud Drive folder.
+build. Automatic synchronization needs no iCloud Drive folder. A test
+save transferred between the two iPads, and the signed Mac mini probe
+uploaded and restored a new test save. Apple TV is bound to the container;
+device restore verification on Apple TV and a fresh Air cross-device
+readback are still pending.
 
 ### Upstream game fixes on main
 

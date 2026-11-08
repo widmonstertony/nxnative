@@ -54,8 +54,21 @@ and [provisioning profile reference](https://developer.apple.com/documentation/T
 The staging tool validates the app identity, profile expiration, container
 and environment before writing to a fresh output directory.
 
-Local validation covers the save format, the folder fallback, automatic
-exchange using a simulated private database, account separation and
-conflicting updates. Cross-device verification still requires an
-entitled build on each platform: use a disposable title/save, write on
-one device, relaunch and verify on another, then verify the return trip.
+## TonTon deployment and verification
+
+The paid TonTon deployment uses these existing identities with
+`iCloud.com.tonytan.tonton.saves` in Development:
+
+| Platform | App identifier (without the team prefix) | Verification |
+| --- | --- | --- |
+| iPhone and iPad | `com.tonytan.nxgamelibrary.paid` | The two iPads transferred a disposable save. The Air compatibility build has logged a successful CloudKit save upload; a fresh cross-device readback on Air is still pending. |
+| Mac | `com.tonytan.nxgamelibrary.mac` | A probe signed for the registered Mac mini uploaded a new disposable save and restored it on a second launch. This does not verify every separately packed Mac game. |
+| Apple TV compatibility build | `org.nxnative.0100f43008c44000.tv` | The explicit App ID is associated with the same container and the development profile includes the registered Apple TVs. The read-only probe passed local signature verification; wireless installation timed out before an on-device restore could be checked. |
+
+These checks used disposable saves or existing upload logs. They did not
+move or overwrite the player's local saves. The source tests also cover
+the save format, the folder fallback, automatic exchange using a
+simulated private database, account separation and conflicting updates.
+For end-to-end acceptance, use an entitled app and the same iCloud account
+on each device: save under a disposable title, restore on a second device,
+then verify the return trip.
