@@ -429,7 +429,9 @@ $(B)/t_profile_runtime: t_profile_runtime.c ../hle_profile.c ../hle_profile.h ..
 profile-runtime: $(B)/t_profile_runtime
 	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
 
-run: $(B)/t_pad_map $(B)/t_pad_motion $(B)/t_controllers_mac
+run: $(B)/t_pad_map $(B)/t_pad_motion $(B)/t_controllers_mac $(B)/t_stick_deadzone
+$(B)/t_stick_deadzone: t_stick_deadzone.c ../stick_deadzone.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -o $@ t_stick_deadzone.c
 $(B)/t_pad_motion: t_pad_motion.c ../pad_motion.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_motion.c
 $(B)/t_pad_map: t_pad_map.c ../pad_map.h ../steam_input.h ../dm_input.h | $(B)
