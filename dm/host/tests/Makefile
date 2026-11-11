@@ -83,6 +83,7 @@ run: $(B)/t_net_eventfd $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_to
 	$(B)/t_pad_map
 	$(B)/t_pad_motion
 	$(B)/t_controllers_mac
+	$(B)/t_stick_deadzone
 run: $(B)/t_nro
 run: $(B)/t_sync_wait
 $(B)/t_sync_wait: t_sync_wait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
@@ -430,8 +431,8 @@ profile-runtime: $(B)/t_profile_runtime
 	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
 
 run: $(B)/t_pad_map $(B)/t_pad_motion $(B)/t_controllers_mac $(B)/t_stick_deadzone
-$(B)/t_stick_deadzone: t_stick_deadzone.c ../stick_deadzone.h ../dm_input.h | $(B)
-	$(CLANG) -O1 -Wall -Werror -o $@ t_stick_deadzone.c
+$(B)/t_stick_deadzone: t_stick_deadzone.c ../stick_deadzone.h ../hle_hid.c ../motion_fusion.h ../hle_haptics.c ../hle_haptics.h ../hle_bigstack.c ../dm_input.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_stick_deadzone.c ../hle_haptics.c ../hle_bigstack.c
 $(B)/t_pad_motion: t_pad_motion.c ../pad_motion.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_motion.c
 $(B)/t_pad_map: t_pad_map.c ../pad_map.h ../steam_input.h ../dm_input.h | $(B)

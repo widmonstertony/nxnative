@@ -63,12 +63,16 @@ void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
     uint64_t old = atomic_exchange(&g_btn, buttons); atomic_fetch_or(&g_latch, buttons & ~old); atomic_fetch_or(&g_peek_latch, buttons & ~old); atomic_store(&g_axes, pack(lx, ly, rx, ry));
     shake_note(0);
 }
-// The front end's per-stick deadzones (stick_deadzone.h), read once: the environment is fixed at launch. Every physical controller passes through
-// dm_pad_set_player, so the same deadzone holds on the Mac and the iPhone; keyboard, touch and scripted input do not use it.
+// The front end's per-stick deadzones (stick_deadzone.h), read once: the environment is fixed at launch. Physical controllers pass through
+// dm_pad_set_player and Joy-Cons through dm_joy_set, so the same deadzone holds across controller modes on the Mac and the iPhone.
+static _Atomic int g_stick_dz[2] = {-1, -1};
 static int stick_dz(int right) {
-    static int cached[2] = {-1, -1};
-    if (cached[right] < 0) cached[right] = stick_deadzone_percent(getenv(right ? "DM_STICK_DEADZONE_R" : "DM_STICK_DEADZONE_L"));
-    return cached[right];
+    int d = atomic_load_explicit(&g_stick_dz[right], memory_order_relaxed);
+    if (d < 0) {
+        d = stick_deadzone_percent(getenv(right ? "DM_STICK_DEADZONE_R" : "DM_STICK_DEADZONE_L"));
+        atomic_store_explicit(&g_stick_dz[right], d, memory_order_relaxed);
+    }
+    return d;
 }
 void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     if (p < 0 || p >= DM_PLAYERS) return;
@@ -434,6 +438,7 @@ void dm_joy_attach(int p, uint32_t sides) {
 }
 void dm_joy_set(int p, int side, uint64_t buttons, int32_t sx, int32_t sy) {
     if (p < 0 || p >= DM_PLAYERS || (side != 0 && side != 1)) return;
+    stick_deadzone_apply(&sx, &sy, stick_dz(side));
     uint64_t old = atomic_exchange(&g_joy_btn[p][side], buttons); atomic_fetch_or(&g_joy_latch[p][side], buttons & ~old);
     atomic_store(&g_joy_axes[p][side], pack(sx, sy, 0, 0));
 }
