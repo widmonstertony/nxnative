@@ -5,6 +5,8 @@
 // Mock only the OS HID boundary. The adapter's validation, registry discovery,
 // ownership, report decoding, slot allocation and cleanup all run unchanged.
 static NSMutableDictionary *hid_registry, *hid_opened, *hid_scheduled, *hid_callbacks;
+static NSMutableDictionary<NSNumber *, NSValue *> *hid_report_cbs, *hid_report_ctxs;
+static NSSet *joycon_manager_devices;
 static NSMutableDictionary *hid_nodes;
 static NSArray *hid_scan; static NSUInteger hid_scan_index;
 static BOOL hid_scan_fails, hid_scan_invalid, hid_scan_empty;
@@ -45,8 +47,15 @@ static void test_hid_callback(IOHIDDeviceRef device,uint8_t *report,CFIndex size
     (void)report; (void)size;
     NSNumber *id=((__bridge NSDictionary *)device)[@"registry"];
     assert(hid_opened[id]);
-    if(callback) { assert(context); hid_callbacks[id]=@YES; }
-    else [hid_callbacks removeObjectForKey:id];
+    if(callback) {
+        assert(context);
+        hid_callbacks[id]=@YES;
+        if(hid_report_cbs) { hid_report_cbs[id]=[NSValue valueWithPointer:(const void *)callback]; hid_report_ctxs[id]=[NSValue valueWithPointer:context]; }
+    } else {
+        [hid_callbacks removeObjectForKey:id];
+        [hid_report_cbs removeObjectForKey:id];
+        [hid_report_ctxs removeObjectForKey:id];
+    }
 }
 static void test_hid_value_callback(IOHIDDeviceRef device,IOHIDValueCallback callback,void *context) {
     NSNumber *id=((__bridge NSDictionary *)device)[@"registry"]; assert(hid_opened[id]);
@@ -91,6 +100,14 @@ static kern_return_t test_registry_parent(io_registry_entry_t entry,const io_nam
     (void)plane; *parent=[hid_nodes[@(entry)][@"parent"] unsignedIntValue]; return *parent ? KERN_SUCCESS : KERN_FAILURE;
 }
 static kern_return_t test_object_release(io_object_t object) { (void)object; return KERN_SUCCESS; }
+static CFSetRef CF_RETURNS_RETAINED test_manager_devices(IOHIDManagerRef m) {
+    (void)m;
+    return joycon_manager_devices ? CFRetain((__bridge CFSetRef)joycon_manager_devices) : NULL;
+}
+static IOReturn test_hid_set_report(IOHIDDeviceRef device, IOHIDReportType type, CFIndex reportID, const uint8_t *report, CFIndex reportLength) {
+    (void)device; (void)type; (void)reportID; (void)report; (void)reportLength;
+    return kIOReturnSuccess;
+}
 @interface GCController (HIDFixture)
 + (BOOL)testSupportsHIDDevice:(IOHIDDeviceRef)device;
 + (NSArray<GCController *> *)testControllers;
@@ -119,6 +136,8 @@ static kern_return_t test_object_release(io_object_t object) { (void)object; ret
 #define IORegistryEntryGetRegistryEntryID test_registry_id
 #define IORegistryEntrySearchCFProperty test_registry_property
 #define IOHIDDeviceOpen test_hid_open
+#define IOHIDDeviceSetReport test_hid_set_report
+#define IOHIDManagerCopyDevices test_manager_devices
 #define IOHIDDeviceRegisterInputReportCallback test_hid_callback
 #define IOHIDDeviceScheduleWithRunLoop test_hid_schedule
 #define IOHIDDeviceUnscheduleFromRunLoop test_hid_unschedule
@@ -269,11 +288,183 @@ static void gc_event(DMController *d) { gc_event_at(d,d->gc_not_before+1); }
 @implementation JoyConHaptics
 - (NSSet *)supportedLocalities { return [NSSet setWithObjects:GCHapticsLocalityLeftHandle,GCHapticsLocalityRightHandle,nil]; }
 @end
-@interface JoyConController : MotionController @end
-@implementation JoyConController
-- (NSString *)productCategory { return @"Nintendo Switch Joy-Con (L/R)"; }
-- (GCDeviceHaptics *)haptics { return (id)[JoyConHaptics new]; }
+@interface JoyConController : MotionController
+@property NSString *customVendor;
+@property NSString *customCategory;
+@property GCDeviceHaptics *cachedHaptics;
 @end
+@implementation JoyConController
+- (instancetype)init {
+    if ((self = [super init])) self.cachedHaptics = (id)[JoyConHaptics new];
+    return self;
+}
+- (NSString *)vendorName { return self.customVendor ?: [super vendorName]; }
+- (NSString *)productCategory { return self.customCategory ?: @"Nintendo Switch Joy-Con (L/R)"; }
+- (GCDeviceHaptics *)haptics { return self.cachedHaptics; }
+@end
+
+static void send_joycon_0x30(NSDictionary *dev, uint8_t rb, uint8_t sh, uint8_t lb) {
+    NSNumber *id = dev[@"registry"];
+    IOHIDReportCallback cb = (IOHIDReportCallback)[hid_report_cbs[id] pointerValue];
+    void *ctx = [hid_report_ctxs[id] pointerValue];
+    assert(cb && ctx);
+    uint8_t rep[49] = {0x30, 0x00, 0x80, rb, sh, lb};
+    // Neutral stick center (2048 = 0x800) on both Left (bytes 6..8) and Right (bytes 9..11)
+    rep[6] = 0x00; rep[7] = 0x08; rep[8] = 0x80;
+    rep[9] = 0x00; rep[10] = 0x08; rep[11] = 0x80;
+    cb(ctx, kIOReturnSuccess, NULL, kIOHIDReportTypeInput, 0x30, rep, sizeof rep);
+}
+
+static void test_joycon_press_to_join_dedup_and_four_haptics(void) {
+    // 1. DM_PAD_PRESS_TO_JOIN=1 over the real joycon_found -> joycon_report -> joycon_read IOHID chain
+    g_merge = 0; g_press_to_join = 1; g_slots = (pad_slots){0};
+    g_joycon_split = 1; g_joycon_force_split = 0;
+    memset(received, 0, sizeof received); memset(joy_sides, 0, sizeof joy_sides);
+    memset(joy_received, 0, sizeof joy_received); memset(rumble, 0, sizeof rumble);
+    memset(rumble_locality, 0, sizeof rumble_locality); players = 0;
+    hid_opened = [NSMutableDictionary dictionary];
+    hid_callbacks = [NSMutableDictionary dictionary];
+    hid_report_cbs = [NSMutableDictionary dictionary];
+    hid_report_ctxs = [NSMutableDictionary dictionary];
+
+    JoyConController *pair1 = [JoyConController new];
+    native_devices = @[pair1];
+    NSDictionary *hidL1 = @{@"registry": @701, @kIOHIDVendorIDKey: @(JOYCON_VID), @kIOHIDProductIDKey: @(JOYCON_PID_L)};
+    NSDictionary *hidR1 = @{@"registry": @702, @kIOHIDVendorIDKey: @(JOYCON_VID), @kIOHIDProductIDKey: @(JOYCON_PID_R)};
+    hid_opened[@701] = hidL1; hid_opened[@702] = hidR1;
+
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL1);
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR1);
+    assert(g_devices.count == 1 && front_controllers_waiting() == 1 && players == 0);
+    DMController *paired = g_devices.firstObject;
+    assert(paired->slot == -1 && joy_sides[0] == 0);
+
+    // Idle 0x30 reports keep the paired Joy-Con waiting without claiming a player slot
+    send_joycon_0x30(hidL1, 0, 0, 0);
+    send_joycon_0x30(hidR1, 0, 0, 0);
+    assert(paired->slot == -1 && players == 0 && front_controllers_waiting() == 1);
+
+    // Pressing rail SL (bit 24, above 16-bit standard buttons) joins Player 1 on that frame
+    send_joycon_0x30(hidL1, 0, 0, 0x20);
+    assert(paired->slot == 0 && players == 1u && front_controllers_waiting() == 0);
+    assert(joy_sides[0] == 3u && joy_received[0][0] == DM_BTN_LSL);
+
+    // Holding SL + SR for 3 s under g_press_to_join=1 admits the split second half immediately
+    send_joycon_0x30(hidL1, 0, 0, 0x30);
+    joycon_check_gesture(g_joycons, now_ns() + JOYCON_GESTURE_NS + 1);
+    assert(g_devices.count == 2 && players == 3u && joy_sides[0] == 1u && joy_sides[1] == 2u);
+
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL1);
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR1);
+    assert(!g_joycons && !g_devices.count && !players);
+
+    // Standalone sideways mode with DM_PAD_PRESS_TO_JOIN=1: whichever half presses first gets Player 1
+    g_joycon_force_split = 1;
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL1);
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR1);
+    assert(g_devices.count == 2 && front_controllers_waiting() == 2 && players == 0);
+    // Right half presses physical A (0x08 -> sideways DM_BTN_B, upright DM_BTN_A) first -> takes slot 0
+    send_joycon_0x30(hidR1, 0x08, 0, 0);
+    DMController *dL = controller_for_joycon(g_joycons);
+    DMController *dR = controller_for_joycon(g_joycons->next);
+    assert(dR->slot == 0 && dL->slot == -1 && players == 1u && front_controllers_waiting() == 1);
+    assert(received[0] == DM_BTN_B && joy_sides[0] == 2u && joy_received[0][1] == DM_BTN_A);
+    // Left half presses Down (0x01 -> sideways DM_BTN_A) next -> takes slot 1
+    send_joycon_0x30(hidL1, 0, 0, 0x01);
+    assert(dL->slot == 1 && players == 3u && front_controllers_waiting() == 0);
+    assert(received[1] == DM_BTN_A && joy_sides[1] == 1u);
+
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL1);
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR1);
+    g_press_to_join = 0; g_joycon_force_split = 0;
+
+    // 2. Third-party controllers with "JoyCon" / "Joy-Con" in vendorName must stay on GCController
+    JoyConController *thirdParty1 = [JoyConController new];
+    thirdParty1.customVendor = @"DOBE JoyCon";
+    thirdParty1.customCategory = @"Extended Gamepad";
+    JoyConController *thirdParty2 = [JoyConController new];
+    thirdParty2.customVendor = @"IINE Wireless Joy-Con";
+    thirdParty2.customCategory = @"Switch Pro Controller";
+    JoyConController *spoofedCat = [JoyConController new];
+    spoofedCat.customVendor = @"Third-Party Clone";
+    spoofedCat.customCategory = @"Nintendo Switch Joy-Con (L/R)";
+
+    g_joycon_manager = (IOHIDManagerRef)CFSTR("fake_joycon_mgr");
+    NSDictionary *nonNintendoHid = @{@"registry": @710, @kIOHIDVendorIDKey: @0x20d6, @kIOHIDProductIDKey: @0xa711};
+    NSDictionary *syntheticOfficial = @{@"registry": @711, @kIOHIDVendorIDKey: @(JOYCON_VID), @kIOHIDProductIDKey: @(JOYCON_PID_L), @kIOHIDGCSyntheticDeviceKey: @YES};
+    joycon_manager_devices = [NSSet setWithObjects:nonNintendoHid, syntheticOfficial, nil];
+    assert(!joycon_is_gc_controller(thirdParty1));
+    assert(!joycon_is_gc_controller(thirdParty2));
+    assert(!joycon_is_gc_controller(spoofedCat));
+    native_devices = @[thirdParty1, thirdParty2, spoofedCat];
+    controllers_reconcile(native_devices);
+    assert(g_devices.count == 3 && players == 0);
+
+    // Once real non-synthetic 0x057e Joy-Con HID devices are present, official GCController is suppressed while third-party pads remain active
+    joycon_manager_devices = [NSSet setWithObjects:hidL1, hidR1, nonNintendoHid, nil];
+    assert(joycon_is_gc_controller(pair1));
+    assert(!joycon_is_gc_controller(thirdParty1));
+    assert(!joycon_is_gc_controller(thirdParty2));
+    native_devices = @[pair1, thirdParty1, thirdParty2];
+    controllers_reconcile(native_devices);
+    assert(g_devices.count == 2);
+    for (DMController *d in g_devices) assert(d.controller == thirdParty1 || d.controller == thirdParty2);
+
+    controllers_reconcile(@[]);
+    assert(!g_devices.count);
+    g_joycon_manager = NULL;
+    joycon_manager_devices = nil;
+
+    // 3. Four Joy-Cons (two pairs and four sideways players) route haptics to each player's own GCController
+    g_slots = (pad_slots){0};
+    memset(rumble, 0, sizeof rumble); memset(rumble_locality, 0, sizeof rumble_locality);
+    JoyConController *pair2 = [JoyConController new];
+    native_devices = @[pair1, pair2];
+    NSDictionary *hidL2 = @{@"registry": @703, @kIOHIDVendorIDKey: @(JOYCON_VID), @kIOHIDProductIDKey: @(JOYCON_PID_L)};
+    NSDictionary *hidR2 = @{@"registry": @704, @kIOHIDVendorIDKey: @(JOYCON_VID), @kIOHIDProductIDKey: @(JOYCON_PID_R)};
+    hid_opened[@703] = hidL2; hid_opened[@704] = hidR2;
+
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL1);
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR1);
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL2);
+    joycon_found(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR2);
+    assert(g_devices.count == 2 && players == 3u);
+    assert(rumble[0] == pair1 && !rumble_locality[0]);
+    assert(rumble[1] == pair2 && !rumble_locality[1]);
+
+    // Split both pairs into 4 sideways players:
+    // p1L stays slot 0 and p1R takes slot 2 (pair1 L/R), while p2L stays slot 1 and p2R takes slot 3 (pair2 L/R)
+    joycon_pad *p1L = g_joycons;
+    joycon_pad *p2L = p1L->next->next;
+    p1L->st.joy_buttons = DM_BTN_LSL | DM_BTN_LSR;
+    p2L->st.joy_buttons = DM_BTN_LSL | DM_BTN_LSR;
+    joycon_check_gesture(p1L, 2000); joycon_check_gesture(p2L, 2000);
+    joycon_check_gesture(p1L, 2000 + JOYCON_GESTURE_NS); joycon_check_gesture(p2L, 2000 + JOYCON_GESTURE_NS);
+    assert(g_devices.count == 4 && players == 0x0fu);
+    assert(rumble[0] == pair1 && [rumble_locality[0] isEqual:GCHapticsLocalityLeftHandle]);
+    assert(rumble[2] == pair1 && [rumble_locality[2] isEqual:GCHapticsLocalityRightHandle]);
+    assert(rumble[1] == pair2 && [rumble_locality[1] isEqual:GCHapticsLocalityLeftHandle]);
+    assert(rumble[3] == pair2 && [rumble_locality[3] isEqual:GCHapticsLocalityRightHandle]);
+
+    // Cold-start unassigned 4 sideways pads (cleared gc_tag) also partition cleanly across pair1 and pair2
+    for (joycon_pad *q = g_joycons; q; q = q->next) q->gc_tag = NULL;
+    joycon_haptics_sync(nil);
+    assert(rumble[0] == pair1 && [rumble_locality[0] isEqual:GCHapticsLocalityLeftHandle]);
+    assert(rumble[2] == pair1 && [rumble_locality[2] isEqual:GCHapticsLocalityRightHandle]);
+    assert(rumble[1] == pair2 && [rumble_locality[1] isEqual:GCHapticsLocalityLeftHandle]);
+    assert(rumble[3] == pair2 && [rumble_locality[3] isEqual:GCHapticsLocalityRightHandle]);
+
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL1);
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR1);
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidL2);
+    joycon_removed(NULL, kIOReturnSuccess, NULL, (__bridge IOHIDDeviceRef)hidR2);
+    assert(!g_joycons && !g_devices.count && !players);
+
+    native_devices = @[];
+    hid_opened = nil; hid_callbacks = nil; hid_report_cbs = nil; hid_report_ctxs = nil;
+    g_slots = (pad_slots){0};
+    puts("Split Joy-Con press-to-join, official 0x057e deduplication and 4-Joy-Con haptics routing: OK");
+}
 static void test_split_joycon_routing(void) {
     for(int merged=0;merged<2;merged++) {
         g_merge=merged; g_slots=(pad_slots){0}; g_joycon_split=1; g_joycon_force_split=0;
@@ -976,6 +1167,32 @@ static void test_generic_unknown_identity(void) {
     hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)puck); hid_fixture_finish();
     puts("Generic HID missing identity and deferred admission recover without duplicate raw routes: OK");
 }
+// IOHIDManager reports a device once per matching dictionary it meets, with a new reference each time (NX2Apple issue #971): one pad, one player.
+// A Pro Controller over USB meets two of hidpad_start's, and as two pads of its model it became twins, two players without GameController's motion.
+static void test_hid_same_device_twice(void) {
+    hid_fixture_start();
+    NSDictionary *pad=generic_device(912), *again=[pad mutableCopy];
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)pad);
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)again);
+    assert(g_hidpads && !g_hidpads->next && g_devices.count==1 && hid_opened.count==1);
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)again); assert(g_hidpads); // the reference that was not read
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)pad); assert(!g_hidpads && !g_devices.count && !hid_opened.count);
+    hid_fixture_finish();
+    hid_fixture_start();
+    MotionController *gc=[MotionController new]; native_devices=@[gc];
+    NSDictionary *pro=@{@"registry":@913, @"native":@YES, @kIOHIDVendorIDKey:@0x057e, @kIOHIDProductIDKey:@0x2009,
+        @kIOHIDProductKey:@"Pro Controller", @kIOHIDLocationIDKey:@0x69b29174, @"elements":@[]};
+    NSDictionary *pro_again=[pro mutableCopy];
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)pro);
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)pro_again);
+    assert(g_hidpads_gc && !g_hidpads_gc->next && !g_hidpads && !hid_opened.count);
+    g_twins_due=1; hidpad_twins_eval(nil); g_twins_due=0;
+    assert(!hidpad_gc_unread(gc)); // GameController reads it, with its motion
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)pro_again);
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)pro); assert(!g_hidpads_gc);
+    native_devices=nil; controllers_reconcile(@[]); hid_fixture_finish();
+    puts("HID device reported under two references is one pad, and one Pro Controller is not twins: OK");
+}
 int main(int argc, char **argv) {
     @autoreleasepool {
         g_devices = [NSMutableArray array]; g_maps = [NSMutableDictionary dictionary];
@@ -986,6 +1203,7 @@ int main(int argc, char **argv) {
         front_controllers_window(0); assert(ntouches==1 && touches[0].x==.25);
         front_controllers_window(1); dm_touch_set(NULL,0);
         test_split_joycon_routing();
+        test_joycon_press_to_join_dedup_and_four_haptics();
         test_nintendo_labels();
         test_native_motion_integration();
         test_native_registration_race();
@@ -1004,6 +1222,7 @@ int main(int argc, char **argv) {
         test_home_quit_routing();
         test_generic_hid_ownership();
         test_generic_unknown_identity();
+        test_hid_same_device_twice();
         test_shared_controls();
         NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         [NSFileManager.defaultManager createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:nil];

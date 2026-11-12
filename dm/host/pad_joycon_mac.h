@@ -19,6 +19,7 @@ typedef struct joycon_pad {
     unsigned imu_retry;
     struct joycon_pad *partner;   // the other half when paired on one player slot
     int primary;                  // 1 when this half owns the player slot
+    const void *gc_tag;           // opaque GCController tag for multi-pair haptics routing
     char name[64];
     uint8_t rep[128];
     struct joycon_pad *next;
@@ -33,6 +34,7 @@ static void joycon_detach(joycon_pad *d);
 static void joycon_read(joycon_pad *d);
 static void joycon_read_motion(joycon_pad *d, const uint8_t *rep, size_t len);
 static void joycon_home_changed(void);
+static void joycon_devices_changed(void);
 static void joycon_pair_changed(joycon_pad *pri);
 static void joycon_split_pair(joycon_pad *pri, joycon_pad *sec);
 static void joycon_join_pair(joycon_pad *a, joycon_pad *b);
@@ -54,14 +56,40 @@ static inline void joycon_update_name(joycon_pad *d) {
     snprintf(d->name, sizeof d->name, "%s", d->partner ? "Joy-Con (L/R)" : (d->st.pid == JOYCON_PID_L ? "Joy-Con (L)" : "Joy-Con (R)"));
 }
 
-static int joycon_is_gc_controller(GCController *c) {
+// Match only Apple's official Nintendo Joy-Con product categories and require a real
+// non-synthetic 0x057e:0x2006/0x2007 HID device so third-party pads named "JoyCon" stay on GCController.
+static inline uint32_t joycon_gc_sides(GCController *c) {
     if (!c) return 0;
-    NSString *cat = c.productCategory ?: @"";
-    NSString *ven = c.vendorName ?: @"";
-    return [cat rangeOfString:@"Joy-Con" options:NSCaseInsensitiveSearch].location != NSNotFound
-        || [cat rangeOfString:@"JoyCon" options:NSCaseInsensitiveSearch].location != NSNotFound
-        || [ven rangeOfString:@"Joy-Con" options:NSCaseInsensitiveSearch].location != NSNotFound
-        || [ven rangeOfString:@"JoyCon" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    NSString *cat = c.productCategory;
+    if ([cat isEqualToString:@"Nintendo Switch Joy-Con (L)"]) return 1u;
+    if ([cat isEqualToString:@"Nintendo Switch Joy-Con (R)"]) return 2u;
+    if ([cat isEqualToString:@"Nintendo Switch Joy-Con (L/R)"]) return 3u;
+    return 0;
+}
+
+static uint32_t joycon_hid_sides_present(void) {
+    uint32_t sides = 0;
+    for (const joycon_pad *p = g_joycons; p; p = p->next)
+        sides |= p->st.pid == JOYCON_PID_R ? 2u : 1u;
+    if (sides != 3u && g_joycon_manager) {
+        NSSet *devs = CFBridgingRelease(IOHIDManagerCopyDevices(g_joycon_manager));
+        for (id obj in devs) {
+            IOHIDDeviceRef hid = (__bridge IOHIDDeviceRef)obj;
+            if (IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDGCSyntheticDeviceKey)) == kCFBooleanTrue) continue;
+            NSNumber *vendor = (__bridge NSNumber *)IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDVendorIDKey));
+            NSNumber *product = (__bridge NSNumber *)IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDProductIDKey));
+            if (vendor && product && joycon_is_pid(vendor.longValue, product.longValue))
+                sides |= product.intValue == JOYCON_PID_R ? 2u : 1u;
+        }
+    }
+    return sides;
+}
+
+static int joycon_is_gc_controller(GCController *c) {
+    uint32_t want = joycon_gc_sides(c);
+    if (!want) return 0;
+    if (!g_joycon_manager && !g_joycons) return 1;
+    return (joycon_hid_sides_present() & want) != 0;
 }
 
 static void joycon_check_gesture(joycon_pad *d, uint64_t now) {
@@ -72,6 +100,7 @@ static void joycon_check_gesture(joycon_pad *d, uint64_t now) {
         joycon_pad *sec = pri->partner;
         if (!sec) return;
         pri->hold.done = sec->hold.done = 1;
+        sec->gc_tag = pri->gc_tag;
         pri->partner = sec->partner = NULL;
         pri->primary = sec->primary = 1;
         joycon_update_name(pri);
@@ -148,6 +177,7 @@ static void joycon_found(void *ctx, IOReturn result, void *sender, IOHIDDeviceRe
     } else {
         joycon_attach(d);
     }
+    joycon_devices_changed();
 }
 
 static void joycon_removed(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef hid) {
@@ -162,6 +192,7 @@ static void joycon_removed(void *ctx, IOReturn result, void *sender, IOHIDDevice
     else joycon_detach(d);
     CFRelease(d->hid);
     free(d);
+    joycon_devices_changed();
 }
 
 static void joycon_start(void) {

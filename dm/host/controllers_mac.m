@@ -168,6 +168,69 @@ static void s2_sink(int player, BOOL on) {
     if(player<0 || player>=DM_PLAYERS || g_s2_sink[player]==on) return;
     g_s2_sink[player]=on; dm_haptics_apple_set_sink(player,on ? dm_switch2_rumble : NULL);   // its rumble goes over Bluetooth, not to a Core Haptics engine
 }
+// Assign each physical Joy-Con pair or standalone half to its own GCController haptics
+// instance without reusing one pair's left/right handle budgets for another pair.
+static GCController *joycon_gc_for_pad(joycon_pad *want, GCController *gone) {
+    enum { MAX_JC_GC = 16 };
+    GCController *gcs[MAX_JC_GC];
+    uint32_t avail[MAX_JC_GC];
+    int n = 0;
+    for (GCController *c in GCController.controllers) if (c != gone && joycon_is_gc_controller(c)) {
+        if (c.motion.sensorsRequireManualActivation) c.motion.sensorsActive = YES;
+        if (c.haptics && n < MAX_JC_GC) {
+            uint32_t s = joycon_gc_sides(c);
+            gcs[n] = c;
+            avail[n] = s ? s : 3u;
+            n++;
+        }
+    }
+    if (!want || !n) return nil;
+    for (joycon_pad *p = g_joycons; p; p = p->next) {
+        if (!p->partner || !p->primary || !p->gc_tag) continue;
+        int kept = 0;
+        for (int i = 0; i < n; i++) if ((__bridge const void *)gcs[i] == p->gc_tag && (avail[i] & 3u) == 3u) {
+            avail[i] = 0; kept = 1; break;
+        }
+        if (!kept) p->gc_tag = NULL;
+    }
+    for (joycon_pad *p = g_joycons; p; p = p->next) {
+        if (p->partner || !p->gc_tag) continue;
+        uint32_t bit = p->st.pid == JOYCON_PID_R ? 2u : 1u;
+        int kept = 0;
+        for (int i = 0; i < n; i++) if ((__bridge const void *)gcs[i] == p->gc_tag && (avail[i] & bit)) {
+            avail[i] &= ~bit; kept = 1; break;
+        }
+        if (!kept) p->gc_tag = NULL;
+    }
+    for (joycon_pad *p = g_joycons; p; p = p->next) {
+        if (p->partner || p->gc_tag) continue;
+        uint32_t bit = p->st.pid == JOYCON_PID_R ? 2u : 1u;
+        for (int i = 0; i < n; i++) if (avail[i] == bit) {
+            p->gc_tag = (__bridge const void *)gcs[i]; avail[i] = 0; break;
+        }
+    }
+    for (joycon_pad *p = g_joycons; p; p = p->next) {
+        if (!p->partner || !p->primary || p->gc_tag) continue;
+        int pick = -1;
+        for (int i = 0; i < n; i++) if (avail[i] == 3u) { pick = i; break; }
+        if (pick < 0) for (int i = 0; i < n; i++) if (avail[i]) { pick = i; break; }
+        if (pick >= 0) { p->gc_tag = (__bridge const void *)gcs[pick]; avail[pick] = 0; }
+    }
+    for (joycon_pad *p = g_joycons; p; p = p->next) {
+        if (p->partner || p->gc_tag) continue;
+        uint32_t bit = p->st.pid == JOYCON_PID_R ? 2u : 1u;
+        for (int i = 0; i < n; i++) if (avail[i] & bit) {
+            p->gc_tag = (__bridge const void *)gcs[i]; avail[i] &= ~bit; break;
+        }
+    }
+    joycon_pad *pri = joycon_pad_primary(want);
+    if (pri->gc_tag) {
+        for (int i = 0; i < n; i++) if ((__bridge const void *)gcs[i] == pri->gc_tag) return gcs[i];
+    }
+    uint32_t need = pri->partner ? 3u : (pri->st.pid == JOYCON_PID_R ? 2u : 1u);
+    for (int i = 0; i < n; i++) if (avail[i] & need) return gcs[i];
+    return nil;
+}
 static void controller_route_haptics(DMController *d, int player) {
     if (d && d->s2) { s2_sink(player,YES); return; }
     s2_sink(player,NO);
@@ -182,19 +245,14 @@ static void controller_route_haptics(DMController *d, int player) {
         }
     });
     else if(d && d->joycon) {
-        GCController *pair=nil;
-        for(GCController *c in GCController.controllers) if(joycon_is_gc_controller(c)) {
-            if(c.motion.sensorsRequireManualActivation) c.motion.sensorsActive=YES;
-            if(!pair && c.haptics) pair=c;
-        }
+        GCController *pair=joycon_gc_for_pad(d->joycon,nil);
         if(g_merge || d->joycon->partner) dm_haptics_apple_controller(player,pair);
         else dm_haptics_apple_controller_locality(player,pair,d->joycon->st.pid==JOYCON_PID_L ? GCHapticsLocalityLeftHandle : GCHapticsLocalityRightHandle);
     } else dm_haptics_apple_controller(player,d.controller);
 }
 static BOOL controller_has_haptics(DMController *d) {
     if(d->device || d->s2 || d.controller.haptics.supportedLocalities.count) return YES;
-    if(d->joycon) for(GCController *c in GCController.controllers)
-        if(joycon_is_gc_controller(c) && c.haptics.supportedLocalities.count) return YES;
+    if(d->joycon) return joycon_gc_for_pad(d->joycon,nil).haptics.supportedLocalities.count>0;
     return NO;
 }
 static void controller_merge_haptics(void) {
@@ -512,13 +570,21 @@ static DMController *controller_for_joycon(joycon_pad *pad) {
 static void joycon_read(joycon_pad *pad) {
     DMController *d=controller_for_joycon(pad); if(!d) return;
     joycon_pad *pri=d->joycon;
+    uint64_t pressed=0;
     if(pri && pri->partner) {
         joycon_pad *l=pri->st.pid==JOYCON_PID_L ? pri : pri->partner;
         joycon_pad *r=pri->st.pid==JOYCON_PID_R ? pri : pri->partner;
         uint32_t b=(uint32_t)((l->st.joy_buttons | r->st.joy_buttons) & 0xffffull);
         d->input=(steam_state){.buttons=b,.lx=controller_axis(l->st.joy_sx),.ly=controller_axis(l->st.joy_sy),.rx=controller_axis(r->st.joy_sx),.ry=controller_axis(r->st.joy_sy)};
+        pressed=l->st.joy_buttons | r->st.joy_buttons | l->st.buttons | r->st.buttons | (uint64_t)(l->st.home || r->st.home);
     } else {
         d->input=(steam_state){.buttons=(uint32_t)pad->st.buttons,.lx=controller_axis(pad->st.sx),.ly=controller_axis(pad->st.sy)};
+        pressed=pad->st.buttons | pad->st.joy_buttons | (uint64_t)pad->st.home;
+    }
+    if(d->slot<0) {
+        if(!pressed) return;   // DM_PAD_PRESS_TO_JOIN=1: joins at its first button
+        controller_connect(d);
+        if(d->slot<0) return;
     }
     if(!g_merge && d->slot>=0) {
         dm_joy_set(d->slot,joycon_side(pad->st.pid),g_focus ? pad->st.joy_buttons : 0,g_focus ? controller_axis(pad->st.joy_sx) : 0,g_focus ? controller_axis(pad->st.joy_sy) : 0);
@@ -551,7 +617,10 @@ static void joycon_read_motion(joycon_pad *pad, const uint8_t *rep, size_t len) 
 static void joycon_attach(joycon_pad *pad) {
     DMController *d=[DMController new]; d->joycon=pad;
     d.name=@(pad->name); d.model=[@"Nintendo / " stringByAppendingString:d.name];
-    controller_load_map(d); [g_devices addObject:d]; controller_connect(d); joycon_read(pad);
+    controller_load_map(d); [g_devices addObject:d];
+    if(g_press_to_join) { fprintf(stderr,"controller '%s' (Bluetooth) connected: press a button to play (DM_PAD_PRESS_TO_JOIN)\n",pad->name); front_cp_poll(); }
+    else controller_connect(d);
+    joycon_read(pad);
 }
 static void joycon_detach(joycon_pad *pad) {
     DMController *d=controller_for_joycon(pad); if(!d) return;
@@ -572,6 +641,7 @@ static void joycon_pair_changed(joycon_pad *pri) {
 }
 static void joycon_split_pair(joycon_pad *pri, joycon_pad *sec) {
     DMController *d=controller_for_joycon(pri);
+    if(d && d->slot<0) controller_connect(d);
     int slot=d ? d->slot : -1;
     if(!g_merge && slot>=0) {
         int sec_side=joycon_side(sec->st.pid);
@@ -581,6 +651,7 @@ static void joycon_split_pair(joycon_pad *pri, joycon_pad *sec) {
     joycon_pair_changed(pri);
     joycon_attach(sec);
     DMController *sd=controller_for_joycon(sec);
+    if(sd && sd->slot<0) { controller_connect(sd); joycon_read(sec); }
     if(!sd || sd->slot<0) {
         if(sd) { controller_disconnect(sd); sd->joycon=NULL; [g_devices removeObject:sd]; }
         pri->partner=sec; sec->partner=pri; pri->primary=1; sec->primary=0;
@@ -588,19 +659,21 @@ static void joycon_split_pair(joycon_pad *pri, joycon_pad *sec) {
         joycon_pair_changed(pri);
         return;
     }
-    fprintf(stderr,"controller '%s' plays alone now: player %d (SL + SR held); '%s' stays player %d\n",sec->name,sd->slot+1,pri->name,slot+1);
+    fprintf(stderr,"controller '%s' plays alone now: player %d (SL + SR held) while '%s' stays player %d\n",sec->name,sd->slot+1,pri->name,slot+1);
 }
 static void joycon_join_pair(joycon_pad *a, joycon_pad *b) {
     DMController *da=controller_for_joycon(a), *db=controller_for_joycon(b);
     if(!da || !db) return;
     joycon_pad *stay=(da->slot>=0 && (db->slot<0 || da->slot<=db->slot)) ? a : b;
     joycon_pad *mover=stay==a ? b : a;
+    if(!stay->gc_tag) stay->gc_tag=mover->gc_tag;
+    mover->gc_tag=NULL;
     joycon_detach(mover);
     stay->partner=mover; mover->partner=stay; stay->primary=1; mover->primary=0;
     joycon_update_name(stay); joycon_update_name(mover);
     joycon_pair_changed(stay);
     DMController *ds=controller_for_joycon(stay);
-    fprintf(stderr,"controller '%s': player %d (L + R held)\n",stay->name,ds ? ds->slot+1 : 1);
+    fprintf(stderr,"controller '%s': player %d (L + R held)\n",stay->name,ds && ds->slot>=0 ? ds->slot+1 : 1);
 }
 static void joycon_unpair_removed(joycon_pad *gone_pad, joycon_pad *keep_pad) {
     DMController *d=controller_for_joycon(gone_pad);
@@ -613,25 +686,24 @@ static void joycon_unpair_removed(joycon_pad *gone_pad, joycon_pad *keep_pad) {
         }
         d->joycon=keep_pad;
     }
+    if(!keep_pad->gc_tag) keep_pad->gc_tag=gone_pad->gc_tag;
     keep_pad->partner=gone_pad->partner=NULL;
     keep_pad->primary=1;
     joycon_update_name(keep_pad);
     joycon_pair_changed(keep_pad);
 }
 static void joycon_home_changed(void) { if(controller_listening()) front_home_poll(); }
+static void joycon_devices_changed(void) { controllers_changed(nil); }
 static void joycon_haptics_sync(GCController *gone) {
     if(!g_joycon_split) return;
-    GCController *pair=nil;
-    for(GCController *c in GCController.controllers) if(c!=gone && joycon_is_gc_controller(c)) {
-        if(c.motion.sensorsRequireManualActivation) c.motion.sensorsActive=YES;
-        if(!pair && c.haptics) pair=c;
-    }
+    (void)joycon_gc_for_pad(NULL,gone);
     if(g_merge) {
         DMController *route=g_merge_haptics_source;
-        if(route && route->joycon) dm_haptics_apple_controller(0,pair);
+        if(route && route->joycon) dm_haptics_apple_controller(0,joycon_gc_for_pad(route->joycon,gone));
         return;
     }
     for(DMController *d in g_devices) if(d->joycon && d->slot>=0) {
+        GCController *pair=joycon_gc_for_pad(d->joycon,gone);
         if(d->joycon->partner) dm_haptics_apple_controller(d->slot,pair);
         else dm_haptics_apple_controller_locality(d->slot,pair,d->joycon->st.pid==JOYCON_PID_L ? GCHapticsLocalityLeftHandle : GCHapticsLocalityRightHandle);
     }
