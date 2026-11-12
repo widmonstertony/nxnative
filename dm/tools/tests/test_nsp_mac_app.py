@@ -745,6 +745,50 @@ int main(void) { @autoreleasepool {
         self.assertIn('standin host output', (logs / f'{TID}.prev.log').read_text())
         self.assertEqual(self.host_run()['DM_LANG'], 'fr')   # Info.plist DMLanguage
 
+    def run_in_library(self, lib, home):   # the app in a game library folder (the .nx2apple-library marker beside it), as the Mac front end lays it out
+        app = lib / self.app.name
+        if not app.exists(): subprocess.run(['ditto', self.app, app], check=True)
+        (home / 'alert.txt').unlink(missing_ok=True)
+        p = subprocess.run([app / 'Contents/MacOS/nxnative'], env=dict(HOME=str(home), PATH=f'{self.tmp / "bin"}:/usr/bin:/bin', DM_LAUNCHER='0'), capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        return self.host_run_in(home)
+
+    def host_run_in(self, home):
+        return dict(ln.partition('=')[::2] for ln in (home / 'host_run.txt').read_text().splitlines())
+
+    def test_library_folder_on_apfs(self):   # saves and log beside the app
+        lib, home = self.tmp / 'library-apfs', self.tmp / 'home-library-apfs'
+        lib.mkdir(); home.mkdir(); (lib / '.nx2apple-library').touch()
+        r = self.run_in_library(lib, home)
+        if r['DM_SAVE'] != str(lib / 'save' / TID): self.skipTest(f'{self.tmp} is not on APFS')
+        self.assertIn('standin host output', (lib / f'log/{TID}.log').read_text())
+        self.assertFalse((home / 'alert.txt').exists())
+
+    @unittest.skipUnless(shutil.which('hdiutil'), 'needs hdiutil for an exFAT volume')
+    def test_library_folder_not_on_apfs(self):   # exFAT cannot clone or swap folders, which a save transaction needs: the host mounted the save read-only and every save was lost
+        home, image, mnt = self.tmp / 'home-library-exfat', self.tmp / 'library.dmg', self.tmp / 'mnt'
+        home.mkdir(); mnt.mkdir()
+        made = subprocess.run(['hdiutil', 'create', '-size', '32m', '-fs', 'ExFAT', '-volname', 'NXLIB', '-type', 'UDIF', image], capture_output=True)
+        if made.returncode: self.skipTest('hdiutil cannot make an exFAT image here: ' + made.stderr.decode(errors='replace'))
+        if subprocess.run(['hdiutil', 'attach', '-nobrowse', '-mountpoint', mnt, image], capture_output=True).returncode: self.skipTest('hdiutil cannot attach an image here')
+        try:
+            lib = mnt / 'Games'; (lib / 'save' / TID).mkdir(parents=True); (lib / '.nx2apple-library').touch()
+            (lib / 'save' / TID / 'savedata0.bin').write_bytes(b'save from an earlier build')   # its ._savedata0.bin is made by macOS on exFAT
+            sup = home / f'Library/Application Support/nxnative/{TID}'
+            r = self.run_in_library(lib, home)
+            self.assertEqual(r['DM_SAVE'], str(sup / 'save'))   # on the Mac's own APFS disk, not the library folder
+            self.assertEqual(sorted(p.name for p in (sup / 'save').iterdir()), ['savedata0.bin'])   # the earlier save copied in, without the AppleDouble file
+            self.assertEqual((sup / 'save/savedata0.bin').read_bytes(), b'save from an earlier build')
+            log = (lib / f'log/{TID}.log').read_text()   # the log still goes with the game
+            self.assertIn('standin host output', log)
+            self.assertIn(f'[RED] launcher: the game library {lib} is not on an APFS volume', log)
+            self.assertIn('is on a drive that is not formatted as APFS', (home / 'alert.txt').read_text())   # said once
+            self.run_in_library(lib, home)
+            self.assertFalse((home / 'alert.txt').exists())
+            self.assertIn('is not on an APFS volume', (lib / f'log/{TID}.log').read_text())   # the log line at every start
+        finally:
+            subprocess.run(['hdiutil', 'detach', '-force', mnt], capture_output=True)
+
     def test_sigterm(self):   # forwarded to the host, whose exit code comes back
         p = self.launch(wait=True)
         for _ in range(100):
