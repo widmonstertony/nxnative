@@ -38,7 +38,14 @@ The old iPad received the previously absent legacy Mario Kart World
 shader image (498,145,683 bytes) and missing runtime tables. The complete
 image was SHA-256 checked on-device. Its 23,291,263,499-byte ROM retained
 the same size and filesystem identity. The app was not replaced and saves
-were not modified. Launch and rendering validation remain outstanding.
+were not modified. After publishing the matching identity stamp, the
+device's library reported `ready` / `can open`. Launch and rendering
+validation remain outstanding; readiness is not a gameplay pass.
+
+M2 Samurai shader production also resumed in serial microbatches on the
+internal SSD, retaining the frozen legacy renderer and existing outputs.
+The dispatcher yields when free space would cross its 25.75 GiB reserve,
+so the Air producer and final delivery have priority.
 
 The M2 availability snapshot still rejects the frameworks for Today's
 Menu for the Emiya Family, Fate/Samurai Remnant, Tears of the Kingdom and
@@ -51,17 +58,27 @@ is not evidence that these four runtimes are ready.
 - Fate/EXTELLA LINK: base `010051400B17A000`, update `131072` (1.0.2),
   and 58 DLC packages. Every RAR member passed CRC and SHA-256 reading.
   The DLC archive filename is misleading: its internal package IDs are
-  in the matching `010051400B17B...` range. Originals were not modified.
+  in the matching `010051400B17B...` range. All three originals were moved
+  to the external archive after full SHA-256 readback; their Downloads
+  paths are links. All 60 extracted NSPs were separately verified. Rust
+  build planning and the executable survey passed using the existing
+  local keys. The isolated engine is pinned to `0c078130`; installed and
+  in-progress games retain their earlier engine revisions. The survey
+  found SDK 5.5 and packed shader containers, so shader discovery and
+  runtime bring-up remain necessary before an install can be promised.
 - Red Dead Redemption Switch 2 export: readable NUP index, update
   `458752` and an add-on. Full payload verification remains pending.
 - Cyberpunk 2077: readable NUP index, base and update `262144`.
   Full payload verification remains pending.
-- BIOHAZARD RE4 GOLD: seven RAR volumes are being verified as one archive.
+- BIOHAZARD RE4 GOLD: seven RAR volumes passed verification as one archive:
+  all 19 regular members passed CRC and SHA-256 reading (28,861,835,455
+  unpacked bytes). The latest supplied executable set is update `131072`.
   macOS `._` metadata files are excluded from the volume set. No large
   extraction has been placed on the compiler's internal SSD.
 
-These inputs are queued for separate bring-up; they are not advertised
-as playable. The verified Rust 0.9.3 binary passes its tool self-check.
+Per the revised scope, non-Fate additions stop at external archival and
+pre-build inspection for now. New Fate bring-up may proceed. None of
+these inputs is advertised as playable. The verified Rust 0.9.3 binary passes its tool self-check.
 Its unvalidated native iOS shader frontend remains disabled. Archive
 verification, build completion and device gameplay are distinct gates.
 

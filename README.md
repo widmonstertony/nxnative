@@ -37,7 +37,7 @@ degenerate triangle without changing valid indices or the shader
 argument layout. The four Ocarina libraries and the two Kart libraries
 with matching descriptors were read back on-device with rollback copies
 retained. This is an installation result: Ocarina's first 3D scene and
-Kart race stability and frame rate remain open. The old iPad's Kart game data is present, but the runnable framework is still missing.
+Kart race stability and frame rate remain open. The old iPad's Kart game data and runtime resources are present; its library now reports ready, but launch and rendering still need validation.
 
 On November 12, the old iPad received the missing 498 MB legacy Kart shader
 image and runtime tables, with SHA-256 readback verification. Its existing

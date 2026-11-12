@@ -19,7 +19,8 @@ def reconcile_listing(listing, expected, source, copy_from, remote, *, scratch=N
     """
     missing = sorted(expected.keys() - listing.keys())
     if len(missing) > limit:
-        raise RuntimeError("Air inventory temporarily incomplete; preserve checkpoint and retry")
+        raise RuntimeError(f"Air inventory temporarily incomplete: {len(missing)} expected rows omitted, "
+                           f"{len(listing)} observed; preserve checkpoint and retry")
     result = dict(listing)
     proofs = {}
     for name in missing:
