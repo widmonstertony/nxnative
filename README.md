@@ -30,7 +30,9 @@ Air 60.72 adds a build-checked Pokopia scene-resolution cap. The actual
 Air run confirmed the 720p cap executed, but the user still reported stutter
 and audio underruns. The later 540p plus MetalFX run confirmed the cap;
 the player reported less stutter but persistent crackling. Per-game settings
-expose 720p/540p/original. Audio repair and sustained performance remain open.
+expose 720p/540p/original. Disabling render-thread real-time scheduling
+was tested and did not eliminate crackling. Audio repair and sustained
+performance remain open.
 [Resolution findings](dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680)
 distinguish internal scene size from 1080p buffers and final output. This is
 not a claim that every title has a tested 720p/540p render path.

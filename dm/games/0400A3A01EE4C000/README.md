@@ -71,8 +71,11 @@ player reported reduced stutter, with crackling still present. After about
 conversion as the sole explanation. Rendering still worked at roughly
 24–43 fps in the hot state, with expensive real-time render-thread budgets
 and 63 interactive workers. A per-game `DM_RT=0` comparison was written
-and read back to test producer starvation; its outcome is pending and
-this is not a confirmed root-cause fix. No sustained 60 fps or universal
+and read back, then confirmed in the next launch. The player still heard
+crackling; scene windows contained 5–857 underruns per 2,000 callbacks.
+The switch alone did not solve the defect. Air 60.73 is installed with opt-in
+[producer/release progress](../../../docs/reference/audio.md#distinguishing-pcm-production-from-release-notification-starvation)
+without altering PCM production or release semantics. No sustained 60 fps or universal
 resolution control is claimed.
 
 ## Open
@@ -84,6 +87,7 @@ resolution control is claimed.
 
 ## Found on this game
 
+- [Distinguishing PCM production from release-notification starvation](../../../docs/reference/audio.md#distinguishing-pcm-production-from-release-notification-starvation): Air crackling remains under investigation; no repaired-audio claim.
 - [One compile for a pixel shader's side entry points](../../../docs/reference/shaders.md#one-compile-for-a-pixel-shaders-side-entry-points): 57% of the map's compiles were `_ba` and `_bl` libraries; a cold build of 1,021 shaders now takes 48% of the CPU on the Mac's flags and 47% on the iPhone's.
 - [KTGL on NVN2: Switch 2 GLSLC outputs and LD_ / LI_ LINKDATA](../../../docs/reference/shaders.md#ktgl-on-nvn2-switch-2-glslc-outputs-and-ld_--li_-linkdata): the split found almost none of its shaders.
 - [HADD2 and HMUL2 with an immediate](../../../docs/reference/shaders.md#hadd2-and-hmul2-with-an-immediate): the GPU hang and 88 ms frames.

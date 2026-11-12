@@ -142,7 +142,23 @@ configuration and adjustable per-game schema were changed to 540p plus
 MetalFX and fully read back. The next actual run confirmed the 540p cap,
 and the player reported less stutter but persistent crackling. Audio
 starvation later also occurred on the built-in-speaker route. A Pokopia-only
-`DM_RT=0` comparison is ready; its result and the audio repair remain open.
+`DM_RT=0` comparison was confirmed in the next launch but did not resolve
+crackling. Audio repair remains open; opt-in producer/release progress
+telemetry is installed on Air 60.73, without changing buffer release timing.
+Its Pokopia-only switch was written and fully read back. The ineffective
+real-time override was removed; 540p plus MetalFX remains. All 26 game
+directories were retained and the checked ROM sizes matched before/after.
+The update did not start a game or write a save. A diagnostic scene run is
+pending; this is not an audio repair claim.
+
+Audio diagnostics validation: the current host and the exact legacy source
+both passed 29 callback/statistics/release checks. The current fixture also
+passed ASan/UBSan. Existing AudioOut lifecycle/surround tests and the
+100,000-buffer SPSC fixture passed. The compilation database was generated;
+clang-tidy could not run because LLVM 23 is not installed. The narrow
+Pokopia regression command returned `ERROR` because no Mac build is
+registered in its isolated test root; it is not a gameplay pass. This
+opt-in instrumentation does not change PCM consumption or release timing.
 
 The batch audit recovered 23 retained native-game logs. Several are from
 November 5–8 and predate current settings. Violet, Arceus, Need for Speed,
