@@ -84,6 +84,14 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertFalse({'DM_FPS_TARGET', 'DM_PRESENT_INTERVAL'} & set(wonder))
 
 
+    def test_hdr_texture_downsample_is_for_games_that_decode_bc_on_the_cpu_on_the_iphone(self):   # DM_BC6H_RGB9E5, #544
+        totk = build('0100F2C0115B6000', 'nvn')   # tex_bc_cpu on in its profile
+        s = totk['DM_BC6H_RGB9E5']
+        self.assertEqual((s['kind'], s['section'], s['default'], s['label']), ('toggle', 'Performance', '0', 'Downsample HDR textures'))   # off: the tested decode stays
+        self.assertNotIn('DM_BC6H_RGB9E5', build('0100F2C0115B6000', 'nvn', 'mac'))   # a Mac GPU has BC support
+        self.assertNotIn('DM_BC6H_RGB9E5', build(BOTW, 'nvn'))   # no tex_bc_cpu in its profile
+        self.assertNotIn('DM_BC6H_RGB9E5', build('0100F2C0115B6000', 'vulkan'))
+
     def test_hold_frames_takes_on_and_off(self):   # the host reads DM_FPS_HOLD as on / off (hle_nvn.c), not 1 / 0
         s = build(BOTW, 'nvn')['DM_FPS_HOLD']
         self.assertEqual((s['on'], s['off'], s['default']), ('on', 'off', 'on'))

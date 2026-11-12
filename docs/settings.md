@@ -5,7 +5,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Press a button to join](#press-a-button-to-join)
-- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Shader prefetch](#shader-prefetch), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
+- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Shader prefetch](#shader-prefetch), [Downsample HDR textures](#downsample-hdr-textures), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
 - [In-game menu](#in-game-menu)
 - [TV](#tv)
@@ -196,6 +196,13 @@ When the game makes a program, the app loads its shader libraries in the backgro
 - **Cost:** every library of the program is opened whether a draw uses it or not. A game whose shader tree is very large fills the phone's limit on open mappings this way, and iOS ends the app after a few minutes (Persona 5 Royal: 24,826 pipelines, about ten minutes, the crash report says `vnode-limit`).
 - **When to change it:** off for a game that iOS ends after a few minutes of play. Each library is then loaded at its first draw, which costs a short stall there instead.
 - **Tests:** off, Persona 5 Royal held 30 fps for 34 minutes on an iPhone 17 Pro (61,200 frames, no crash, 1,773 MiB), against 5 minutes 33 seconds with it on.
+
+### Downsample HDR textures
+
+On an iPhone or iPad whose GPU does not read block-compressed (BC) textures itself (before the A17 Pro and the M1), a game whose profile decodes BC textures on the CPU (`tex_bc_cpu`) expands each BC6H HDR texture into 16-bit floats, 8 bytes a pixel. A scene with many of them can pass the memory the system allows and end the app. This setting decodes them into the shared-exponent format RGB9E5 instead, 4 bytes a pixel, half the memory. It is off by default and the row is only shown for such games on such devices.
+
+- **Cost:** negative values (signed BC6H) become 0 and each colour keeps 9 bits of mantissa, so HDR gradients can show slight banding.
+- **When to change it:** turn it on only for a game that the system ends for lack of memory in scenes with many HDR textures.
 
 ### Hold frames when late
 
