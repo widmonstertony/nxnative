@@ -75,8 +75,29 @@ and read back, then confirmed in the next launch. The player still heard
 crackling; scene windows contained 5–857 underruns per 2,000 callbacks.
 The switch alone did not solve the defect. Air 60.73 is installed with opt-in
 [producer/release progress](../../../docs/reference/audio.md#distinguishing-pcm-production-from-release-notification-starvation)
-without altering PCM production or release semantics. No sustained 60 fps or universal
-resolution control is claimed.
+without altering PCM production or release semantics.
+
+The 60.73 speaker-route run logged 5,043 underrun callbacks out of 44,000
+(240 frames / 5 ms each). The worst 2,000-callback window zero-filled
+5,920 ms. `AU_capacity_bytes` remained exactly four times requested frames,
+so this run does not support an oversized-AudioUnit-buffer explanation.
+Release notifications continued to complete and released buffers continued
+to be reclaimed; the cumulative checkpoints cannot establish the latency
+of an individual notification, wake or mix. They do not prove that the
+notifier is fault-free.
+
+A subsequent bounded `DM_HITCH_DUMP=35:45` run identified the producer as
+`KTSL2AudioOut` (guest priority 30, waiting in `WaitSynchronization` through
+main+0x10ecb64). All 24 snapshots found it waiting there, one during mutex
+reacquisition; these are frame-hitch samples, not samples triggered by an
+audio underrun. The same host assigns priority-39/44 workers and that audio
+thread the same interactive QoS by default. A **pending per-game comparison**
+uses existing `DM_QOS_MAP=1`, `DM_QOS_EDGES=30,44`: audio remains interactive,
+workers in 39–44 become user-initiated, and lower-priority workers become
+utility. The 540p plus MetalFX cap is retained; hitch dumps are removed for
+the comparison. This is a scheduling hypothesis, not a proven repair or a
+new default for other games. No sustained 60 fps or universal resolution
+control is claimed.
 
 ## Open
 
