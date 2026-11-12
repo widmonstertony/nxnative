@@ -1572,7 +1572,7 @@ static inline void m4_end(id e) {
 // fragment stage, which costs no allocator memory (see m4_end). Only vertex-stage reads of the previous pass's results without a primitive barrier change order, which NVN does not order either
 // DM_NVN_BARRIER=ab... alternates game and full with the DM_AB phases (measurement)
 static int sw_mode(const char *name, int dflt); static inline int sw_on(int m);
-static int barrier_game(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER"); v = e && !strncmp(e, "ab", 2) ? sw_mode("DM_NVN_BARRIER", 0) : e ? !strcmp(e, "game") : DM_GAME_DRAW_BARRIERS_GAME; if (v == 1) MLOG("DM_NVN_BARRIER=game: draw passes are ordered by the game's own barriers (fragment work still has barriers between passes; vertex work may overlap the previous pass's fragments)"); } return sw_on(v); }
+static int barrier_game(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER"); v = e && !strncmp(e, "ab", 2) ? sw_mode("DM_NVN_BARRIER", 0) : e ? !strcmp(e, "game") : dm_prof()->draw_barriers_game; if (v == 1) MLOG("DM_NVN_BARRIER=game: draw passes are ordered by the game's own barriers (fragment work still has barriers between passes; vertex work may overlap the previous pass's fragments)"); } return sw_on(v); }
 void mtl_barrier_stats(uint64_t *skip, uint64_t *full) { *skip = g_bar_skip; *full = g_bar_full; }
 uint64_t mtl_cut_count(void);
 // DM_NVN_GPUPROF=first frame[-last frame] (diagnostic): GPU time of every encoder of the main command buffers in those frames. A relaxed timestamp is written into a counter heap when an
@@ -4404,7 +4404,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         }
     }
     id have = tex_get(t->serial);
-    if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
+    if (!packaged && !have && dm_prof()->tex_dirty_upload && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
     if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { mtl_tex_cpu_written(t); packaged = 1; }   // storage the CPU wrote before its first use (tex_cpu_content)
     if (!packaged && !have && on_sub_thread() && linear_storage_ok(t)) {   // a linear texture no view on its buffer can take (iOS wants 64-byte rows; Axiom Verge's 8x8 RGBA8 linear textures have 32): uploaded, and again after CPU writes
         uint32_t pf; void *mb; uint64_t mo; size_t row;
@@ -5755,7 +5755,7 @@ static void shmap_load(void) { shmap_read_once(); static int warmed; if (!warmed
 static void shmap_read(void) {
     if (g_shmap) return;
     const char *e = getenv("DM_NVN_SHMAP");
-    NSString *path = e ? @(e) : exe_rel([NSString stringWithFormat:@"../games/%s/shader_map.tsv", DM_GAME_ID].UTF8String);   // default: the current game profile folder (Mac: dm/games/<id>; on iOS main.m sets DM_NVN_SHMAP)
+    NSString *path = e ? @(e) : exe_rel([NSString stringWithFormat:@"../games/%s/shader_map.tsv", dm_profile()->id].UTF8String);   // default: the current game profile folder (Mac: dm/games/<id>; on iOS main.m sets DM_NVN_SHMAP)
     NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     if (!txt) MDIE("cannot read the shader map %s (DM_NVN_SHMAP can name another)", path.UTF8String);
     g_shmap = [NSMutableDictionary dictionary];
@@ -5782,7 +5782,7 @@ static void shmap_read(void) {
         if (c.count == 2 && [c[0] isEqual:@"game"]) st_game = c[1]; else if (c.count == 2 && [c[0] isEqual:@"inputs"]) st_inputs = c[1];
     }
     if (!st_inputs) MLOG("[RED] shader library %s has no stamp (inputs.tsv): no full dmsh_build.py run made it as it is, so c1_full.tsv and cb_extent.tsv are not taken", g_msl_dir.UTF8String);
-    else if (st_game && ![st_game isEqual:@(DM_GAME_ID)]) MLOG("[RED] shader library %s was built for game %s, not %s", g_msl_dir.UTF8String, st_game.UTF8String, DM_GAME_ID);
+    else if (st_game && ![st_game isEqual:@(dm_profile()->id)]) MLOG("[RED] shader library %s was built for game %s, not %s", g_msl_dir.UTF8String, st_game.UTF8String, dm_profile()->id);
     else MLOG("shader library stamp: game %s, inputs %s", st_game.UTF8String, st_inputs.UTF8String);
     NSString *cp = [[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"c1_full.tsv"];   // Same directory as the mapping table (Mac: dm/games/<id>; iOS: dm/ inside the App, copied along by build_ipa.sh)
     NSString *ct = cp ? [NSString stringWithContentsOfFile:cp encoding:NSUTF8StringEncoding error:nil] : nil;
@@ -6120,7 +6120,7 @@ static NvShader *shader_load(NSString *pc, int stage, int layer) {
     if (stage == 0 && [j[@"layer_from"] isKindOfClass:[NSDictionary class]]) { o->lay_loc = [j[@"layer_from"][@"loc"] intValue]; o->lay_comp = [[j[@"layer_from"][@"comp"] description] UTF8String][0]; }
     char err[160];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("[RED] shader %s reflection conversion failed: %s", pc.UTF8String, err); return nil; }
-    if (o->rf.dyn && !DM_GAME_TEX_DYN_SLOTS) {   // dynamic texture handles (TEXD / SAMPD) only where the profile says the game picks them from c2's tables, as before otherwise
+    if (o->rf.dyn && !dm_prof()->tex_dyn_slots) {   // dynamic texture handles (TEXD / SAMPD) only where the profile says the game picks them from c2's tables, as before otherwise
         // (rf.c1 is freed by dealloc when o goes: freeing it here too was a double free, which aborted FINAL FANTASY RESONANCE at its first such shader)
         MLOG("[RED] shader %s reflection conversion failed: a texture handle the translator could not trace to one slot (profile key tex_dyn_slots off)", pc.UTF8String); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
@@ -7682,7 +7682,7 @@ typedef struct { uint64_t ibuf; int32_t count, itype; } ir_key;
 typedef struct { uint32_t mn, mx; uint64_t stamp, seen, lo, n; const void *span; int gpuw; } ir_ent;   // gpuw: a GPU write was queued on the indices: never trusted again
 static nvn_hmap g_ir = {.klen = sizeof(ir_key)};
 static uint64_t g_vc_rgn[VC_RGN / 64], g_vc_stat, g_vc_conv, g_vc_whole, g_vc_checks, g_vc_bad;   // g_vc_rgn: 1 MB regions holding a kept index range (hashed); g_vc_conv / g_vc_whole: vertices converted / in the bound ranges
-static int vc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_VCONV_RANGE"); v = e && *e ? atoi(e) != 0 : DM_GAME_VCONV_RANGE; MLOG("vertex conversion of the draw's vertices only: %s", v ? "on" : "off"); } return v; }
+static int vc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_VCONV_RANGE"); v = e && *e ? atoi(e) != 0 : dm_prof()->vconv_range; MLOG("vertex conversion of the draw's vertices only: %s", v ? "on" : "off"); } return v; }
 static int vc_check(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_VCONV_CHECK"); v = e && *e && atoi(e); } return v; }
 static inline uint32_t vc_rgn(uint64_t r) { return (uint32_t)((r * 0x9E3779B97F4A7C15ull) >> 48) & (VC_RGN - 1); }
 static void vc_rgn_mark(uint64_t lo, uint64_t n) { for (uint64_t r = lo >> 20; r <= (lo + n - 1) >> 20; r++) { uint32_t b = vc_rgn(r); g_vc_rgn[b >> 6] |= 1ull << (b & 63); } }
@@ -8316,7 +8316,7 @@ static int pso4_on(void) {
     if (v < 0) {
         const char *e = getenv("DM_PSO_MTL4");
 #if TARGET_OS_IPHONE
-        v = e ? !strcmp(e, "1") : DM_GAME_PSO_MTL4;   // the profile's pso_mtl4
+        v = e ? !strcmp(e, "1") : dm_prof()->pso_mtl4;   // the profile's pso_mtl4
         if (!v) MLOG("render pipelines through the MTLDevice (iOS: DM_PSO_MTL4=1 or the profile key pso_mtl4 on turns on the Metal 4 bases, the pipeline archive and the hybrid pipelines)");
 #else
         v = !(e && !strcmp(e, "0"));
@@ -14793,7 +14793,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
         for (size_t y = 0; y < hb; y++) memcpy(dst + y * row, (const uint8_t *)t->mem + (y0 + y) * srow + x0, wb);
         return;
     }
-    if (tex_from_storage(t) || (DM_GAME_TEX_DIRTY_UPLOAD && t->mem && nvn_ft_written(t))) {
+    if (tex_from_storage(t) || (dm_prof()->tex_dirty_upload && t->mem && nvn_ft_written(t))) {
         // A sparse pool's texture is read through a copy gathered from its page table, unmapped pages as 0, as pkg_upload_ uploads it: where nothing is mapped its address range is
         // inaccessible (reading the storage directly stopped the host with SIGBUS)
         const uint8_t *mem = t->mem; uint8_t *part = NULL;
@@ -16900,9 +16900,10 @@ static int g_snap_n = 2;
 int mtl_snap_on(void) {
     static int v = -1; if (v >= 0) return v;
     const char *e = getenv("DM_PRESENT_SNAP");
-    int n = e ? atoi(e) : DM_GAME_PRESENT_SNAP ? 2 : 0;   // the profile's present_snap (a ring of 2)
+    int n = e ? atoi(e) : dm_prof()->present_snap ? 2 : 0;   // the profile's present_snap (a ring of 2)
     v = n > 0; g_snap_n = n < 2 ? 2 : n > SNAP_MAX ? SNAP_MAX : n;
     if (v) MLOG("present snapshots (DM_PRESENT_SNAP=%d): each present is copied into a ring of %d host textures, so the screen never samples the game's texture", n, g_snap_n);
+    else MLOG("present snapshots off (%s): the screen shows the game's own texture", e ? "DM_PRESENT_SNAP" : "game profile present_snap");   // Frame buffering off: the log says so too
     return v;
 }
 static void snap_commit_wait(uint64_t v) { if (v) rec_note_wait(&g_snap_cmt, v); }
