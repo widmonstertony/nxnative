@@ -2,6 +2,17 @@
 
 The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
 
+## Scene resolution
+
+### A handheld setting leaves the scene at 1080p
+
+- **Symptom:** a mobile game remains GPU-bound with handheld mode and MetalFX enabled; its log still shows a 1080p window. A 1080p allocation alone is not proof of the scene size: Violet's retained Air log crops such a window to 1280x720 before MetalFX.
+- **Cause:** operation mode, scene resolution, allocated target size and final output size are separate. MetalFX on presentation scales what it receives; it does not lower earlier 3D work. Some games keep their own dynamic-resolution level lists above the desired mobile budget.
+- **Fix (mobile stopgap):** `resolution_levels.tsv` supplies an exact build ID, original size table and all original mode lists. The loader validates the complete contract, writable data bounds and non-overlap before limiting any choices. Its `default` is the scene cap; `DM_WINDOW_SIZE` overrides it or selects `original`. Maximum target sizes and the level table remain unchanged. The optional `DM_RESOLUTION_LEVELS_PATH` selects a contract for a multi-game front end. Games without a verified contract retain their own behavior. This changes neither the shader chain nor the simulation clock.
+- **Found on:** [Pokémon Pokopia v327680 on TonTon Air](../../dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680). Device performance after this change remains open.
+- **Check:** `python3 -m unittest dm.tools.tests.test_resolution_levels` covers both caps and atomic rejection of wrong builds, changed values, malformed requests and unsafe data ranges. A separate local check used all nine original lists from the owned embedded image.
+- **Front-ends:** expose a scene-resolution control only for a contract matching the selected signed build; distinguish it from output size. The targeted TonTon menu adaptation is retained in `dm/ios/tools/tonton_resolution_controls.patch`. Existing MetalFX preferences are preserved.
+
 ## Textures and formats
 
 ### Null textures in diagnostic logs

@@ -32,12 +32,17 @@ compilation finishes, allowing final packed delivery to take over.
 The final runtime-table analysis had inherited a one-CPU environment.
 The orchestration now assigns four processes to that read-only analysis;
 the chain tools and shader source remain unchanged. Both final runtime
-tables are now complete. The final image and device readiness checks
-remain pending.
+tables are complete. The final 6,126,960,433-byte image passed full
+SHA-256 device readback (`3abb4050b485899fda6b01ee023b20bf45f08001a91ce43fa092d669014f82c0`).
+After refreshing the shelf, the actual Air library reported `ready` /
+`can open`, first on 60.70 and again after the 60.72 host update. The
+250,134 earlier loose overrides remain. No ROM was reuploaded and no save
+was changed. The user performs the gameplay check; readiness is not a
+gameplay pass.
 
-The final readiness stamp still requires matching runtime tables, fonts,
-signed framework identity and shader-image readback.
-The library must not expose an incomplete title as playable.
+The published readiness stamp matches runtime tables, fonts, signed
+framework identity and shader-image readback. The library must not expose
+an incomplete title as playable.
 
 ## iPads
 
@@ -82,10 +87,11 @@ is not evidence that these four runtimes are ready.
   payloads, but the Rust package records had zero lookup keys at header
   offset 8. Reference packages retain the verified keys and are selected
   for compilation. Other asset containers have not yet been scanned;
-  this partial discovery is not a complete port or a gameplay result. Six
-  representative shaders (two per stage) compiled successfully for Mac and
-  iOS, including their generated companion libraries. Four query defaults
-  still require inspection before runtime validation.
+  this partial discovery is not a complete port or a gameplay result. All 1,488 discovered shader records compiled successfully for Mac and
+  iOS, including their generated companion libraries. The new pinned
+  iOS output has an 18.0 minimum and is not the M2 legacy runtime. Shader
+  coverage outside the 187 discovered containers and query defaults still
+  require inspection before runtime validation.
 - Red Dead Redemption Switch 2 export: readable NUP index, update
   `458752` and an add-on. Full payload verification remains pending.
 - Cyberpunk 2077: readable NUP index, base and update `262144`.
@@ -113,3 +119,43 @@ remain available. APFS clone
 sizes are logical sizes, so deleting a large old app does not necessarily
 reclaim that many physical bytes. Compiler decisions use actual free
 space rather than summing the apparent sizes of deleted bundles.
+
+Completed Air Samurai generated MSL/CAS intermediates were removed only
+after final-table, image-readback and device-readiness checks. Actual SSD
+free space increased by 27.66 GiB; compiled libraries, final tables,
+archives and receipts were retained. APFS deferred reclamation subsequently
+raised free space further and M2's retained dispatcher resumed.
+
+## Air scene-resolution audit
+
+Air 60.72 was signed and installed in place on November 12. Existing game
+frameworks and entitlements are byte-identical to 60.70, including iCloud
+and memory permissions. One small Pokopia contract was added. Its actual
+run logged `scene cap 1280x720, 7 dynamic lists lowered`; this confirms the
+loader ran the data change, not its sustained performance. The user's run
+still showed stutter and crackle, with roughly 28–44 fps in the later
+scene and serious thermal state. Audio callbacks had zero underruns in
+the initial 48 kHz route, then hundreds per 2,000 callbacks after a move
+to a 44.1 kHz Bluetooth route. That correlation is diagnostic evidence,
+not proof that the route caused every underrun. Pokopia's next-boot
+configuration and adjustable per-game schema were changed to 540p plus
+MetalFX and fully read back. The next actual run confirmed the 540p cap,
+and the player reported less stutter but persistent crackling. Audio
+starvation later also occurred on the built-in-speaker route. A Pokopia-only
+`DM_RT=0` comparison is ready; its result and the audio repair remain open.
+
+The batch audit recovered 23 retained native-game logs. Several are from
+November 5–8 and predate current settings. Violet, Arceus, Need for Speed,
+Z-A, Tears of the Kingdom, NieR, The Witcher 3 and Crisis Core have retained
+720p-to-MetalFX evidence. A 1080p allocated window does not contradict a
+720p crop (Violet is an example). Pokopia, Kart, Samurai and the retained
+independent Ocarina path need separate scene-size verification; some older
+logs also have upscaling disabled. These are not all marked complete.
+
+Validation for the new contract: seven portable C-backed unit cases,
+eleven docs checks, the owned embedded image's nine original lists, iOS
+loader/menu compilation, identical exported symbols, signed-package
+framework/entitlement comparison, in-place installation and resource-path
+checks. `regress.py check --games 0400A3A01EE4C000 --no-smoke` could not run:
+there is no matching Mac build registered for this retained Air version.
+No Mac gameplay regression pass is claimed.

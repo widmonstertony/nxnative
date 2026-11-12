@@ -26,6 +26,15 @@ MetalFX path: local GPU validation covered both 1280×720 and 960×540 input,
 including color and aspect-ratio bars. Deployment and game-by-game validation
 of that renderer on iPad are pending.
 
+Air 60.72 adds a build-checked Pokopia scene-resolution cap. The actual
+Air run confirmed the 720p cap executed, but the user still reported stutter
+and audio underruns. The later 540p plus MetalFX run confirmed the cap;
+the player reported less stutter but persistent crackling. Per-game settings
+expose 720p/540p/original. Audio repair and sustained performance remain open.
+[Resolution findings](dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680)
+distinguish internal scene size from 1080p buffers and final output. This is
+not a claim that every title has a tested 720p/540p render path.
+
 M2 build 60.86 introduced uncapped rendering with a separate elapsed-time
 game clock for Pokémon Violet 4.0.0 and Pokémon Legends: Z-A. Settings
 and retained game data were read back; normal simulation speed still needs
@@ -53,7 +62,7 @@ separate verified transfers from outstanding runtime work.
 | Pokémon Violet | Restored the shared fonts and offline Pokémon GO Plus + startup; on legacy Metal, bound the existing iPad game framework to its validated shader chain and supplied the matching raster and image-atomic companions. | M2 60.84 is installed with the existing 4.0.0 ROM and saves verified unchanged. The legacy character capture binding is included; the post-load scene still needs verification. See the [device test notes](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5/dm/games/01008F6008C5E000/README.md#m2-ipad-update-400) for the scope of verification. Air title entry still needs a player retest. The [uncapped timing candidate](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5/dm/games/01008F6008C5E000/README.md#m2-ipad-uncapped-render-timing-candidate) passed local clock tests; device gameplay is pending. |
 | Pokémon Legends: Z-A, Switch 2 Edition | Bound the newer transform-feedback parameters on legacy Metal without changing shaders using the old ABI. Earlier repairs filled missing Metal 3 shader variants and added a Metal 4 compute archive path ([shader loading](https://github.com/widmonstertony/nxnative/commit/2d1396b), [pipeline cache](https://github.com/widmonstertony/nxnative/commit/d24d7c2)) | M2 build 60.82 restored the third-person player model in the same hotel room and save where 60.81 omitted it. Camera rotation and player movement were checked on the device; later city scenes were not part of this check. The uncapped timing path has a local regression test; player movement speed in the reported scene still needs an A/B check. |
 | Hyrule Warriors: Age of Imprisonment | New build uses the upstream field and shader fixes below. | The Air shader build and signed candidate are complete locally. The full game image has not been imported or launched on Air. |
-| Fate/Samurai Remnant | Resumable shader compilation and validated transfer batches. CoreDevice inventory omissions are resolved by named-file SHA-256 readbacks instead of treating a missing row as permission to resend existing resources. | Air completed all 77,671 shaders on the existing chain on November 12. Interrupted 2,350-file and 2,334-file transfer checkpoints passed full readback without retransmission. Final runtime tables are complete; packed delivery, device readiness and first launch remain pending. |
+| Fate/Samurai Remnant | Resumable shader compilation and validated transfer batches. CoreDevice inventory omissions are resolved by named-file SHA-256 readbacks instead of treating a missing row as permission to resend existing resources. | Air completed all 77,671 shaders on the existing chain on November 12. Interrupted 2,350-file and 2,334-file transfer checkpoints passed full readback without retransmission. Final runtime tables and the 6.13 GB shader image are complete and fully read back. Air 60.72 reports ready / can open; gameplay remains for the user to check. |
 | Crisis Core: Final Fantasy VII Reunion | Adjusted Air address-space reservation and added an M2 renderer repair for buffer atomics. | Air reached the title and later passed the previously crashing scene, with stutter reported. On M2, 20 runtime components were installed and read back with the existing ROM and saves intact; gameplay on that build is unverified. |
 | Animal Crossing: New Horizons | Restored the missing M2 runtime components for the existing game data. | Eight runtime components were installed and read back on M2; gameplay on that build is unverified. The Air player confirmed the title launched. |
 | Pokkén Tournament DX | Repaired the old iPad's rendering path for its existing installation. | Old iPad 60.97 reached the training HUD; fighters were still missing. This is not a gameplay pass. |

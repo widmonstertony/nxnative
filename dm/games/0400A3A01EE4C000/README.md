@@ -32,6 +32,49 @@ A Switch 2 game: update v655360 (the title screen says Ver. 2.0.1), SDK 20.5.25 
 
 The first boot shows the language list: `A`, `LUp`, `A` picks English. The character choice takes `LLeft` before `A`. From a warm cache, `A A LLeft A A Plus` reaches walking in about 300 s. On later boots, `A` at the title screen a few times continues the save and reaches walking in about 110 s. The work folder has `run/boot.sh`, `run/hdrive.sh` (no window, timed control lines) and `run/spam.sh`. The packed app takes about a minute to reach the language list (14 s of it the prepare step on a second start), so the fixed times in `run/spam.sh` miss it: press the keys once the list shows.
 
+## TonTon Air scene resolution cap (v327680)
+
+The separate TonTon Air library retains main build
+`816c5358e8178d802fcec4a7ce5a741a`, not the v655360 Mac build above.
+Its retained November 8 device log shows a 1920x1080 window and MetalFX
+present scaling to 2240x1260, followed by serious thermal state and roughly
+43–48 fps. Handheld mode alone did not cap its scene resolution.
+
+A mobile stopgap now limits the game's own dynamic-resolution choices,
+using [`resolution_levels.tsv`](resolution_levels.tsv). The v327680
+selector at main+0x1fb7a0 references all nine lists in that contract;
+width/height getters at +0x103a1d0/+0x103a210 read its 34-level table.
+The default cap is 1280x720, with `DM_WINDOW_SIZE=960x540` or `original`
+overrides. `DM_RESOLUTION_LEVELS_PATH` lets a multi-game front end select
+this exact profile's contract. Fixed addresses run only for that build ID,
+after every original table/list value and writable range has been checked.
+A failed check writes nothing. The table, maximum target allocations,
+signed code and shader chain stay unchanged. UI and output texture sizes
+can therefore still be 1080p; this is a scene cap, not proof of a 720p
+presentation texture or of the size of every intermediate pass.
+
+The principle was researched in the author's
+[BananaNative Android branch](https://github.com/Raphix91/BananaNative/tree/bfc32425f3d2391401b71dfda0cb09e6686fb79a)
+and independently implemented here for signed iOS data mappings; that
+branch's v655360 addresses are not used. Local validation covered the
+owned v327680 embedded image (all nine lists, unchanged code/table,
+720p/540p/original, wrong builds and rejected corrupt contracts) and the
+small Air loader/menu rebuild. Air 60.72 was installed in place; the actual run logged the 1280x720 cap
+and seven lowered lists. The user still reported crackling and stutter:
+late-scene measurements were about 28–44 fps with serious thermal state.
+Audio underruns appeared after the route changed from 48 kHz CarPlay to
+44.1 kHz Bluetooth, without establishing sole causation. The next 960x540 plus MetalFX run logged nine lowered lists and the
+player reported reduced stutter, with crackling still present. After about
+14,000 callbacks its four-block PCM queue collapsed toward zero; later
+2,000-callback windows contained 1,943–1,996 underruns, including the
+48 kHz built-in-speaker route. This rules out treating Bluetooth rate
+conversion as the sole explanation. Rendering still worked at roughly
+24–43 fps in the hot state, with expensive real-time render-thread budgets
+and 63 interactive workers. A per-game `DM_RT=0` comparison was written
+and read back to test producer starvation; its outcome is pending and
+this is not a confirmed root-cause fix. No sustained 60 fps or universal
+resolution control is claimed.
+
 ## Open
 
 - The picture has not been compared with a Switch 2. The user's playtest found it fine. Sunlit ground matches published iPhone shots of the game. Shaded ground and walls are lavender. The player carries fine contour lines, already present in colour target 5435, which may be the material. In some moving shots far blocks showed through near ones; this has not been rechecked since the fixes below.
@@ -55,3 +98,5 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 - [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameShare guest displays](../../../docs/reference/services.md#gameshare-guest-displays): boot aborts.
 - [Block-compressed storage the CPU wrote before first use](../../../docs/reference/nvn-objects.md#block-compressed-storage-the-cpu-wrote-before-first-use): its `IMAGE` BC1 / BC7 icons showed other items' pictures once their storage was reused (resolved).
 - [VOTEU writes the uniform predicate](../../../docs/reference/shaders.md#voteu-writes-the-uniform-predicate): 471 of its shaders change; in the first area only the full-screen `075fd7285c64b798` draws, its votes all false, so the picture is unchanged there.
+
+- [A handheld setting leaves the scene at 1080p](../../../docs/reference/rendering.md#a-handheld-setting-leaves-the-scene-at-1080p).
