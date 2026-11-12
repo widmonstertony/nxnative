@@ -214,6 +214,11 @@ static void launcher_done(void) { [g_root startGame]; }
     DmLayout layout = onTV ? dm_layout_pad_only(b) : dm_layout_picture(dm_layout(b, gameInsets, self.partiallyOpen, division, g_picture_aspect), b, self.fill, g_picture_aspect);
     if (!onTV) self.game.frame = layout.game;
     layout.topSafeOnly = duoPortrait;
+    BOOL hingeClosed = NO;
+#if __has_include(<UIKit/UIHingeInteraction.h>)
+    if (@available(iOS 27.1, *)) hingeClosed = self.hingeStatus == UIHingeStatusClosed;
+#endif
+    layout.customControlsFullBounds = dm_layout_custom_controls_full_bounds(b, hingeClosed);
     NSString *line = [NSString stringWithFormat:@"%@, hinge %ld%s, divisions %@, picture %@, controls %@", onTV ? @"pad only (picture on the TV)" : layout.separated ? @"split" : self.fill ? @"overlay, Fill" : @"overlay",
                       (long)self.hingeStatus, self.partiallyOpen ? " (half open)" : "", regionLog, NSStringFromCGRect(layout.game), NSStringFromCGRect(layout.controls)];
     if (![line isEqualToString:self.layoutLog]) { self.layoutLog = line; LOG("front end: layout %s", line.UTF8String); }
