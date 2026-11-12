@@ -1,7 +1,7 @@
 // Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard and controllers → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
 // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
 // The window is fullscreen-capable (the green button and ⌃⌘F); DM_FULLSCREEN=1 starts it that way. ⌘Q quits, and so does a controller's Home button held for 2 s and
-// confirmed with A (home_quit.h); the left mouse button is the touchscreen.
+// confirmed with A (home_quit.h); a short press opens the Home menu (Resume, Back to console mode, Quit); the left mouse button is the touchscreen.
 // Cheats (hle_cheats.c): the Cheats menu's rows toggle, reload (⌘R) and open the cheats folder; its first item "Show Cheats
 // Window" (⌘⇧C, or DM_CHEATS_WINDOW=1 at launch) opens a Cheats panel beside the game: sections, search, the master switch,
 // safe mode, values, details and the import of cheat files (see the code below).
@@ -191,19 +191,28 @@ static void input_resume(void) {
 
 // Quit with the Home button (home_quit.h, LNPANDY/NX2Apple#336): held for 2 s it opens the prompt (home_quit_mac.h) over the game's view, A quits through the same path as ⌘Q
 // (NSApp terminate, so the save writer and the other exit handlers run as there), B or Home closes it. While the prompt is open the game is told it lost the focus, as the
-// Switch's HOME menu does, and gets no controller input or touch; the keyboard and ⌘Q work as always. DM_HOME_QUIT=0 turns it off
+// Switch's HOME menu does, and gets no controller input or touch; the keyboard and ⌘Q work as always. DM_HOME_QUIT=0 turns it off.
+// A short press opens the Home menu (LNPANDY/NX2Apple#952) the same way: Resume, Back to console mode (DM_HOME_MENU_LAUNCHER=1) and Quit, which opens the prompt.
+// Back to console mode pauses the game as a minimized window is paused and hides it (bg_enter below). DM_HOME_MENU=0 turns the menu off
 static home_quit g_hq;
 static int g_hq_on;
-static NSTimer *g_hq_timer;   // while Home is held: the time runs on without a button change
-static NSView *g_hq_hold, *g_hq_prompt; static CAShapeLayer *g_hq_ring;
+static NSTimer *g_hq_timer;   // while anything is shown or Home is held: the time runs on, and pads that report only some buttons on their own are read
+static NSView *g_hq_hold, *g_hq_prompt, *g_hq_menu; static CAShapeLayer *g_hq_ring;
+static int g_hq_menu_sel = -1;   // the selection g_hq_menu was built with
 static char g_hq_text[HQ_TEXTS][256];
+static void bg_enter(void);
 static void hq_start(void) {
-    g_hq_on = hq_enabled(getenv("DM_HOME_QUIT"));
+    g_hq.no_hold = !hq_enabled(getenv("DM_HOME_QUIT"));
+    g_hq.menu = hq_enabled(getenv("DM_HOME_MENU"));
+    g_hq.launcher = hq_launcher(getenv("DM_HOME_MENU_LAUNCHER"));
+    g_hq_on = !g_hq.no_hold || g_hq.menu;
     char title[256]; snprintf(title, sizeof title, "Quit %s?", DM_GAME_NAME);
-    const char *def[HQ_TEXTS] = {"Keep holding to quit", title, "Unsaved progress will be lost.", "Quit", "Cancel"};
+    const char *def[HQ_TEXTS] = {"Keep holding to quit", title, "Unsaved progress will be lost.", "Quit", "Cancel", "Resume", "Back to console mode", DM_GAME_NAME};
     const char *text = getenv("DM_HOME_QUIT_TEXT");   // a front end's, in the player's language: one line per text, in home_quit.h's order
     for (int i = 0; i < HQ_TEXTS; i++) hq_text_line(text, i, def[i], g_hq_text[i], sizeof g_hq_text[i]);
-    LOG("front end: hold the Home button to quit %s", g_hq_on ? "is on" : "is off (DM_HOME_QUIT=0)");
+    LOG("front end: hold the Home button to quit %s", !g_hq.no_hold ? "is on" : "is off (DM_HOME_QUIT=0)");
+    LOG("front end: a short press of Home opens the Home menu %s%s", g_hq.menu ? "(on)" : "is off (DM_HOME_MENU=0)",
+        g_hq.menu ? (g_hq.launcher ? ", with Back to console mode (DM_HOME_MENU_LAUNCHER=1)" : ", without Back to console mode") : "");
 }
 // The Home button setting for apps (macOS 27), once, when the first controller is there (GameController reads it only while one is connected): "system" in the log
 // explains a hold that does nothing, since the system keeps Home whatever the host asks. A front end reads the setting itself (GCControllerHomeButtonSettingsManager)
@@ -227,28 +236,57 @@ static void hq_fade(NSView *v, int in) {
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) { ctx.duration = 0.18; v.animator.alphaValue = in ? 1 : 0; }
                         completionHandler:^{ if (!in) [v removeFromSuperview]; }];
 }
-static void hq_hide_hold(void) { [g_hq_timer invalidate]; g_hq_timer = nil; [g_hq_hold removeFromSuperview]; g_hq_hold = nil; g_hq_ring = nil; }
+static void hq_tick(void) {   // the timer runs while a phase needs it
+    hq_phase p = g_hq.phase;
+    int want = g_hq_on && (p == HQ_HOLDING || p == HQ_PROMPT || p == HQ_MENU || p == HQ_SETTLE);
+    if (want && !g_hq_timer) g_hq_timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) { (void)t; front_home_poll(); }];
+    else if (!want && g_hq_timer) { [g_hq_timer invalidate]; g_hq_timer = nil; }
+}
+static void hq_hide_hold(void) { [g_hq_hold removeFromSuperview]; g_hq_hold = nil; g_hq_ring = nil; }
 static void hq_hide_prompt(void) { hq_fade(g_hq_prompt, 0); g_hq_prompt = nil; }
+static void hq_hide_menu(void) { hq_fade(g_hq_menu, 0); g_hq_menu = nil; g_hq_menu_sel = -1; }
+static NSString *hq_a_symbol(GCController *holder) {
+    GCExtendedGamepad *g = holder.extendedGamepad;
+    if (!g) for (GCController *c in GCController.controllers) if ((g = c.extendedGamepad)) break;
+    return g.buttonA.sfSymbolsName;
+}
+// The menu, built again when the selection moves (no fade then)
+static void hq_show_menu(GCController *holder) {
+    if (g_hq_menu && g_hq_menu_sel == g_hq.sel) return;
+    int rows[HQ_ROWS], n = hq_menu_rows(&g_hq, rows);
+    NSMutableArray<NSString *> *labels = [NSMutableArray new];
+    for (int i = 0; i < n; i++) [labels addObject:@(g_hq_text[rows[i] == HQ_ROW_RESUME ? HQ_TEXT_RESUME : rows[i] == HQ_ROW_CONSOLE ? HQ_TEXT_CONSOLE : HQ_TEXT_QUIT])];
+    NSView *cv = g_win.contentView, *v = hq_menu_view(cv.bounds, @(g_hq_text[HQ_TEXT_MENU_TITLE]), labels, g_hq.sel, hq_a_symbol(holder));
+    [cv addSubview:v];
+    if (g_hq_menu) [g_hq_menu removeFromSuperview]; else hq_fade(v, 1);
+    g_hq_menu = v; g_hq_menu_sel = g_hq.sel;
+}
 static void hq_changed(hq_phase was, hq_phase now, GCController *holder) {
     if (was == HQ_HOLDING) hq_hide_hold();
     NSView *cv = g_win.contentView;
     switch (now) {
     case HQ_HOLDING:
-        g_hq_timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) { (void)t; front_home_poll(); }];
         break;
     case HQ_PROMPT: {
+        if (was == HQ_MENU) hq_hide_menu();
         front_controllers_quit_prompt(1);
         dm_focus_set(2);
         GCExtendedGamepad *g = holder.extendedGamepad;
         g_hq_prompt = hq_prompt_view(cv.bounds, @(g_hq_text[HQ_TEXT_TITLE]), @(g_hq_text[HQ_TEXT_NOTE]), @(g_hq_text[HQ_TEXT_QUIT]), @(g_hq_text[HQ_TEXT_CANCEL]),
-                                     g.buttonA.sfSymbolsName, g.buttonB.sfSymbolsName);
+                                     g ? g.buttonA.sfSymbolsName : hq_a_symbol(nil), g.buttonB.sfSymbolsName);
         [cv addSubview:g_hq_prompt]; hq_fade(g_hq_prompt, 1);
-        LOG("front end: Home held, quit prompt open");
+        LOG("front end: %s, quit prompt open", was == HQ_MENU ? "Quit chosen in the Home menu" : "Home held");
         break;
     }
+    case HQ_MENU:
+        front_controllers_quit_prompt(1);
+        dm_focus_set(2);
+        hq_show_menu(holder);
+        LOG("front end: Home pressed, Home menu open");
+        break;
     case HQ_SETTLE:
-        hq_hide_prompt(); dm_focus_set(1);
-        LOG("front end: quit prompt closed, the game goes on");
+        hq_hide_prompt(); hq_hide_menu(); dm_focus_set(1);
+        LOG("front end: %s closed, the game goes on", was == HQ_MENU ? "Home menu" : "quit prompt");
         break;
     case HQ_IDLE:
         if (was == HQ_SETTLE) front_controllers_quit_prompt(0);   // the game reads the controllers again, as they are now
@@ -257,27 +295,166 @@ static void hq_changed(hq_phase was, hq_phase now, GCController *holder) {
         LOG("front end: quit from the Home button prompt");
         [NSApp terminate:nil];   // as ⌘Q
         break;
+    case HQ_PAUSED:
+        hq_hide_menu();
+        bg_enter();
+        break;
     }
 }
 void front_home_poll(void) {
     static int busy; if (!g_hq_on || !g_win || !g_input_on || busy) return;
     busy = 1;
-    int home, a, b; GCController *holder = front_controllers_quit_buttons(&home, &a, &b);
+    int home, a, b, up, down; GCController *holder = front_controllers_quit_buttons(&home, &a, &b);
+    front_controllers_menu_dirs(&up, &down);
     double now = CACurrentMediaTime();
-    hq_phase was = g_hq.phase, ph = hq_step(&g_hq, now, home, a, b);
+    hq_phase was = g_hq.phase, ph = hq_step_nav(&g_hq, now, home, a, b, up, down);
     if (ph != was) hq_changed(was, ph, holder);
+    else if (ph == HQ_MENU) hq_show_menu(holder);   // the selection may have moved
     double fill = hq_ring(&g_hq, now);
     if (fill >= 0) {
         if (!g_hq_hold) { NSView *cv = g_win.contentView; CAShapeLayer *ring = nil; g_hq_hold = hq_hold_view(cv.bounds, @(g_hq_text[HQ_TEXT_HOLD]), &ring); g_hq_ring = ring; [cv addSubview:g_hq_hold]; hq_fade(g_hq_hold, 1); }
         hq_hold_set(g_hq_ring, fill);
     }
+    hq_tick();
     busy = 0;
 }
 static void hq_close(void) {
-    if (g_hq.phase == HQ_IDLE || g_hq.phase == HQ_QUIT) return;
+    if (g_hq.phase == HQ_IDLE || g_hq.phase == HQ_QUIT || g_hq.phase == HQ_PAUSED) return;   // the paused game is hidden on purpose: it stays paused
     if (g_hq.phase == HQ_PROMPT) LOG("front end: quit prompt closed, the window lost the focus");
-    hq_cancel(&g_hq); hq_hide_hold(); hq_hide_prompt();
+    if (g_hq.phase == HQ_MENU) LOG("front end: Home menu closed, the window lost the focus");
+    hq_cancel(&g_hq); hq_hide_hold(); hq_hide_prompt(); hq_hide_menu(); hq_tick();
     front_controllers_quit_prompt(0);
+}
+
+// Back to console mode (LNPANDY/NX2Apple#952): the game is paused as a minimized window is (input released, focus 3, audio and graphics suspended), leaves full screen
+// so its Space goes away, hands the activation to the launcher (DM_LAUNCHER_BUNDLE_ID) and hides. It resumes as a restored window does when it is active again (the
+// launcher activates it, the Dock, ⌘Tab) or when the launcher posts org.nxnative.resume.<pid>; org.nxnative.quit.<pid> quits as ⌘Q. The state goes out as log lines
+// ("front end: paused in the background", "front end: resumed") and as the distributed notifications org.nxnative.paused.<pid> and org.nxnative.resumed.<pid>
+static int g_bg;               // 0 playing, 1 going to the background (leaving full screen), 2 paused and hidden
+static int g_bg_full;          // the window was in full screen: it goes back to it on resume
+static int g_bg_exiting_fs;    // 1 while leaving full screen for bg_enter before DidExitFullScreen arrives
+static int g_bg_want_fs;       // 1 while a resumed full-screen window still owes its return to full screen
+static uint64_t g_bg_gen;      // bumped on every bg_enter and bg_resume so stale timers and observers do nothing
+static id g_bg_exit_obs;       // NSWindowDidExitFullScreenNotification observer while leaving full screen
+static void bg_post(const char *what) {
+    NSString *name = [NSString stringWithFormat:@"org.nxnative.%s.%d", what, (int)getpid()];
+    [NSDistributedNotificationCenter.defaultCenter postNotificationName:name object:nil userInfo:nil deliverImmediately:YES];
+}
+static void bg_clear_exit_obs(void) {
+    if (g_bg_exit_obs) { [NSNotificationCenter.defaultCenter removeObserver:g_bg_exit_obs]; g_bg_exit_obs = nil; }
+}
+static void bg_schedule_fullscreen(NSWindow *win, uint64_t gen) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), dispatch_get_main_queue(), ^{
+        if (g_bg || g_bg_gen != gen || g_bg_exiting_fs) return;
+        g_bg_want_fs = 0;
+        if (win.styleMask & NSWindowStyleMaskFullScreen) return;
+        LOG("front end: background: back to full screen");
+        [win toggleFullScreen:nil];
+    });
+}
+static void bg_hide(uint64_t gen) {
+    if (g_bg != 1 || g_bg_gen != gen) return;   // resumed or superseded meanwhile
+    const char *bid = getenv("DM_LAUNCHER_BUNDLE_ID");
+    if (bid && *bid) {
+        NSRunningApplication *l = [NSRunningApplication runningApplicationsWithBundleIdentifier:@(bid)].firstObject;
+        if (l) {
+            [NSApp yieldActivationToApplication:l];
+            BOOL ok = [l activateFromApplication:NSRunningApplication.currentApplication options:NSApplicationActivateAllWindows];
+            LOG("front end: background: launcher %s %s", bid, ok ? "activated" : "did not take the activation");
+        } else {
+            NSURL *u = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:@(bid)];
+            LOG("front end: background: launcher %s is not running, %s", bid, u ? "opening it" : "and not installed");
+            if (u) [NSWorkspace.sharedWorkspace openApplicationAtURL:u configuration:[NSWorkspaceOpenConfiguration configuration] completionHandler:nil];
+        }
+    } else LOG("front end: background: no DM_LAUNCHER_BUNDLE_ID, macOS shows the app behind the game");
+    [NSApp hide:nil];
+    g_bg = 2;
+    LOG("front end: background: game hidden");
+    LOG("front end: paused in the background");
+    bg_post("paused");
+}
+static void bg_enter(void) {
+    if (g_bg) return;
+    NSWindow *win = g_win;
+    uint64_t gen = ++g_bg_gen;
+    int in_fs = (win.styleMask & NSWindowStyleMaskFullScreen) != 0;
+    g_bg = 1; g_bg_full = in_fs || g_bg_want_fs; g_bg_want_fs = 0;
+    LOG("front end: Home menu: back to console mode, pausing the game");
+    input_release();   // hq_close leaves HQ_PAUSED alone
+    dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1);
+    LOG("front end: background: input released, focus 3, audio and graphics suspended");
+    if (!in_fs && !g_bg_exiting_fs) { bg_clear_exit_obs(); bg_hide(gen); return; }
+    LOG("front end: background: leaving full screen first");
+    int already_exiting = g_bg_exiting_fs;
+    g_bg_exiting_fs = 1;
+    bg_clear_exit_obs();
+    g_bg_exit_obs = [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        (void)n;
+        bg_clear_exit_obs();
+        g_bg_exiting_fs = 0;
+        if (g_bg == 1) { bg_hide(g_bg_gen); return; }
+        if (!g_bg && g_bg_want_fs) bg_schedule_fullscreen(win, g_bg_gen);
+    }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (g_bg != 1 || g_bg_gen != gen) return;
+        bg_clear_exit_obs();
+        g_bg_exiting_fs = 0;
+        bg_hide(gen);
+    });   // a refused exit does not keep the game on screen
+    if (!already_exiting) [win toggleFullScreen:nil];
+}
+static void bg_resume(const char *why) {
+    if (!g_bg) return;
+    NSWindow *win = g_win;
+    uint64_t gen = ++g_bg_gen;
+    int full = g_bg_full; g_bg = 0; g_bg_want_fs = full;
+    LOG("front end: background: resuming (%s)", why);
+    if (NSApp.hidden) [NSApp unhide:nil];
+    dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2);   // as a restored window, focus 1 follows when the window is key
+    hq_resumed(&g_hq); hq_tick();   // the game gets the controllers once Home, A and B are up
+    [win makeKeyAndOrderFront:nil];
+    if (!NSApp.active) [NSApp activate];
+    if (win.isKeyWindow && NSApp.active) { input_resume(); dm_focus_set(1); front_home_poll(); }
+    if (full) {
+        if (g_bg_exiting_fs) {
+            // Leaving full screen takes ~0.6 s and keeps NSWindowStyleMaskFullScreen set until DidExitFullScreen arrives.
+            // Keep g_bg_exit_obs armed so it re-enters full screen once the exit animation settles, with a 3 s guard if refused.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                if (g_bg || g_bg_gen != gen || !g_bg_exiting_fs) return;
+                bg_clear_exit_obs();
+                g_bg_exiting_fs = 0;
+                if (g_bg_want_fs && !(win.styleMask & NSWindowStyleMaskFullScreen)) bg_schedule_fullscreen(win, gen);
+                else g_bg_want_fs = 0;
+            });
+        } else if (!(win.styleMask & NSWindowStyleMaskFullScreen)) {
+            bg_schedule_fullscreen(win, gen);
+        } else {
+            g_bg_want_fs = 0;
+        }
+    }
+    LOG("front end: resumed");
+    bg_post("resumed");
+}
+static void bg_start(void) {
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc addObserverForName:NSApplicationDidBecomeActiveNotification object:NSApp queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; if (g_bg == 2) bg_resume("the game is active again"); }];
+    [nc addObserverForName:NSApplicationDidUnhideNotification object:NSApp queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; if (g_bg == 2) bg_resume("the game is shown again"); }];
+    NSDistributedNotificationCenter *dc = NSDistributedNotificationCenter.defaultCenter;
+    int pid = (int)getpid();
+    [dc addObserverForName:[NSString stringWithFormat:@"org.nxnative.resume.%d", pid] object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        (void)n;
+        if (g_bg) { bg_resume("the launcher asked"); return; }
+        LOG("front end: the launcher asked to resume, the game is not paused: bringing it to the front");
+        if (NSApp.hidden) [NSApp unhide:nil];
+        [g_win makeKeyAndOrderFront:nil]; [NSApp activate];
+    }];
+    [dc addObserverForName:[NSString stringWithFormat:@"org.nxnative.quit.%d", pid] object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        (void)n;
+        LOG("front end: quit asked by the launcher%s", g_bg ? " (paused in the background: audio and graphics resumed for the exit)" : "");
+        if (g_bg) { dm_gfx_suspend(0); dm_audio_suspend(0); }   // the exit handlers run as after ⌘Q, with nothing held suspended
+        [NSApp terminate:nil];
+    }];
+    LOG("front end: launcher requests: org.nxnative.resume.%d and org.nxnative.quit.%d", pid, pid);
 }
 // The controller applet's prompt (front.h front_ctrl_support, ctrl_prompt.h; GitHub issue #1640): the game asked for more players than it sees, and the game's thread waits while
 // the prompt is up over the game, as the Switch's player screen. A controller that joins meanwhile is a player at once (its first button with DM_PAD_PRESS_TO_JOIN, its
@@ -1347,6 +1524,7 @@ void front_run(void (*guest)(void)) {
         NSString *keys = input_preference_map(input_preferences_domain(), "DM_KEYMAP", 0);
         if (keys) key_map_parse(&g_keys, keys.UTF8String);
         hq_start();
+        bg_start();
         front_controllers_start();
         hq_log_setting();
         [NSNotificationCenter.defaultCenter addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
@@ -1373,8 +1551,8 @@ void front_run(void (*guest)(void)) {
         // DM_FOCUS_KEEP (on by default, =0 turns it off): the game stays in focus while its window is up, whichever app is active. Tears of the Kingdom and Ocarina of Time
         // stop presenting out of focus, so clicking into another app read as a hang (no frame and no sound after the last focus change)
         static int keep = -1; if (keep < 0) keep = !getenv("DM_FOCUS_KEEP") || atoi(getenv("DM_FOCUS_KEEP"));
-        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_release(); if (!win.miniaturized && !g_text_box && !keep) dm_focus_set(2); }];
-        [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_resume(); dm_focus_set(1); }];
+        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_release(); if (!win.miniaturized && !g_text_box && !keep && !g_bg) dm_focus_set(2); }];
+        [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (g_bg) return; input_resume(); dm_focus_set(1); }];   // paused in the background (bg_enter): bg_resume takes it back
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_release(); dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
         display_awake(win.isKeyWindow);   // the window may have become key (makeKeyAndOrderFront above) before these observers were installed

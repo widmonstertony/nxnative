@@ -1,5 +1,6 @@
 // The views of the Home button's quit prompt (home_quit_mac.h), built without a game, a window or a controller: the texts are shown, the card stays inside a small
-// window and a TV-sized one, a long title wraps instead of widening the card, and a glyph the system does not have falls back to the plain letter.
+// window and a TV-sized one, a long title wraps instead of widening the card, and a glyph the system does not have falls back to the plain letter. The Home menu's
+// rows, its selection and its sizes the same way.
 // DM_HOME_QUIT_CAPTURE=<folder> also draws both views over a stand-in picture into PNG files there (the pull request's screenshots), in an offscreen window.
 #import "../home_quit_mac.h"
 #include <stdio.h>
@@ -102,6 +103,43 @@ int main(void) {
         }
         CHECK(game->clicks == 0, "a click on the prompt does not reach the game's view");
 
+        // The Home menu (LNPANDY/NX2Apple#952): its rows in order, the selection drawn on one of them, every row as wide as the others in both sizes, the card inside
+        NSArray<NSString *> *three = @[@"Resume", @"Back to console mode", @"Quit"];
+        for (NSValue *size in @[[NSValue valueWithRect:small], [NSValue valueWithRect:tv]]) {
+            NSRect r = size.rectValue; CGFloat k = hq_scale(r.size);
+            for (NSInteger sel = 0; sel < 3; sel++) {
+                NSView *m = hq_menu_view(r, @"Super Mario Odyssey", three, sel, nil);
+                [m layoutSubtreeIfNeeded];
+                NSMutableArray<NSString *> *mt = [NSMutableArray new]; texts(m, mt);
+                CHECK(([mt isEqualToArray:@[@"Super Mario Odyssey", @"Resume", @"Back to console mode", @"Quit"]]), "the menu shows its title and its rows in order");
+                CHECK(NSContainsRect(m.bounds, card_of(m).frame), "the menu's card is inside the view");
+                NSStackView *list = (NSStackView *)((NSStackView *)card_of(m)).arrangedSubviews.lastObject;
+                CHECK(list.arrangedSubviews.count == 3, "three rows");
+                for (NSInteger i = 0; i < 3; i++) {
+                    NSView *row = list.arrangedSubviews[i];
+                    CHECK(fabs(row.frame.size.width - HQ_ROW_W * k) < 0.5 && fabs(row.frame.size.height - 56 * k) < 0.5, "every row has the same size");
+                    CHECK(row.accessibilitySelected == (i == sel), "only the selected row is selected");
+                    CHECK((first_image(row) != nil) == (i == sel), "only the selected row has the A glyph");
+                    CHECK(NSContainsRect(row.bounds, ((NSView *)row.subviews.firstObject).frame), "the row's content stays inside it");
+                }
+                CHECK(NSMinY(list.arrangedSubviews[0].frame) > NSMinY(list.arrangedSubviews[2].frame), "Resume is on top");
+            }
+        }
+        NSView *m2 = hq_menu_view(small, @"Hades", @[@"Resume", @"Quit"], 1, @"no.such.symbol");
+        [m2 layoutSubtreeIfNeeded];
+        NSMutableArray<NSString *> *m2t = [NSMutableArray new]; texts(m2, m2t);
+        CHECK(([m2t isEqualToArray:@[@"Hades", @"Resume", @"Quit"]]), "without the launcher's row: two rows");
+        CHECK(first_image(m2).image.size.width > 0, "the menu's A glyph falls back to the letter");
+        NSView *m3 = hq_menu_view(small, @"Hades", @[@"Zur\u00fcck zum Konsolenmodus und noch viel l\u00e4nger als jede Sprache", @"Quit"], 0, nil);
+        [m3 layoutSubtreeIfNeeded];
+        NSStackView *l3 = (NSStackView *)((NSStackView *)card_of(m3)).arrangedSubviews.lastObject;
+        CHECK(fabs(l3.arrangedSubviews[0].frame.size.width - HQ_ROW_W) < 0.5, "a long label does not widen its row");
+        Clicks *game2 = [[Clicks alloc] initWithFrame:small]; NSView *mc = hq_menu_view(small, @"Hades", three, 0, nil);
+        [game2 addSubview:mc]; [mc layoutSubtreeIfNeeded];
+        NSEvent *e2 = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSMakePoint(10, 10) modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:0 clickCount:1 pressure:1];
+        NSView *hit2 = [mc hitTest:NSMakePoint(10, 10)] ?: mc; [hit2 mouseDown:e2]; [hit2 mouseUp:e2];
+        CHECK(game2->clicks == 0, "a click on the menu does not reach the game's view");
+
         CAShapeLayer *ring = nil;
         NSView *h = hq_hold_view(small, @"Keep holding to quit", &ring);
         [h layoutSubtreeIfNeeded];
@@ -122,6 +160,9 @@ int main(void) {
             CAShapeLayer *r = nil; NSView *hv = hq_hold_view(tv, @"Keep holding to quit", &r); hq_hold_set(r, 0.6);
             capture(hv, tv.size, dir, "home-quit-hold.png");
             capture(hq_prompt_view(tv, @"Quit Super Mario Odyssey?", @"Unsaved progress will be lost.", @"Quit", @"Cancel", @"xmark.circle", @"circle.circle"), tv.size, dir, "home-quit-prompt-ps.png");
+            capture(hq_menu_view(tv, @"Super Mario Odyssey", three, 0, @"a.circle"), tv.size, dir, "home-menu.png");
+            capture(hq_menu_view(tv, @"Super Mario Odyssey", three, 1, @"a.circle"), tv.size, dir, "home-menu-console.png");
+            capture(hq_menu_view(tv, @"Super Mario Odyssey", @[three[0], three[2]], 0, @"a.circle"), tv.size, dir, "home-menu-no-launcher.png");
         }
     }
     printf("t_home_quit_mac: %d checks, %d failed\n", checks, fails);

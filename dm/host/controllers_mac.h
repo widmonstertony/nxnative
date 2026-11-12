@@ -14,6 +14,8 @@ void front_controllers_window(int active);
 @class GCController;
 GCController *front_controllers_quit_buttons(int *home, int *a, int *b);
 void front_controllers_quit_prompt(int active);
+// Up and down for the Home menu (home_quit.h): the d-pad or the left stick past HQ_STICK on any player's controller, before remapping
+void front_controllers_menu_dirs(int *up, int *down);
 void front_home_poll(void);
 
 // Called on the main thread when mapped input reaches the game.

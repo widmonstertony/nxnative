@@ -16,6 +16,7 @@
 #include "pad_hid_mac.h"
 #include "pad_joycon_mac.h"
 #include "pad_switch2_apple.h"
+#include "home_quit.h"
 #include <math.h>
 
 enum { PAD_OFF, PAD_DPAD, PAD_LEFT_STICK, PAD_RIGHT_STICK, PAD_TOUCH };
@@ -342,6 +343,21 @@ GCController *front_controllers_quit_buttons(int *home, int *a, int *b) {
         }
     }
     return holder;
+}
+void front_controllers_menu_dirs(int *up, int *down) {
+    *up=*down=0;
+    if(!controller_listening()) return;
+    const int32_t far=(int32_t)(DM_STICK_MAX*HQ_STICK);
+    for(DMController *d in g_devices) if(d->slot>=0) {
+        GCExtendedGamepad *g=d.controller.extendedGamepad;
+        if(g) {
+            *up|=g.dpad.up.isPressed || g.leftThumbstick.yAxis.value>HQ_STICK;
+            *down|=g.dpad.down.isPressed || g.leftThumbstick.yAxis.value< -HQ_STICK;
+        }
+        // Every pad's raw state is kept in d->input (Switch layout, up positive) while the window has the focus, the prompt's or menu's time included
+        *up|=!!(d->input.buttons & DM_BTN_UP) || d->input.ly>far;
+        *down|=!!(d->input.buttons & DM_BTN_DOWN) || d->input.ly< -far;
+    }
 }
 static void controller_update_focus(void) {
     int was_focused=g_focus, listening=controller_listening();

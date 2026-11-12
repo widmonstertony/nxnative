@@ -835,6 +835,15 @@ static void test_home_quit_routing(void) {
     assert(q.phase==HQ_IDLE && received[gc_slot]);
     report(0,1); now+=HQ_HOLD_S; front_home_poll(); report(1,1);
     assert(q.phase==HQ_QUIT && !received[raw_slot]); // wire A quits, regardless of its guest mapping
+    // The Home menu's up and down (LNPANDY/NX2Apple#952): the native d-pad and stick, before remapping, also while the prompt holds the game's input
+    int up,down; front_controllers_menu_dirs(&up,&down); assert(!up && !down);
+    [native.extendedGamepad.dpad setValueForXAxis:0 yAxis:-1]; gc_event(gc);
+    front_controllers_menu_dirs(&up,&down); assert(!up && down);
+    [native.extendedGamepad.dpad setValueForXAxis:0 yAxis:0]; [native.extendedGamepad.leftThumbstick setValueForXAxis:0 yAxis:0.9]; gc_event(gc);
+    front_controllers_menu_dirs(&up,&down); assert(up && !down);
+    [native.extendedGamepad.leftThumbstick setValueForXAxis:0 yAxis:0.2]; gc_event(gc);
+    front_controllers_menu_dirs(&up,&down); assert(!up && !down);
+    front_controllers_window(0); front_controllers_menu_dirs(&up,&down); assert(!up && !down); front_controllers_window(1);
     test_home_poll=nil; front_controllers_quit_prompt(0);
     hidpad_removed(NULL,kIOReturnSuccess,NULL,hid); hid_fixture_finish();
     puts("Home quit: adapter ownership, physical labels, prompt/settle gating and focus recovery: OK");
