@@ -25,6 +25,7 @@ int nvn_deswz_gpu_direct_supported(const nvn_texdesc *d) {
     return g_nvn_deswz_direct && d && d->format == 0x29 && (d->target == 4 || d->target == 9) &&
         !(d->flags & 0x38) && d->samples <= 1 && d->width && d->height && d->width <= 64 && d->height <= 64 && d->depth >= 32;
 }
+#if TARGET_OS_OSX || defined(DM_NVN_MODERN_RENDERER)
 int nvn_deswz_gpu_direct_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTable> table,
                             id<MTLBuffer> params, size_t params_off, id<MTLBuffer> src, uint64_t src_off,
                             const nvn_texdesc *d, unsigned level, id<MTLTexture> view) {
@@ -43,6 +44,8 @@ int nvn_deswz_gpu_direct_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTa
     [enc dispatchThreadgroups:MTLSizeMake((p.width+7)/8,(p.height+3)/4,p.layers) threadsPerThreadgroup:MTLSizeMake(8,4,1)];
     return 0;
 }
+
+#endif
 
 int nvn_deswz_gpu_encode(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> src, uint64_t src_off,
                          const nvn_texdesc *d, unsigned level, unsigned layer,

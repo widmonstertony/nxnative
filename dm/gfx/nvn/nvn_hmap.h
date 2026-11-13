@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_hmap.h"
+#else
 // Open-addressing hash table from fixed-length byte keys -> pointers (linear probing + backward shift on deletion, no tombstones).
 // The replay hot path uses it instead of NSDictionary: keys are not boxed, no allocation, a lookup does only one hash + memcmp.
 // No locking: callers protect it with their own locks. Ownership of values belongs to the caller (put / del return the replaced / deleted old value). Unit test tests/t_hmap.c.
@@ -76,3 +80,5 @@ static inline void nvn_hm_clear(nvn_hmap *m, void (*rel)(void *)) {
     for (uint32_t i = 0; i < m->cap; i++) if (m->vals[i]) { if (rel) rel(m->vals[i]); m->vals[i] = NULL; }
     m->n = 0;
 }
+
+#endif

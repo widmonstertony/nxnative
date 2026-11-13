@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_builtin.h"
+#else
 // The 4 Maxwell compute shaders embedded in the main program itself (no counterpart in the PC version) -> hand-written MSL, equivalent instruction by instruction to the envydis disassembly.
 // Source: control segments in the .rodata of the original main image @0x1df10e8 / 0x1df1a94 / 0x1df2440 / 0x1df2dec (envydis -m gm107).
 // Common skeleton (original Maxwell):
@@ -20,3 +24,5 @@ static const struct { const char *ctl; const char *fn; } k_nvn_builtin_map[] = {
     {"0687e2ef95133577", "q_dlt0"},
     {"4df5909e6dabee05", "q_dlt8"},
 };
+
+#endif

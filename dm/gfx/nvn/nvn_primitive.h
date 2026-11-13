@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_primitive.h"
+#else
 // Expand indexed fans/quads into triangle lists, respecting NVN primitive restart.
 #pragma once
 #include <stdint.h>
@@ -27,3 +31,5 @@ static inline uint32_t nvn_expand_primitive(uint32_t *out, const uint8_t *src, u
     }
     return used;
 }
+
+#endif

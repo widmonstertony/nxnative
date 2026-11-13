@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_pso_ds.h"
+#else
 #pragma once
 #include <stdint.h>
 
@@ -19,3 +23,5 @@ static inline int pso_ds_valid(uint32_t depth, uint32_t stencil) {
     if (depth == PSO_D32S8 || stencil == PSO_D32S8) return depth == stencil;
     return 1;
 }
+
+#endif

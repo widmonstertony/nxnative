@@ -1,7 +1,7 @@
 // Mac app launcher (CFBundleExecutable of the .app that dm/mac/pack_app.py packs): sets the host's environment from the bundle, then runs the Mac host (Contents/MacOS/dmhost) as a child.
 // The host is not exec'ed: macOS privacy checks (TCC) attribute a child's file access to the app that launched it, while a launcher that hands its process over (a shell script exec'ing
 // dmhost) gets EPERM on every open on a removable volume, with no prompt, signed or not. The launcher forwards SIGTERM / SIGINT / SIGHUP to the host and returns its exit code.
-// Bundle layout: Resources/romfs.img (the game's RomFS image; legacy romfs/ also supported), Resources/msl/<b-chain | vk | gl> (the Mac shader libraries), Resources/aoc/<index> (DLC), Resources/pso (the pipeline archive made
+// Bundle layout: Resources/romfs.img (the game's RomFS image; legacy romfs/ also supported), Resources/msl/<b-chain.img | vk | gl> (the Mac shader libraries), Resources/aoc/<index> (DLC), Resources/pso (the pipeline archive made
 // offline, handed to the host as DM_PSO_BUNDLE as the iOS app's main.m does), Resources/dm (the rewritten modules, the shader tables and pairs, font/, env.txt). Saves, the pipeline list and temporary files go to ~/Library/Application Support/nxnative/<title ID>/, the host's output to ~/Library/Logs/nxnative/<title ID>.log
 // (the previous run's kept as <title ID>.prev.log). Environment switches: one KEY=VALUE per line in <Application Support folder>/env.txt, then Resources/dm/env.txt (the first one wins; neither
 // replaces a variable already set), as the iOS app reads Documents/env.txt and dm/env.txt. Then the player's saved choices: launcher.<VAR> strings in the app's preferences domain (its bundle ID), which a
@@ -25,7 +25,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "romfs_image.h"
+#include "romfs_identity.h"
 #include "save_sync.h"
+#include "input_map.h"
 
 extern char **environ;
 int dm_mac_launcher(void);   // Launcher.swift: 1 = Play (the settings are in the environment), 0 = the player quit, 2 = no window (apply the saved choices here)
@@ -88,6 +90,13 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # starts a commen
 }
 
 static int saved_accepted(CFDictionaryRef rule, CFStringRef v, const char *s) {   // a saved choice this build still offers: one of its values, or a number in its range
+    CFTypeRef mapping = CFDictionaryGetValue(rule, CFSTR("mapping"));
+    if (mapping && CFGetTypeID(mapping) == CFStringGetTypeID()) {
+        if (strlen(s) > 1023) return 0;
+        if (CFEqual(mapping, CFSTR("keymap"))) { key_map map; key_map_default(&map); return !key_map_parse(&map, s); }
+        if (CFEqual(mapping, CFSTR("padmap"))) { pad_map map; pad_map_default(&map); return !pad_map_parse(&map, s); }
+        return 0;
+    }
     CFTypeRef values = CFDictionaryGetValue(rule, CFSTR("values"));
     if (values && CFGetTypeID(values) == CFArrayGetTypeID()) {
         for (CFIndex i = 0; i < CFArrayGetCount(values); i++) {
@@ -121,7 +130,7 @@ static void saved_choices(void) {   // after the env files, before the bundle's 
     const char *off = getenv("DM_SAVED_CHOICES");
     if (off && !strcmp(off, "0")) { fprintf(stderr, "launcher: saved choices ignored (DM_SAVED_CHOICES=0)\n"); return; }
     for (CFIndex i = 0; i < CFArrayGetCount(rules); i++) {
-        CFTypeRef rule = CFArrayGetValueAtIndex(rules, i); char env[128], s[256];
+        CFTypeRef rule = CFArrayGetValueAtIndex(rules, i); char env[128], s[1024];
         if (!rule_env(rule, env, sizeof env)) continue;
         CFStringRef key = CFStringCreateWithFormat(NULL, NULL, CFSTR("launcher.%s"), env);
         CFPropertyListRef v = CFPreferencesCopyAppValue(key, domain); CFRelease(key);
@@ -142,6 +151,7 @@ static void cloud_saves_folder(void) {
         setenv("DM_CLOUDKIT_CONTAINER", container, 1);
         return;
     }
+    unsetenv("DM_CLOUDKIT_CONTAINER");
     CFStringRef domain = CFBundleGetIdentifier(CFBundleGetMainBundle());
     if (getenv("DM_SAVE_SYNC") || !domain) return;
     CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("cloudSaves.folder"), domain); char s[PATH_MAX];
@@ -151,10 +161,32 @@ static void cloud_saves_folder(void) {
     if (v) CFRelease(v);
 }
 
+// A game of several programs (Super Mario 3D All-Stars): pack_app.py's table of them, with this app's paths filled in (it may move), for oe::ExecuteProgram (DM_PROGRAMS, hle_oe.c)
+static void programs_table(const char *contents, const char *res, const char *sup) {
+    char in[PATH_MAX], out[PATH_MAX]; snprintf(in, sizeof in, "%s/dm/programs.tsv", res); snprintf(out, sizeof out, "%s/programs.tsv", sup);
+    FILE *f = fopen(in, "r"); if (!f) return;
+    FILE *o = fopen(out, "w"); if (!o) { fprintf(stderr, "[RED] launcher: cannot write %s\n", out); fclose(f); return; }
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        if (c != '@') { fputc(c, o); continue; }
+        int k = fgetc(f), e = fgetc(f); const char *v = k == 'R' ? res : k == 'C' ? contents : k == 'S' ? sup : NULL;
+        if (v && e == '@') fputs(v, o); else { fputc(c, o); if (k != EOF) fputc(k, o); if (e != EOF) fputc(e, o); }
+    }
+    fclose(f); fclose(o); setenv("DM_PROGRAMS", out, 0);
+}
+
+static int external_image_matches(const char *path, const char *identity) {
+    romfs_id want, got;
+    romfs_img *image = romfs_id_check(identity, path, &want, &got) == ROMFS_ID_OK ? romfs_image_open(path) : NULL;
+    int valid = image && !image->damaged;
+    romfs_image_close(image);
+    return valid;
+}
+
 int main(int argc, char **argv) {
     char self[PATH_MAX], exe[PATH_MAX]; uint32_t n = sizeof self;
     if (_NSGetExecutablePath(self, &n) || !realpath(self, exe)) return 1;
-    char contents[PATH_MAX], res[PATH_MAX], host[PATH_MAX], dm[PATH_MAX], romfs[PATH_MAX], p[PATH_MAX];
+    char contents[PATH_MAX], res[PATH_MAX], host[PATH_MAX], dm[PATH_MAX], romfs[PATH_MAX], msl[PATH_MAX], p[PATH_MAX];
     snprintf(contents, sizeof contents, "%s", exe); *strrchr(contents, '/') = 0; *strrchr(contents, '/') = 0;   // .../Contents/MacOS/<launcher> → .../Contents
     snprintf(res, sizeof res, "%s/Resources", contents); snprintf(host, sizeof host, "%s/MacOS/dmhost", contents);
     snprintf(dm, sizeof dm, "%s/dm", res); snprintf(romfs, sizeof romfs, "%s/romfs", res);
@@ -164,10 +196,35 @@ int main(int argc, char **argv) {
     if (!info_string("DMTitleID", id, sizeof id) || strchr(id, '/')) { alert(name, "This app has no title ID in its Info.plist (DMTitleID): pack it again with build_ipa_from_nsp.py --platform mac-app."); return 1; }
     struct stat st; snprintf(p, sizeof p, "%s/romfs.img", res);
     int valid_romfs;
-    if (!stat(p, &st)) {
+    if (info_string("DMExternalRomfs", romfs, sizeof romfs)) {
+        if (romfs[0] != '/' || stat(romfs, &st) || !S_ISREG(st.st_mode)) {
+            alert(name, "The external game image is unavailable. Reconnect the drive containing the image used to build this app.");
+            return 1;
+        }
+        snprintf(p, sizeof p, "%s/romfs.id", res);
+        if (!external_image_matches(romfs, p)) {
+            alert(name, "The external game image has changed or is incomplete. Restore the matching image used to build this app.");
+            return 1;
+        }
+        valid_romfs = 1;
+    } else if (!stat(p, &st)) {
         romfs_img *image = romfs_image_open(p); valid_romfs = image != NULL;
         romfs_image_close(image); snprintf(romfs, sizeof romfs, "%s", p);
     } else { snprintf(p, sizeof p, "%s/%s", romfs, marker); valid_romfs = !stat(p, &st); }
+    if (info_string("DMExternalShaders", msl, sizeof msl)) {
+        if (msl[0] != '/' || stat(msl, &st) || !S_ISREG(st.st_mode)) {
+            alert(name, "The external Metal shader image is unavailable. Reconnect the drive containing the build cache used by this app.");
+            return 1;
+        }
+        snprintf(p, sizeof p, "%s/shaders.id", res);
+        if (!external_image_matches(msl, p)) {
+            alert(name, "The external Metal shader image has changed or is incomplete. Restore the matching shader image used to build this app.");
+            return 1;
+        }
+        char *filename = strrchr(msl, '/');
+        if (filename == msl) filename++;
+        *filename = 0;
+    } else snprintf(msl, sizeof msl, "%s/msl", res);
     if (access(host, X_OK) || !valid_romfs || !modules_present(dm)) {
         alert(name, "The game data inside this app is missing or incomplete (Contents/Resources/romfs.img, Contents/Resources/dm or Contents/MacOS/dmhost): pack it again with build_ipa_from_nsp.py --platform mac-app.");
         return 1;
@@ -189,6 +246,7 @@ int main(int argc, char **argv) {
     snprintf(p, sizeof p, "%s/env.txt", dm); env_file(p);
     setenv("DM_ENV_FILE_KEYS", g_file_keys ? g_file_keys : "", 1); setenv("DM_ENV_LAUNCH_KEYS", g_launch_keys ? g_launch_keys : "", 1);
     free(g_file_keys); free(g_launch_keys);
+    setenv("DM_SAVE", save, 0);   // before the window: its cloud-save check compares this save with the cloud's (Launcher.swift SaveCheck)
     int window = !(getenv("DM_LAUNCHER") && !strcmp(getenv("DM_LAUNCHER"), "0"));
     for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--no-launcher")) window = 0;
     if (!window) fprintf(stderr, "launcher: no settings window (DM_LAUNCHER=0 or --no-launcher)\n");
@@ -196,14 +254,16 @@ int main(int argc, char **argv) {
     if (!shown) return 0;   // Quit: no game
     if (shown == 2) saved_choices();
     cloud_saves_folder();
-    setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_SAVE", save, 0); setenv("DM_TEMP", temp, 0);
-    snprintf(p, sizeof p, "%s/msl", res); setenv("DM_MSL_DIR", p, 0);
+    setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_TEMP", temp, 0);
+    snprintf(p, sizeof p, "%s/Library/Application Support/nxnative/system", home); setenv("DM_SYSTEM_DIR", p, 0);   // the player's own console files, for every game
+    setenv("DM_MSL_DIR", msl, 0);
     snprintf(p, sizeof p, "%s/font", dm); setenv("DM_FONT_DIR", p, 0);
     snprintf(p, sizeof p, "%s/shader_map.tsv", dm); if (!stat(p, &st)) setenv("DM_NVN_SHMAP", p, 0);
     snprintf(p, sizeof p, "%s/aoc", res); if (!stat(p, &st)) setenv("DM_AOC_DIR", p, 0);
     snprintf(p, sizeof p, "%s/pso", res); if (!stat(p, &st)) setenv("DM_PSO_BUNDLE", p, 0);   // the bases of every shader pair: the first start builds none
     if (*lang) setenv("DM_LANG", lang, 0);
-    setenv("DM_WINDOW", "1", 0); setenv("DM_AUDIO", "1", 0);
+    setenv("DM_WINDOW", "1", 0); setenv("DM_AUDIO", "1", 0); setenv("DM_FULLSCREEN", "1", 0);
+    programs_table(contents, res, sup);
     if (chdir(sup)) { fprintf(stderr, "[RED] launcher: cannot enter %s\n", sup); return 1; }
     struct sigaction sa = {.sa_handler = forward};   // no SA_RESTART: waitpid below sees EINTR and waits again
     sigemptyset(&sa.sa_mask);

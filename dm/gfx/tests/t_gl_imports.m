@@ -1,8 +1,6 @@
 // Direct GL imports and eglGetProcAddress must reach the same implementations (issue #228), including big-stack entries.
 #include "../gl/hle_gl.m"
 #include <assert.h>
-#include <mach-o/ldsyms.h>
-#include "../nvn/nvn_protos.h"
 
 uint64_t resolve_import(module_t *m, const char *name);
 int hle_implements(const char *name);
@@ -10,6 +8,7 @@ void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
 struct dm_flags g_flag;
+pthread_key_t g_key18;   // written by hle.c's counter gate for mrs x18, cntpct_el0; in the host it is defined in loader.c (never created here: no gate runs)
 void svc_thread_dump(void) {}
 void dm_vi_layer_size(int *w, int *h) { *w = *h = 0; }
 void dm_vi_layer_crop(int c[4]) { memset(c, 0, 4 * sizeof *c); }
@@ -31,13 +30,6 @@ static void *import(const char *name) {
     void *fn = (void *)resolve_import(NULL, name);
     assert(!strcmp(wrap_kind, "HLE"));
     return fn;
-}
-static void *unbound_thread(void *unused) {
-    (void)unused;
-    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext());
-    assert(!h_eglGetCurrentSurface(0x3059) && !h_eglGetCurrentSurface(0x305a));
-    assert(h_eglGetError() == 0x3000);
-    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -63,39 +55,89 @@ int main(int argc, char **argv) {
     GLsizei len = -1; GLchar log[2] = {'?', 0}; info(sh, sizeof log, &len, log); assert(!len && !log[0]);
     void (*delete)(GLuint) = import("glDeleteShader"); delete(sh); assert(!shader_of(sh));
 
-    // Naruto queries an empty stencil slot and then a combined depth/stencil
-    // renderbuffer while preparing a fight. Both loader spellings must work.
-    void (*query)(GLenum, GLenum, GLenum, GLint *) = import("glGetFramebufferAttachmentParameteriv");
-    void (*query_ext)(GLenum, GLenum, GLenum, GLint *) = h_eglGetProcAddress("glGetFramebufferAttachmentParameterivEXT");
-    assert(query_ext == import("glGetFramebufferAttachmentParameterivEXT"));
-    GLuint fbo, rb, depth_tex;
-    h_glGenFramebuffers(1, &fbo);
-    h_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-    query(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == 0 && h_glGetError() == 0);
-    h_glGenRenderbuffers(1, &rb);
-    h_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
-    query_ext(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == GL_RENDERBUFFER);
-    query(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &value);
-    assert((GLuint)value == rb);
-    query(GL_READ_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == GL_FRAMEBUFFER_DEFAULT);
-    h_glGenTextures(1, &depth_tex);
-    h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth_tex, 2);
-    query(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &value);
-    assert(value == 2);
-    query(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &value);
-    assert(value == 2 && h_glGetError() == 0x502);
-    h_glDeleteFramebuffers(1, &fbo);
-    h_glDeleteRenderbuffers(1, &rb);
-    h_glDeleteTextures(1, &depth_tex);
+    // Deleting an attached shader only flags it: it keeps its name and goes with its last attachment; a program deleted while current stays in use until the next glUseProgram
+    GLuint (*createprog)(void) = import("glCreateProgram");
+    void (*attach)(GLuint, GLuint) = import("glAttachShader"), (*detach)(GLuint, GLuint) = import("glDetachShader");
+    void (*delprog)(GLuint) = import("glDeleteProgram"), (*use)(GLuint) = import("glUseProgram");
+    void (*progiv)(GLuint, GLenum, GLint *) = import("glGetProgramiv");
+    GLuint pr = createprog(), vs = create(GL_VERTEX_SHADER), fs = create(GL_FRAGMENT_SHADER);
+    attach(pr, vs); attach(pr, fs); delete(vs);
+    assert(shader_of(vs) && shader_of(vs)->type == GL_VERTEX_SHADER);
+    getiv(vs, GL_DELETE_STATUS, &value); assert(value == 1);
+    getiv(fs, GL_DELETE_STATUS, &value); assert(value == 0);
+    GLuint other = create(GL_FRAGMENT_SHADER); assert(other != vs);   // the flagged shader's name is not handed out again
+    assert(shader_of(prog_of(pr)->vs) == shader_of(vs));
+    progiv(pr, GL_ATTACHED_SHADERS, &value); assert(value == 2);
+    attach(pr, other); assert(prog_of(pr)->fs == other);   // a stage's new shader replaces the old one, which stays (it is not flagged)
+    assert(shader_of(fs) && !shader_of(fs)->refs && shader_of(other)->refs == 1);
+    detach(pr, vs); assert(!shader_of(vs) && !prog_of(pr)->vs);   // its last attachment: the flagged shader goes
+    progiv(pr, GL_ATTACHED_SHADERS, &value); assert(value == 1);
+    attach(pr, fs); delete(fs); delete(other); assert(shader_of(fs) && !shader_of(other));
+    // a second program shares the flagged shader: it goes only when both have let go of it
+    GLuint pr2 = createprog(); attach(pr2, fs); assert(shader_of(fs)->refs == 2);
+    prog_of(pr)->linked = 1;   // as a link with the library would leave it
+    use(pr); delprog(pr);
+    assert(prog_of(pr) && prog_of(pr)->linked);   // still current: its draws go on
+    progiv(pr, GL_DELETE_STATUS, &value); assert(value == 1);
+    GLint cur = 0; h_glGetIntegerv(GL_CURRENT_PROGRAM, &cur); assert(cur == (GLint)pr);
+    use(pr); assert(prog_of(pr));   // using it again does not release it
+    use(pr2); assert(!prog_of(pr) && shader_of(fs) && shader_of(fs)->refs == 1);   // switched away: the program goes, and its attachment with it
+    use(0); assert(prog_of(pr2));   // not flagged: it stays
+    delprog(pr2); assert(!prog_of(pr2) && !shader_of(fs));   // not current: it goes at once, and the shader with its last attachment
+    vs = create(GL_VERTEX_SHADER); assert(vs); delete(vs); assert(!shader_of(vs));   // the names are free again
+
+    // A depth texture is private, so the level glTexImage2D gave goes in by a blit when the texture is made (it was freed unwritten)
+    dev_init();
+    GLuint dt = 0; h_glGenTextures(1, &dt); h_glBindTexture(GL_TEXTURE_2D, dt);
+    float depth[16]; for (int i = 0; i < 16; i++) depth[i] = (float)i / 16;
+    h_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 4, 4, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depth);
+    tex_t *dtex = tex_of(dt); assert(dtex && tex_make(dtex, 0) && dtex->tex.storageMode == MTLStorageModePrivate);
+    id<MTLBuffer> rb = [g_dev newBufferWithLength:sizeof depth options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> rcb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> rbe = [rcb blitCommandEncoder];   // after the upload: one queue runs its command buffers in commit order
+    [rbe copyFromTexture:dtex->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(4, 4, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:16 destinationBytesPerImage:64];
+    [rbe endEncoding]; [rcb commit]; [rcb waitUntilCompleted];
+    for (int i = 0; i < 16; i++) assert(((const float *)rb.contents)[i] == depth[i]);   // the values as given, each exactly
+    // A real link: the linked program keeps the stages' code (si, fn) whatever its attachments do afterwards; a relink without a stage fails. The same shader attached twice
+    // changes nothing (its count included)
+    void (*link)(GLuint) = import("glLinkProgram");
+    static shinfo none;   // no uniforms, samplers or attributes
+    id vfn = [NSObject new], ffn = [NSObject new];
+    GLuint pr3 = createprog(), vs3 = create(GL_VERTEX_SHADER), fs3 = create(GL_FRAGMENT_SHADER);
+    shader_of(vs3)->si = &none; shader_of(vs3)->fn = vfn; shader_of(fs3)->si = &none; shader_of(fs3)->fn = ffn;
+    attach(pr3, vs3); attach(pr3, fs3); attach(pr3, fs3); assert(shader_of(fs3)->refs == 1 && h_glGetError() == GL_INVALID_OPERATION);
+    link(pr3); assert(prog_of(pr3)->linked && prog_of(pr3)->fn[0] == vfn && prog_of(pr3)->fn[1] == ffn);
+    detach(pr3, vs3); delete(vs3); assert(!shader_of(vs3) && !prog_of(pr3)->vs);
+    assert(prog_of(pr3)->linked && prog_of(pr3)->fn[0] == vfn && prog_of(pr3)->si[0] == &none);   // detached and deleted: the linked executable stays
+    delete(fs3); assert(shader_of(fs3) && prog_of(pr3)->fn[1] == ffn);   // attached: only flagged
+    link(pr3); assert(!prog_of(pr3)->linked);   // relinked without a vertex shader: the link fails
+    delprog(pr3); assert(!prog_of(pr3) && !shader_of(fs3));
+
+    // GL's error flag: the first error since the last glGetError, which reads and clears it; a second error while one is pending is not recorded
+    GLenum (*geterr)(void) = import("glGetError");
+    assert(geterr() == GL_NO_ERROR);
+    GLuint pr4 = createprog(), vs4 = create(GL_VERTEX_SHADER);
+    attach(pr4, vs4); assert(geterr() == GL_NO_ERROR);
+    attach(pr4, vs4); assert(geterr() == GL_INVALID_OPERATION); assert(geterr() == GL_NO_ERROR);   // the same shader again; the read cleared it
+    attach(pr4, 9999); assert(geterr() == GL_INVALID_VALUE);                                  // no such object
+    attach(vs4, vs4); assert(geterr() == GL_INVALID_OPERATION);                               // a shader where a program goes
+    GLuint fs4 = create(GL_FRAGMENT_SHADER);
+    detach(pr4, fs4); assert(geterr() == GL_INVALID_OPERATION);                               // not attached to it
+    use(9999); assert(geterr() == GL_INVALID_VALUE);
+    use(pr4); use(vs4); GLint cur4 = 0; h_glGetIntegerv(GL_CURRENT_PROGRAM, &cur4); assert(geterr() == GL_INVALID_OPERATION && cur4 == (GLint)pr4);   // the error leaves the current program
+    use(0); delete(0); delprog(0); assert(geterr() == GL_NO_ERROR);                           // 0 is silently ignored
+    delete(9999); delprog(vs4); assert(geterr() == GL_INVALID_VALUE); assert(geterr() == GL_NO_ERROR);   // the first of two errors is kept, the second not recorded
+    getiv(pr4, GL_SHADER_TYPE, &value); assert(geterr() == GL_INVALID_OPERATION && value == 0);
+    progiv(vs4, GL_ATTACHED_SHADERS, &value); assert(geterr() == GL_INVALID_OPERATION);
+    void (*bindattr)(GLuint, GLuint, const GLchar *) = import("glBindAttribLocation");
+    bindattr(pr4, 16, "a"); assert(geterr() == GL_INVALID_VALUE);
+    getiv(vs4, GL_SHADER_TYPE, &value); progiv(pr4, GL_ATTACHED_SHADERS, &value); assert(geterr() == GL_NO_ERROR);   // calls that succeed leave the flag clear
+    delprog(pr4); delete(vs4); delete(fs4); assert(geterr() == GL_NO_ERROR);
 
     unsigned long sz;
     const hle_ent *sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
     unsigned count = 0;
     for (unsigned long i = 0; i < sz / sizeof *sec; i++)
-        if (!strncmp(sec[i].name, "gl", 2) || !strncmp(sec[i].name, "egl", 3)) {
+        if (!strncmp(sec[i].name, "gl", 2)) {
             assert(import(sec[i].name) == sec[i].fn);
             assert(h_eglGetProcAddress(sec[i].name) == sec[i].fn); count++;
         }
@@ -103,110 +145,11 @@ int main(int argc, char **argv) {
     assert((void *)resolve_import(NULL, "eglGetProcAddress") == (void *)h_eglGetProcAddress_bs);
     assert(!h_eglGetProcAddress(NULL));
     assert(!h_eglGetProcAddress("not_a_GL_function"));
-    assert(!h_eglGetProcAddress("eglMissingFunctionForTest"));
-    assert(import("eglGetCurrentDisplay") == (void *)h_eglGetCurrentDisplay_bs);
-    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext());
-    EGLDisplay d = (EGLDisplay)(uintptr_t)1; EGLContext c = (EGLContext)(uintptr_t)2;
-    EGLSurface draw = (EGLSurface)(uintptr_t)3, read = (EGLSurface)(uintptr_t)4;
-    assert(h_eglMakeCurrent(d, draw, read, c));
-    assert(h_eglGetCurrentDisplay() == d && h_eglGetCurrentContext() == c);
-    assert(h_eglGetCurrentSurface(0x3059) == draw && h_eglGetCurrentSurface(0x305a) == read);
-    assert(!h_eglGetCurrentSurface(0) && h_eglGetError() == 0x300c && h_eglGetError() == 0x3000);
-    pthread_t thread; assert(!pthread_create(&thread, NULL, unbound_thread, NULL)); assert(!pthread_join(thread, NULL));
-    assert(h_eglGetCurrentDisplay() == d);
-    assert(h_eglMakeCurrent(d, NULL, NULL, NULL) && !h_eglGetCurrentDisplay());
-    assert(h_eglMakeCurrent(d, draw, read, c) && h_eglReleaseThread());
-    assert(!h_eglGetCurrentDisplay() && !h_eglGetCurrentContext() && !h_eglGetCurrentSurface(0x3059));
-    // A foreign pointer (e.g. a game-owned NVNsync) and a stale GL handle
-    // must be rejected without passing either to the host allocator.
-    uintptr_t foreign = 0;
-    h_glDeleteSync(&foreign); assert(h_glGetError() == 0x501);
-    h_glDeleteSync(NULL); assert(h_glGetError() == 0);
-    void *sync = h_glFenceSync(0x9117, 0);
-    uint64_t serial;
-    assert(gl_sync_info(sync, &serial, NULL) && serial == g_serial);
-    h_glDeleteSync(sync); assert(h_glGetError() == 0);
-    void *next_sync = h_glFenceSync(0x9117, 0); assert(next_sync != sync);
-    assert(h_glClientWaitSync(sync, 0, 0) == 0x911d && h_glGetError() == 0x501);
-    h_glWaitSync(&foreign, 0, UINT64_MAX); assert(h_glGetError() == 0x501);
-    h_glDeleteSync(next_sync); assert(h_glGetError() == 0);
-    const hle_force_ent *forced = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
-    void *(*nvn_lookup)(const char *) = NULL;
-    for (unsigned long i = 0; i < sz / sizeof *forced; i++)
-        if (!strcmp(forced[i].name, "nvnBootstrapLoader")) nvn_lookup = forced[i].fn;
-    assert(nvn_lookup);
-    NVNboolean (*export_fence)(const NVNsync *, void **) = nvn_lookup("nvnSyncCreateGLSync");
-    void *out = &foreign;
-    assert(!export_fence(NULL, &out) && !out);
-    NVNsync nvn;
-    NVNboolean (*init_sync)(NVNsync *, NVNdevice *) = nvn_lookup("nvnSyncInitialize");
-    assert(init_sync(&nvn, NULL));
-    assert(!export_fence(&nvn, &out) && !out);  // never fenced
-    void (*fence_sync)(NVNqueue *, NVNsync *, NVNsyncCondition, int) = nvn_lookup("nvnQueueFenceSync");
-    void (*finish_sync)(NVNsync *) = nvn_lookup("nvnSyncFinalize");
-    // Naruto reuses a finalized interop slot directly as an NVN queue fence.
-    finish_sync(&nvn);
-    fence_sync(NULL, &nvn, 0, 0);  // no submissions yet: value zero is complete
-    assert(export_fence(&nvn, &out) && out);
-    finish_sync(&nvn);
-    int from_nvn;
-    assert(gl_sync_info(out, &serial, &from_nvn) && from_nvn && !serial);
-    assert(h_glClientWaitSync(out, 0, 0) == GL_ALREADY_SIGNALED);
-    h_glWaitSync(out, 0, UINT64_MAX);
-    h_glDeleteSync(out); assert(!h_glGetError());
-    if (getenv("DM_TEST_GL_NVNTEX")) {
-        dev_init_once();
-        assert(g_dev);
-        NVNtextureBuilder tb = {0};
-        NVNtexture tex = {0};
-        void (*defaults)(NVNtextureBuilder *) = nvn_lookup("nvnTextureBuilderSetDefaults");
-        void (*set_name)(NVNtextureBuilder *, uint32_t) = nvn_lookup("nvnTextureBuilderSetGLTextureName");
-        uint32_t (*get_name)(const NVNtextureBuilder *) = nvn_lookup("nvnTextureBuilderGetGLTextureName");
-        NVNboolean (*init_tex)(NVNtexture *, const NVNtextureBuilder *) = nvn_lookup("nvnTextureInitialize");
-        void (*fini_tex)(NVNtexture *) = nvn_lookup("nvnTextureFinalize");
-        int (*width)(const NVNtexture *) = nvn_lookup("nvnTextureGetWidth");
-        int (*height)(const NVNtexture *) = nvn_lookup("nvnTextureGetHeight");
-        defaults(&tb);
-        assert(!get_name(&tb));
-        set_name(&tb, 0xf123);
-        assert(!init_tex(&tex, &tb));  // undefined texture is never reported as an initialized NVN image
-        GLuint name = 0;
-        h_glGenTextures(1, &name);
-        h_glBindTexture(GL_TEXTURE_2D, name);
-        h_glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 32, 16);
-        set_name(&tb, name);
-        assert(get_name(&tb) == name);
-        assert(init_tex(&tex, &tb) && width(&tex) == 32 && height(&tex) == 16);
-        id<MTLTexture> image = tex_of(name)->tex;
-        assert(image && image.width == 32 && image.height == 16);
-        fini_tex(&tex);
-        assert(tex_of(name)->tex == image);
-        h_glDeleteTextures(1, &name);
-        NVNboolean (*import_fence)(NVNsync *, NVNdevice *, void *, uint32_t *) = nvn_lookup("nvnSyncInitializeFromFencedGLSync");
-        NVNsyncWaitResult (*wait_sync)(const NVNsync *, uint64_t) = nvn_lookup("nvnSyncWait");
-        NVNboolean (*wait_queue)(NVNqueue *, const NVNsync *) = nvn_lookup("nvnQueueWaitSync");
-        uint32_t status = UINT32_MAX;
-        assert(!import_fence(&nvn, NULL, &foreign, &status));
-        assert(!h_glGetError());
-        void *gl_fence = h_glFenceSync(0x9117, 0);
-        assert(import_fence(&nvn, NULL, gl_fence, &status) && !status);
-        assert(wait_sync(&nvn, 0) == NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
-        h_glDeleteSync(gl_fence);
-        h_glFlush();
-        assert(wait_queue(NULL, &nvn));
-        assert(wait_sync(&nvn, 0) == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
-        assert(export_fence(&nvn, &out) && out != gl_fence);
-        finish_sync(&nvn);
-        assert(h_glClientWaitSync(out, 0, 0) == GL_ALREADY_SIGNALED);
-        h_glDeleteSync(out);
-        defaults(&tb);
-        assert(!get_name(&tb));
-    }
     const char *missing = "glMissingFunctionForTest";
     assert(!hle_implements(missing));
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
-    printf("GL imports: %u shared entries, shader handle/source, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
+    printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }

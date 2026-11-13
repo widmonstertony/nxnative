@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "hle_gl_legacy.inc"
+#else
 // OpenGL → Metal layer for games that render with OpenGL through EGL (Digimon Story Cyber Sleuth: Complete Edition: Media.Vision's MVGL engine on NVIDIA's desktop GL 4.5 core
 // driver, subsdk0, which the host does not load; Balatro: LÖVE 11.4 on SDL, the same driver). main imports the EGL functions, which bind to the ones here through the host's import
 // table (hle.h swhle). GL functions use that same table for direct imports and eglGetProcAddress (a glad loader asks for 2,956 names; Digimon's code calls 79 of them,
@@ -16,17 +20,15 @@
 //   · shaders come from the offline library built by dm/gfx/tools/gl_shaders.py (<DM_MSL_DIR>/gl/): a shader is found by the hash of its source and its stage; its table row lists the
 //     vertex inputs, the members of its default uniform block (glUniform* writes them into CPU copies that are set as bytes at each draw that needs them) and its samplers.
 //     glGetAttribLocation returns the Metal attribute index of the input, so the game's attribute index is the Metal one; vertex buffers are at slot 30 − index.
-// Environment: DM_GL_LOG=1 logs object creation; DM_GL_CAPTURE=<dir> writes every shader source the game compiles (<key>.vert / <key>.frag, read by gl_shaders.py).
+// Environment: DM_GL_LOG=1 logs object creation and the deletion of shaders and programs; DM_GL_CAPTURE=<dir> writes every shader source the game compiles (<key>.vert / <key>.frag, read by gl_shaders.py).
 #include "../../host/hle.h"
 #include "../nvn/nvn_mtl.h"
-#include "../nvn/nvn_tex.h"
-#include <nvn.h>
 #include "../nvn/host_msl.h"
 #import <Metal/Metal.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <mach/mach.h>
 #include <mach-o/getsect.h>
-#include "../../host/host_image.h"
+#include <mach-o/ldsyms.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -67,6 +69,7 @@ typedef void *EGLDisplay, *EGLConfig, *EGLContext, *EGLSurface; typedef int32_t 
 
 // ---------- GL enums ----------
 enum {
+    GL_NO_ERROR = 0, GL_INVALID_ENUM = 0x500, GL_INVALID_VALUE, GL_INVALID_OPERATION,
     GL_POINTS = 0, GL_LINES, GL_LINE_LOOP, GL_LINE_STRIP, GL_TRIANGLES, GL_TRIANGLE_STRIP, GL_TRIANGLE_FAN, GL_QUADS,
     GL_NEVER = 0x200, GL_SRC_COLOR = 0x300, GL_ONE_MINUS_SRC_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_DST_COLOR,
     GL_ONE_MINUS_DST_COLOR, GL_SRC_ALPHA_SATURATE,
@@ -114,10 +117,6 @@ enum {
     GL_FLOAT_VEC2 = 0x8b50, GL_FLOAT_VEC3, GL_FLOAT_VEC4, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4, GL_BOOL, GL_FLOAT_MAT2 = 0x8b5a, GL_FLOAT_MAT3, GL_FLOAT_MAT4, GL_SAMPLER_2D = 0x8b5e,
     GL_SAMPLER_3D, GL_SAMPLER_CUBE, GL_SAMPLER_2D_SHADOW = 0x8b62, GL_TEXTURE_2D_ARRAY = 0x8c1a, GL_TEXTURE_BINDING_2D_ARRAY = 0x8c1d,
     GL_READ_FRAMEBUFFER = 0x8ca8, GL_DRAW_FRAMEBUFFER, GL_READ_FRAMEBUFFER_BINDING, GL_RENDERBUFFER_SAMPLES, GL_FRAMEBUFFER_COMPLETE = 0x8cd5, GL_MAX_COLOR_ATTACHMENTS = 0x8cdf,
-    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE = 0x8cd0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
-    GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE, GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER,
-    GL_FRAMEBUFFER_DEFAULT = 0x8218, GL_TEXTURE = 0x1702,
-    GL_RENDERBUFFER_DEPTH_SIZE = 0x8d54, GL_RENDERBUFFER_STENCIL_SIZE,
     GL_RENDERBUFFER_WIDTH = 0x8d42, GL_RENDERBUFFER_HEIGHT, GL_RENDERBUFFER_INTERNAL_FORMAT, GL_FRAMEBUFFER_SRGB = 0x8db9, GL_SAMPLER_2D_ARRAY = 0x8dc1,
     GL_UNSIGNED_INT_VEC2 = 0x8dc6, GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4, GL_TEXTURE_SWIZZLE_R = 0x8e42, GL_TEXTURE_SWIZZLE_A = 0x8e45,
     GL_ALREADY_SIGNALED = 0x911a, GL_TIMEOUT_EXPIRED, GL_CONDITION_SATISFIED, GL_CONTEXT_PROFILE_MASK = 0x9126,
@@ -160,8 +159,7 @@ static int is_samp(int t) { return t >= T_SAMP2D && t < T_OTHER; }
 static int is_intt(int t) { return t >= T_INT && t <= T_BOOL; }
 typedef struct { char name[48]; uint8_t slot, type; } shattr;                         // a vertex input
 typedef struct { char name[48]; uint16_t off, count, stride; uint8_t type; } shuni;   // a default block member (count 0 = not an array)
-enum { GL_SAMPLER_ARRAY_MAX = 16 };
-typedef struct { char name[48]; uint8_t slot, type, elem, count; } shsamp;                         // a combined sampler: texture and sampler slot
+typedef struct { char name[48]; uint8_t slot, type; } shsamp;                         // a combined sampler: texture and sampler slot
 typedef struct { char key[17]; int frag, ub_slot, ub_size, na, nu, nt; shattr *a; shuni *u; shsamp *t; } shinfo;
 static shinfo *g_sh; static int g_nsh;
 static int sh_cmp(const void *a, const void *b) { int c = memcmp(((const shinfo *)a)->key, ((const shinfo *)b)->key, 16); return c ? c : ((const shinfo *)a)->frag - ((const shinfo *)b)->frag; }
@@ -187,14 +185,7 @@ static void sh_load(void) {
             if (t[0] == 'a' && sscanf(t, "a:%63[^=]=%u:%31s", nm, &a1, ty) == 3 && a1 < 16) { shattr *x = &s->a[s->na++]; strlcpy(x->name, nm, sizeof x->name); x->slot = a1; x->type = tcode(ty); }
             else if (t[0] == 'u' && sscanf(t, "u:%63[^=]=%u:%31[^:]:%u:%u", nm, &a1, ty, &a2, &a3) == 5) {
                 shuni *x = &s->u[s->nu++]; strlcpy(x->name, nm, sizeof x->name); x->off = a1; x->type = tcode(ty); x->count = a2; x->stride = a3;
-            } else if (t[0] == 't') {
-                unsigned elem = 0, count = 0;
-                int fields = sscanf(t, "t:%63[^=]=%u:%31[^:]:%u:%u", nm, &a1, ty, &elem, &count);
-                if ((fields == 3 || (fields == 5 && elem < count && count <= GL_SAMPLER_ARRAY_MAX)) && a1 < 128) {
-                    shsamp *x = &s->t[s->nt++]; strlcpy(x->name, nm, sizeof x->name);
-                    x->slot = a1; x->type = tcode(ty); x->elem = elem; x->count = count;
-                }
-            }
+            } else if (t[0] == 't' && sscanf(t, "t:%63[^=]=%u:%31s", nm, &a1, ty) == 3) { shsamp *x = &s->t[s->nt++]; strlcpy(x->name, nm, sizeof x->name); x->slot = a1; x->type = tcode(ty); }
             else if (t[0] == 'b' && sscanf(t, "b:%u:%u", &a1, &a2) == 2) { s->ub_slot = a1; s->ub_size = a2; }
         }
         if (s->ub_slot >= 15) GLOG("[RED] shader %s: uniform block at buffer slot %d meets the vertex buffer slots", s->key, s->ub_slot);
@@ -318,12 +309,12 @@ typedef struct {
 NAMES(tex_t, g_texs, g_ntexs, g_captexs)
 static tex_t *tex_of(GLuint n) { return n && n < g_ntexs ? g_texs[n] : NULL; }
 
-typedef struct { int fmt; uint32_t w, h; __strong id<MTLTexture> tex; uint64_t gen; GLenum internal_fmt; } rb_t;
+typedef struct { int fmt; uint32_t w, h; __strong id<MTLTexture> tex; uint64_t gen; } rb_t;
 NAMES(rb_t, g_rbs, g_nrbs, g_caprbs)
 static rb_t *rb_of(GLuint n) { return n && n < g_nrbs ? g_rbs[n] : NULL; }
 
 typedef struct { int kind; GLuint name; int level, face; } att_t;   // kind 0 none, 1 texture, 2 renderbuffer; face: a cube face, an array layer or a 3D slice
-typedef struct { att_t col, depth, stencil; uint64_t gen; int bound; } fb_t;
+typedef struct { att_t col, depth, stencil; uint64_t gen; } fb_t;
 NAMES(fb_t, g_fbs, g_nfbs, g_capfbs)
 static fb_t *fb_of(GLuint n) { return n && n < g_nfbs ? g_fbs[n] : NULL; }
 
@@ -332,15 +323,18 @@ typedef struct { vattr_t a[16]; GLuint ebo; } vao_t;
 NAMES(vao_t, g_vaos, g_nvaos, g_capvaos)
 static vao_t g_vao0;   // the default vertex array (GL core has none, the compatibility profile does)
 
-typedef struct { GLenum type; char *src; size_t len; char key[17]; const shinfo *si; __strong id<MTLFunction> fn; int compiled; } shader_t;
-typedef struct { char name[48]; uint8_t type; uint16_t count; int32_t off[2]; uint16_t stride[2]; int16_t slot[2][GL_SAMPLER_ARRAY_MAX]; GLint unit[GL_SAMPLER_ARRAY_MAX]; } puni_t;   // [0] vertex, [1] fragment
+// refs: the programs it is attached to; deleted: glDeleteShader flagged it while attached (it keeps its name and goes with its last attachment, as in GL)
+typedef struct { GLenum type; char *src; size_t len; char key[17]; const shinfo *si; __strong id<MTLFunction> fn; int compiled, refs, deleted; } shader_t;
+typedef struct { char name[48]; uint8_t type; uint16_t count; int32_t off[2]; uint16_t stride[2]; int slot[2]; int unit; } puni_t;   // [0] vertex, [1] fragment
 typedef struct { uint32_t vf[16]; uint16_t stride[16]; uint8_t div[16]; uint32_t cpf, dpf, spf; uint8_t blend, mask, bsrc, bdst, bsa, bda, eqc, eqa; } pkey_t;
 typedef struct { pkey_t k; void *pso; } pent_t;   // pso: a retained id<MTLRenderPipelineState>, NULL = failed
 // amap: the game's attribute index of each Metal vertex input (glBindAttribLocation before the link, else the input's own number, which glGetAttribLocation returns);
 // LÖVE binds VertexPosition, VertexTexCoord, VertexColor and ConstantColor to 0–3 in every program
 typedef struct { char name[48]; int index; } abind_t;
+// vs, fs: the attached shaders, each counted in its refs; deleted: glDeleteProgram flagged it while current (it goes at the next glUseProgram of another);
+// what the link took from them (si, fn, the uniform table) is the program's own, so attaching, detaching or deleting a shader later leaves the linked program as it is
 typedef struct {
-    GLuint vs, fs; int linked; const shinfo *si[2]; __strong id<MTLFunction> fn[2];
+    GLuint vs, fs; int linked, deleted; const shinfo *si[2]; __strong id<MTLFunction> fn[2];
     int nu; puni_t *u; uint8_t *ub[2]; uint64_t ub_gen[2]; uint32_t serial;
     pent_t *pc; int npc, cappc;
     abind_t bind[16]; int nbind; int8_t amap[16];
@@ -350,6 +344,23 @@ typedef struct { int is_prog; union { shader_t s; prog_t p; }; } sp_t;
 NAMES(sp_t, g_sps, g_nsps, g_capsps)
 static shader_t *shader_of(GLuint n) { return n && n < g_nsps && g_sps[n] && !g_sps[n]->is_prog ? &g_sps[n]->s : NULL; }
 static prog_t *prog_of(GLuint n) { return n && n < g_nsps && g_sps[n] && g_sps[n]->is_prog ? &g_sps[n]->p : NULL; }
+// GL's error flag: the first error since the last glGetError, which returns it and clears it; another error is not recorded while one is (GL lets an implementation keep
+// one flag). Recorded only where GL requires an error and the host does what GL does: a call or a value the host does not implement says so in a red line instead and
+// records nothing, so a game is never told of the host's own gaps. A link the library cannot serve still reports success (GL_LINK_STATUS), its draws skipped and reported
+// The first 8 errors are logged with the call that recorded them (a game's misuse, not a host fault: no red line)
+static GLenum g_gl_error;
+static void gl_error_at(GLenum e, const char *fn) {
+    if (!g_gl_error) g_gl_error = e;
+    static int n; if (n < 8) { n++; GLOG("GL error %#x recorded by %s (glGetError returns it once)%s", e, fn, n == 8 ? "; no more of these lines" : ""); }
+}
+#define gl_error(e) gl_error_at(e, __func__)
+// A shader or program name, as a call that takes one checks it: 1 for an object of that kind; else GL_INVALID_VALUE (no such object) or GL_INVALID_OPERATION (the other kind)
+static int sp_check(GLuint n, int prog, const char *fn) {
+    if (!n || n >= g_nsps || !g_sps[n]) { gl_error_at(GL_INVALID_VALUE, fn); return 0; }
+    if (!g_sps[n]->is_prog != !prog) { gl_error_at(GL_INVALID_OPERATION, fn); return 0; }
+    return 1;
+}
+#define SP_CHECK(n, prog) sp_check(n, prog, __func__)
 
 // ---------- Context state ----------
 // units: as many as GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS says (LÖVE binds a texture of each type to every one at start); fb / read_fb: the draw and read framebuffers;
@@ -413,6 +424,10 @@ typedef struct { MTLPixelFormat pf; uint8_t bytes, bw, bh, kind; MTLTextureSwizz
 enum { F_RGBA8, F_BGRA8, F_SRGBA8, F_R8, F_RG8, F_L8, F_A8, F_LA8, F_RGBA16F, F_RGBA32F, F_R16F, F_RG16F, F_R32F, F_RG32F, F_RG11B10F, F_RGB10A2, F_RGBA16,
        F_D16, F_D32F, F_D32FS8, F_S8, F_BC1_RGB, F_BC1, F_BC2, F_BC3, F_BC1_SRGB, F_BC2_SRGB, F_BC3_SRGB, F_BC4, F_BC4S, F_BC5, F_BC5S, F_BC7, F_BC7_SRGB, F_BC6S, F_BC6U,
        F_ASTC4, F_ASTC4_SRGB, F_N };
+// Enum constants describe guest formats even on older SDK deployment targets.
+// Availability is checked when the backend creates/uses a device resource.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
 static const fmt_t g_fmt[F_N] = {
     [F_RGBA8] = {MTLPixelFormatRGBA8Unorm, 4, 1, 1, K_COL, SW0, "RGBA8"}, [F_BGRA8] = {MTLPixelFormatBGRA8Unorm, 4, 1, 1, K_COL, SW0, "BGRA8"},
     [F_SRGBA8] = {MTLPixelFormatRGBA8Unorm_sRGB, 4, 1, 1, K_COL, SW0, "SRGB8_ALPHA8"},
@@ -437,6 +452,7 @@ static const fmt_t g_fmt[F_N] = {
     [F_BC6U] = {MTLPixelFormatBC6H_RGBUfloat, 16, 4, 4, K_BLOCK, SW0, "BPTC unsigned float"},
     [F_ASTC4] = {MTLPixelFormatASTC_4x4_LDR, 16, 4, 4, K_BLOCK, SW0, "ASTC 4x4"}, [F_ASTC4_SRGB] = {MTLPixelFormatASTC_4x4_sRGB, 16, 4, 4, K_BLOCK, SW0, "ASTC 4x4 sRGB"},
 };
+#pragma clang diagnostic pop
 // internal format (+ format / type for unsized ones) → fmt and the conversion of the given data; -1 when not mapped
 static int fmt_pick(GLint ifmt, GLenum format, GLenum type, int *cv) {
     *cv = CV_COPY;
@@ -578,6 +594,7 @@ static id<MTLSamplerState> tex_sampler(tex_t *t) {
 }
 static void lv_free(level_t *l) { free(l->data); memset(l, 0, sizeof *l); }
 static void tex_drop(tex_t *t) { for (int f = 0; f < 6; f++) for (int l = 0; l < MAXLV; l++) lv_free(&t->pend[f][l]); t->tex = nil; t->made = 0; t->defined = 0; t->levels = 0; t->gen++; }
+static void tex_write(tex_t *t, int face, int lv, uint32_t x, uint32_t y, uint32_t z, uint32_t w, uint32_t h, const void *data, size_t pitch);
 // Make the Metal texture from the levels given so far: as many levels as are given in a row from level 0 (and fit the size), or as glTexStorage said. rt: made for a framebuffer attachment
 static int tex_make(tex_t *t, int rt) {
     if (t->made) return t->tex != nil;
@@ -604,30 +621,18 @@ static int tex_make(tex_t *t, int rt) {
         if (swz && rt) RED1("texture %ux%u %s with a swizzle is a framebuffer attachment (Metal renders into no swizzled texture)", t->w, t->h, m->name);
         t->tex = [g_dev newTextureWithDescriptor:td];
         if (!t->tex) { GLOG("[RED] texture %ux%u %s (%d levels) could not be made", t->w, t->h, m->name, lv); t->made = 1; return 0; }
+        // The levels given so far go in through tex_write: a CPU write into a shared texture, a blit into a private one. Depth textures are always private, and a
+        // glTexImage2D(GL_DEPTH_COMPONENT, ..., pixels) level was once freed here unwritten (only shared textures were filled). No command buffer has the new texture yet
+        t->use = 0;
         for (int f = 0; f < faces; f++) for (int l = 0; l < lv; l++) {
             level_t *p = &t->pend[f][l];
-            if (p->data && td.storageMode == MTLStorageModeShared)
-                [t->tex replaceRegion:MTLRegionMake2D(0, 0, umax(1, t->w >> l), umax(1, t->h >> l)) mipmapLevel:l slice:f withBytes:p->data bytesPerRow:p->pitch bytesPerImage:0];
+            if (p->data) tex_write(t, f, l, 0, 0, 0, umax(1, t->w >> l), umax(1, t->h >> l), p->data, p->pitch);
         }
     }
     for (int f = 0; f < 6; f++) for (int l = 0; l < MAXLV; l++) lv_free(&t->pend[f][l]);
     t->levels = lv; t->made = 1; t->smp_dirty = 1;
     OLOG("texture %ux%u %s, %d levels%s", t->w, t->h, m->name, lv, faces == 6 ? ", cube" : "");
     return 1;
-}
-// Borrow a defined 2D image for an NVN texture. The NVN serial table retains the same Metal object.
-void *gl_host_texture_2d(uint32_t name, nvn_texdesc *desc) {
-    tex_t *t = tex_of(name);
-    if (!t || t->target != GL_TEXTURE_2D || !tex_make(t, 1) || !t->tex) return NULL;
-    int format;
-    switch (t->tex.pixelFormat) {
-        case MTLPixelFormatRGBA8Unorm: format = NVN_FORMAT_RGBA8; break;
-        case MTLPixelFormatRGBA8Unorm_sRGB: format = NVN_FORMAT_RGBA8_SRGB; break;
-        default: return NULL;
-    }
-    *desc = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = format,
-                          .width = t->w, .height = t->h, .depth = 1, .levels = t->levels};
-    return (__bridge void *)t->tex;
 }
 // Write one level's (or a part's) bytes into a made texture, in command order: a CPU write when no command buffer that may still read it is pending,
 // else a blit from transient memory (in this frame's command buffer, after ending its render pass, when this frame used it; in a command buffer of its own otherwise).
@@ -912,25 +917,22 @@ static void bind_uniforms_textures(prog_t *p) {
     for (int i = 0; i < p->nu; i++) {
         puni_t *u = &p->u[i];
         if (!is_samp(u->type)) continue;
-        for (int elem = 0; elem < (u->count ? u->count : 1); elem++) {
-            if (u->slot[0][elem] < 0 && u->slot[1][elem] < 0) continue;
-            int unit = u->unit[elem] < 0 || u->unit[elem] >= NUNITS ? 0 : u->unit[elem];
-            GLenum target = u->type == T_SAMPCUBE ? GL_TEXTURE_CUBE_MAP : u->type == T_SAMP3D ? GL_TEXTURE_3D : u->type == T_SAMP2DARR ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
-            tex_t *t = tex_of(*unit_slot(unit, target));
-            id<MTLTexture> tx = nil; id<MTLSamplerState> sm = g_samp0;
-            if (t && (t->made || tex_make(t, 0)) && t->tex) { tx = t->tex; sm = tex_sampler(t); t->use = g_serial; }
-            if (!tx) tx = u->type == T_SAMPCUBE ? g_cube0 : u->type == T_SAMP3D ? g_tex3d0 : u->type == T_SAMP2DARR ? g_arr0 : g_tex0;
-            static int dl = -1; if (dl < 0) dl = getenv("DM_GL_DRAWLOG") != NULL;
-            if (dl && tx == g_tex0 && t == NULL) {   // a sampler with no texture: the layer draws the 1x1 black placeholder
-                static uint32_t seen_p[64]; static int seen_u[64], nseen;
-                int dup = 0; for (int k = 0; k < nseen; k++) if (seen_p[k] == p->serial && seen_u[k] == unit) dup = 1;
-                if (!dup && nseen < 64) { seen_p[nseen] = p->serial; seen_u[nseen++] = unit;
-                    GLOG("program %u sampler %s (unit %d) has no texture: drawing the 1x1 black placeholder", p->serial, u->name, unit); } }
-            for (int st = 0; st < 2; st++) {
-                if (u->slot[st][elem] < 0) continue;
-                if (st) { [e setFragmentTexture:tx atIndex:u->slot[st][elem]]; [e setFragmentSamplerState:sm atIndex:u->slot[st][elem]]; }
-                else { [e setVertexTexture:tx atIndex:u->slot[st][elem]]; [e setVertexSamplerState:sm atIndex:u->slot[st][elem]]; }
-            }
+        int unit = u->unit < 0 || u->unit >= NUNITS ? 0 : u->unit;
+        GLenum target = u->type == T_SAMPCUBE ? GL_TEXTURE_CUBE_MAP : u->type == T_SAMP3D ? GL_TEXTURE_3D : u->type == T_SAMP2DARR ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
+        tex_t *t = tex_of(*unit_slot(unit, target));
+        id<MTLTexture> tx = nil; id<MTLSamplerState> sm = g_samp0;
+        if (t && (t->made || tex_make(t, 0)) && t->tex) { tx = t->tex; sm = tex_sampler(t); t->use = g_serial; }
+        if (!tx) tx = u->type == T_SAMPCUBE ? g_cube0 : u->type == T_SAMP3D ? g_tex3d0 : u->type == T_SAMP2DARR ? g_arr0 : g_tex0;
+        static int dl = -1; if (dl < 0) dl = getenv("DM_GL_DRAWLOG") != NULL;
+        if (dl && tx == g_tex0 && t == NULL) {   // a sampler with no texture: the layer draws the 1x1 black placeholder
+            static uint32_t seen_p[64]; static int seen_u[64], nseen;
+            int dup = 0; for (int k = 0; k < nseen; k++) if (seen_p[k] == p->serial && seen_u[k] == unit) dup = 1;
+            if (!dup && nseen < 64) { seen_p[nseen] = p->serial; seen_u[nseen++] = unit;
+                GLOG("program %u sampler %s (unit %d) has no texture: drawing the 1x1 black placeholder", p->serial, u->name, unit); } }
+        for (int st = 0; st < 2; st++) {
+            if (u->slot[st] < 0) continue;
+            if (st) { [e setFragmentTexture:tx atIndex:u->slot[st]]; [e setFragmentSamplerState:sm atIndex:u->slot[st]]; }
+            else { [e setVertexTexture:tx atIndex:u->slot[st]]; [e setVertexSamplerState:sm atIndex:u->slot[st]]; }
         }
     }
     E.prog = p->serial;
@@ -1226,8 +1228,7 @@ GL(glColorTable, void, GLenum target, GLenum ifmt, GLsizei w, GLenum format, GLe
     RED1("paletted texture (glColorTable, %d entries): palette lookup at upload, the index shift is %d", w, S.index_shift);
 }
 GL(glTexEnvi, void, GLenum t, GLenum p, GLint v) { (void)t; (void)p; (void)v; }
-static _Thread_local GLenum g_gl_error;
-GL(glGetError, GLenum, void) { GLenum error = g_gl_error; g_gl_error = 0; return error; }
+GL(glGetError, GLenum, void) { GLenum e = g_gl_error; g_gl_error = GL_NO_ERROR; return e; }   // the flag above, read and cleared
 // Everything recorded so far runs to its end (LÖVE when the window changes)
 // glFlush: hand the commands encoded so far to the GPU without waiting. The layer commits at the frame's end, so a game that flushes in the middle of a frame
 // (GameMaker's runner does, before a menu or a surface read) would otherwise see nothing but the pointer: eglGetProcAddress returned null for a name it only
@@ -1243,12 +1244,6 @@ GL(glPushGroupMarkerEXT, void, GLsizei len, const GLchar *msg) { (void)len; (voi
 GL(glPopGroupMarkerEXT, void, void) {}
 GL(glObjectLabel, void, GLenum id, GLuint name, GLsizei len, const GLchar *label) { (void)id; (void)name; (void)len; (void)label; }
 
-// Keep the API identity with the current EGL handle, including when a game
-// makes its context current on a different thread.
-enum { EGL_CONTEXT_DESKTOP = 2, EGL_CONTEXT_ES3 = 5 };
-static _Thread_local struct { EGLDisplay display; EGLContext context; EGLSurface draw, read; } g_egl_current;
-static int gl_is_es3(void) { return (uintptr_t)g_egl_current.context == EGL_CONTEXT_ES3; }
-
 // ---------- Queries ----------
 static const char *const g_exts[] = {"GL_ARB_ES3_2_compatibility", "GL_ARB_ES3_compatibility", "GL_ARB_texture_compression_bptc", "GL_ARB_texture_compression_rgtc",
     "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_ARB_vertex_array_object", "GL_ARB_direct_state_access", "GL_ARB_half_float_vertex",
@@ -1258,8 +1253,8 @@ GL(glGetString, const char *, GLenum n) {
     switch (n) {
         case GL_VENDOR: return "NVIDIA Corporation";
         case GL_RENDERER: return "NVIDIA Tegra X1 (nvgpu)/integrated (Metal)";
-        case GL_VERSION: return gl_is_es3() ? "OpenGL ES 3.0" : "4.5.0 NVIDIA 349.00";
-        case GL_SHADING_LANGUAGE_VERSION: return gl_is_es3() ? "OpenGL ES GLSL ES 3.00" : "4.50 NVIDIA";
+        case GL_VERSION: return "4.5.0 NVIDIA 349.00";
+        case GL_SHADING_LANGUAGE_VERSION: return "4.50 NVIDIA";
         case GL_EXTENSIONS: {   // the compatibility profile's one string
             static char all[1024]; if (!all[0]) for (int i = 0; i < NEXTS; i++) { strlcat(all, g_exts[i], sizeof all); strlcat(all, " ", sizeof all); }
             return all;
@@ -1271,9 +1266,9 @@ GL(glGetStringi, const char *, GLenum n, GLuint i) { return n == GL_EXTENSIONS &
 GL(glGetIntegerv, void, GLenum p, GLint *v) {
     switch (p) {
         case GL_NUM_EXTENSIONS: *v = NEXTS; return;
-        case GL_MAJOR_VERSION: *v = gl_is_es3() ? 3 : 4; return;
-        case GL_MINOR_VERSION: *v = gl_is_es3() ? 0 : 5; return;
-        case GL_CONTEXT_PROFILE_MASK: *v = gl_is_es3() ? 0 : 1; return;   // CONTEXT_CORE_PROFILE_BIT: what the games asked for (Digimon a 4.5 core context); LÖVE takes its core paths (the file header)
+        case GL_MAJOR_VERSION: *v = 4; return;
+        case GL_MINOR_VERSION: *v = 5; return;
+        case GL_CONTEXT_PROFILE_MASK: *v = 1; return;   // CONTEXT_CORE_PROFILE_BIT: what the games asked for (Digimon a 4.5 core context); LÖVE takes its core paths (the file header)
         case GL_CONTEXT_FLAGS: *v = 0; return;
         case GL_MAX_TEXTURE_SIZE: case GL_MAX_RENDERBUFFER_SIZE: case GL_MAX_CUBE_MAP_TEXTURE_SIZE: *v = 16384; return;
         case GL_MAX_3D_TEXTURE_SIZE: case GL_MAX_ARRAY_TEXTURE_LAYERS: *v = 2048; return;
@@ -1381,109 +1376,21 @@ GL(glFlushMappedBufferRange, void, GLenum target, GLintptr off, GLsizeiptr len) 
 // ---------- Sync objects ----------
 // A fence is the serial of the command buffer being recorded when it was made, signalled when that command buffer completes (g_ev). LÖVE fences each third of its stream
 // buffers at the end of a frame and waits for the fence three frames later, before it writes that third again
-// GLsync is an opaque handle. A foreign or stale handle must never reach
-// free or be dereferenced, including when NVN/GL interoperability is absent.
-typedef struct gl_sync {
-    uintptr_t handle;
-    uint64_t serial;
-    int from_nvn;
-    struct gl_sync *next;
-} sync_t;
-static pthread_mutex_t g_sync_mu = PTHREAD_MUTEX_INITIALIZER;
-static sync_t *g_syncs;
-static uintptr_t g_sync_next = 1;
-static int gl_sync_info(void *handle, uint64_t *serial, int *from_nvn) {
-    int found = 0;
-    pthread_mutex_lock(&g_sync_mu);
-    for (sync_t *s = g_syncs; s; s = s->next) {
-        if (s->handle == (uintptr_t)handle) { *serial = s->serial; if (from_nvn) *from_nvn = s->from_nvn; found = 1; break; }
-    }
-    pthread_mutex_unlock(&g_sync_mu);
-    if (!found && !g_gl_error) g_gl_error = 0x501;  // GL_INVALID_VALUE
-    return found;
-}
-static void *gl_sync_make(uint64_t serial, int from_nvn) {
-    sync_t *s = zalloc(sizeof *s);
-    pthread_mutex_lock(&g_sync_mu);
-    uintptr_t handle = g_sync_next++;
-    s->handle = handle; s->serial = serial; s->from_nvn = from_nvn; s->next = g_syncs; g_syncs = s;
-    pthread_mutex_unlock(&g_sync_mu);
-    return (void *)handle;
-}
-// An exported NVN fence owns a new GL handle; finalizing either object does not invalidate the other.
-void *gl_host_export_nvn_fence(uint64_t serial) { return gl_sync_make(serial, 1); }
-// Import the producer's value rather than borrowing the GL handle; the game can delete that handle immediately.
-int gl_host_get_fence(void *handle, uint64_t *serial, int *from_nvn) {
-    const GLenum previous_error = g_gl_error;
-    int found = gl_sync_info(handle, serial, from_nvn);
-    g_gl_error = previous_error;  // an NVN call must not set the GL thread's error flag
-    return found;
-}
-void *gl_host_export_gl_fence(uint64_t serial) { return gl_sync_make(serial, 0); }
-int gl_host_wait_fence(uint64_t serial, uint64_t timeout_ns) {
-    id<MTLSharedEvent> event = g_ev;
-    if (!event) return 0;
-    if (event.signaledValue >= serial) return 1;
-    if (!timeout_ns) return 0;
-    uint64_t ms = timeout_ns / 1000000;
-    if (ms > 3600000) ms = 3600000;
-    return [event waitUntilSignaledValue:serial timeoutMS:ms ? ms : 1];
-}
-GL(glFenceSync, void *, GLenum cond, GLbitfield flags) {
-    (void)cond; (void)flags;
-    return gl_sync_make(g_serial, 0);
-}
-GL(glDeleteSync, void, void *handle) {
-    if (!handle) return;
-    pthread_mutex_lock(&g_sync_mu);
-    sync_t **link = &g_syncs;
-    while (*link && (*link)->handle != (uintptr_t)handle) link = &(*link)->next;
-    sync_t *s = *link;
-    if (s) *link = s->next;
-    pthread_mutex_unlock(&g_sync_mu);
-    if (s) free(s);
-    else if (!g_gl_error) g_gl_error = 0x501;  // GL_INVALID_VALUE
-}
-GLB(glWaitSync, void, void *s, GLbitfield flags, uint64_t timeout) {
-    (void)flags; (void)timeout;
-    uint64_t serial; int from_nvn;
-    if (!gl_sync_info(s, &serial, &from_nvn) || !from_nvn || !serial) return;
-    // GL fences are already ordered on this queue. An NVN fence signals a different queue's event.
-    id<MTLSharedEvent> event = (__bridge id<MTLSharedEvent>)mtl_sync_event();
-    if (!event || event.signaledValue >= serial) return;
-    if (g_pend_clear.bits) clears_flush();
-    pass_end();
-    [cb_get() encodeWaitForEvent:event value:serial];
-}
-GL(glGetSynciv, void, void *sync, GLenum pname, GLsizei size, GLsizei *length, GLint *values) {
-    uint64_t serial; int from_nvn; GLint value;
-    if (size < 0) { if (!g_gl_error) g_gl_error = 0x501; return; }
-    if (!gl_sync_info(sync, &serial, &from_nvn)) return;
-    switch (pname) {
-        case 0x9112: value = 0x9116; break;  // OBJECT_TYPE: SYNC_FENCE
-        case 0x9113: value = 0x9117; break;  // SYNC_CONDITION: GPU_COMMANDS_COMPLETE
-        case 0x9114: value = (!serial || (from_nvn ? mtl_wait(serial, 0) : g_ev.signaledValue >= serial)) ? 0x9119 : 0x9118; break;
-        case 0x9115: value = 0; break;       // SYNC_FLAGS
-        default: if (!g_gl_error) g_gl_error = 0x500; return;  // GL_INVALID_ENUM
-    }
-    if (size > 0) values[0] = value;
-    if (length) *length = size > 0;
-}
+typedef struct { uint64_t serial; } sync_t;
+GL(glFenceSync, void *, GLenum cond, GLbitfield flags) { (void)cond; (void)flags; sync_t *s = zalloc(sizeof *s); s->serial = g_serial; return s; }
+GL(glDeleteSync, void, void *s) { free(s); }
+GL(glWaitSync, void, void *s, GLbitfield flags, uint64_t timeout) { (void)s; (void)flags; (void)timeout; }   // a GPU-side wait: the command buffers run in order
 GLB(glClientWaitSync, GLenum, void *sy, GLbitfield flags, uint64_t timeout_ns) {
-    uint64_t serial; int from_nvn;
-    if (!gl_sync_info(sy, &serial, &from_nvn)) return 0x911d;  // GL_WAIT_FAILED
-    if (from_nvn) {
-        if (mtl_wait(serial, 0)) return GL_ALREADY_SIGNALED;
-        return timeout_ns && mtl_wait(serial, timeout_ns) ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
-    }
-    if (g_ev.signaledValue >= serial) return GL_ALREADY_SIGNALED;
-    if (serial >= g_serial) {   // its command buffer is still being recorded: commit it now (as GL_SYNC_FLUSH_COMMANDS_BIT asks; without it the wait could never end)
+    sync_t *s = sy;
+    if (!s) return 0x911d;   // WAIT_FAILED
+    if (g_ev.signaledValue >= s->serial) return GL_ALREADY_SIGNALED;
+    if (s->serial >= g_serial) {   // its command buffer is still being recorded: commit it now (as GL_SYNC_FLUSH_COMMANDS_BIT asks; without it the wait could never end)
         if (!timeout_ns && !(flags & GL_SYNC_FLUSH_COMMANDS_BIT)) return GL_TIMEOUT_EXPIRED;
         dm_gfx_enter(); cb_commit(); dm_gfx_leave();
     }
     if (!timeout_ns) return GL_TIMEOUT_EXPIRED;
     uint64_t ms = timeout_ns / 1000000;
-    return [g_ev waitUntilSignaledValue:serial timeoutMS:ms ? ms : 1] ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
+    return [g_ev waitUntilSignaledValue:s->serial timeoutMS:ms ? ms : 1] ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
 }
 GL(glGenVertexArrays, void, GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n; i++) out[i] = name_new((void ***)&g_vaos, &g_nvaos, &g_capvaos, sizeof(vao_t)); }
 GL(glDeleteVertexArrays, void, GLsizei n, const GLuint *v) { for (GLsizei i = 0; i < n; i++) if (v[i] && v[i] < g_nvaos && g_vaos[v[i]]) { free(g_vaos[v[i]]); g_vaos[v[i]] = NULL; if (S.vao == v[i]) S.vao = 0; } }
@@ -1500,11 +1407,6 @@ GL(glVertexAttrib4f, void, GLuint i, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 GL(glVertexAttrib4fv, void, GLuint i, const GLfloat *v) { if (i < 16) memcpy(S.va[i], v, sizeof S.va[i]); }
 
 // ---------- Textures ----------
-// Sampler zero selects the parameters on the bound texture, the only
-// sampling state this layer supports. Reject names it cannot create.
-GL(glBindSampler, void, GLuint unit, GLuint sampler) {
-    if ((unit >= NUNITS || sampler) && !g_gl_error) g_gl_error = 0x501;  // GL_INVALID_VALUE
-}
 GL(glGenTextures, void, GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n; i++) out[i] = name_new((void ***)&g_texs, &g_ntexs, &g_captexs, sizeof(tex_t)); }
 GL(glDeleteTextures, void, GLsizei n, const GLuint *t) {
     for (GLsizei i = 0; i < n; i++) {
@@ -1669,9 +1571,7 @@ GL(glGenFramebuffers, void, GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n;
 GLB(glDeleteFramebuffers, void, GLsizei n, const GLuint *f) {
     for (GLsizei i = 0; i < n; i++) { fb_t *x = fb_of(f[i]); if (!x) continue; if (P.open && P.fb == f[i]) pass_end(); if (g_pend_clear.fb == f[i]) g_pend_clear.bits = 0; free(x); g_fbs[f[i]] = NULL; if (S.fb == f[i]) S.fb = 0; }
 }
-GL(glIsFramebuffer, uint32_t, GLuint f) { fb_t *fb = fb_of(f); return fb && fb->bound; }
 GLB(glBindFramebuffer, void, GLenum target, GLuint f) {
-    fb_t *fb = fb_of(f); if (fb) fb->bound = 1;
     if (target != GL_DRAW_FRAMEBUFFER) S.read_fb = f;   // GL_FRAMEBUFFER binds both
     if (target == GL_READ_FRAMEBUFFER || f == S.fb) return;
     { static int on = -1; if (on < 0) on = getenv("DM_GL_FBLOG") != NULL; if (on) { uint32_t bw, bh; fb_size(f, &bw, &bh); GLOG("bind framebuffer %u %ux%u (was %u) after %llu draws", f, bw, bh, S.fb, (unsigned long long)g_n_draw); } }
@@ -1699,16 +1599,6 @@ GL(glGetRenderbufferParameteriv, void, GLenum target, GLenum p, GLint *v) {
         case GL_RENDERBUFFER_SAMPLES: *v = 0; return;
         case GL_RENDERBUFFER_WIDTH: *v = r ? (GLint)r->w : 0; return;
         case GL_RENDERBUFFER_HEIGHT: *v = r ? (GLint)r->h : 0; return;
-        case GL_RENDERBUFFER_INTERNAL_FORMAT: *v = r ? (GLint)r->internal_fmt : 0; return;
-        case GL_RENDERBUFFER_DEPTH_SIZE:
-            switch (r ? r->internal_fmt : 0) {
-                case GL_DEPTH_COMPONENT16: *v = 16; return;
-                case GL_DEPTH_COMPONENT24: case GL_DEPTH24_STENCIL8: *v = 24; return;
-                case GL_DEPTH_COMPONENT32: case GL_DEPTH_COMPONENT32F: case GL_DEPTH32F_STENCIL8: *v = 32; return;
-                default: *v = 0; return;
-            }
-        case GL_RENDERBUFFER_STENCIL_SIZE:
-            *v = r && (r->internal_fmt == GL_STENCIL_INDEX8 || r->internal_fmt == GL_DEPTH24_STENCIL8 || r->internal_fmt == GL_DEPTH32F_STENCIL8) ? 8 : 0; return;
     }
     RED1("glGetRenderbufferParameteriv(%#x) not implemented", p); *v = 0;
 }
@@ -1719,7 +1609,7 @@ GLB(glRenderbufferStorage, void, GLenum target, GLenum ifmt, GLsizei w, GLsizei 
     @autoreleasepool {
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:g_fmt[f].pf width:w height:h mipmapped:NO];
         td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
-        r->tex = [g_dev newTextureWithDescriptor:td]; r->fmt = f; r->w = w; r->h = h; r->gen++; r->internal_fmt = ifmt;
+        r->tex = [g_dev newTextureWithDescriptor:td]; r->fmt = f; r->w = w; r->h = h; r->gen++;
     }
     OLOG("renderbuffer %u: %dx%d %s", S.rb, w, h, g_fmt[f].name);
 }
@@ -1744,47 +1634,6 @@ GL(glFramebufferTexture2D, void, GLenum target, GLenum att, GLenum textarget, GL
 GL(glFramebufferTextureLayer, void, GLenum target, GLenum att, GLuint t, GLint level, GLint layer) { fb_attach(target, att, 1, t, level, layer); }
 GL(glFramebufferTexture3D, void, GLenum target, GLenum att, GLenum textarget, GLuint t, GLint level, GLint z) { (void)textarget; fb_attach(target, att, 1, t, level, z); }
 GL(glFramebufferRenderbuffer, void, GLenum target, GLenum att, GLenum rbt, GLuint r) { (void)rbt; fb_attach(target, att, 2, r, 0, 0); }
-// Report the attachment actually bound; Naruto checks stencil and depth before a battle.
-GL(glGetFramebufferAttachmentParameteriv, void, GLenum target, GLenum attachment, GLenum p, GLint *v) {
-    GLenum error = 0x500;  // GL_INVALID_ENUM
-    if (!v || (target != GL_FRAMEBUFFER && target != GL_DRAW_FRAMEBUFFER && target != GL_READ_FRAMEBUFFER)) goto fail;
-    GLuint name = target == GL_READ_FRAMEBUFFER ? S.read_fb : S.fb;
-    fb_t *f = fb_of(name);
-    const att_t *a;
-    if (!name) {
-        if (attachment != GL_BACK && attachment != GL_DEPTH && attachment != GL_STENCIL) goto fail;
-        if (p == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) { *v = GL_FRAMEBUFFER_DEFAULT; return; }
-        error = 0x502; goto fail;  // GL_INVALID_OPERATION
-    }
-    if (!f) { error = 0x502; goto fail; }
-    if (attachment == GL_COLOR_ATTACHMENT0) a = &f->col;
-    else if (attachment == GL_DEPTH_ATTACHMENT) a = &f->depth;
-    else if (attachment == GL_STENCIL_ATTACHMENT) a = &f->stencil;
-    else if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
-        if (f->depth.kind != f->stencil.kind || f->depth.name != f->stencil.name ||
-            f->depth.level != f->stencil.level || f->depth.face != f->stencil.face) { error = 0x502; goto fail; }
-        a = &f->depth;
-    } else goto fail;
-    if (p == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) {
-        *v = a->kind == 1 ? GL_TEXTURE : a->kind == 2 ? GL_RENDERBUFFER : 0; return;
-    }
-    if (p == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) { *v = (GLint)a->name; return; }
-    if (a->kind == 1) {
-        tex_t *t = tex_of(a->name);
-        switch (p) {
-            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL: *v = a->level; return;
-            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE:
-                *v = t && t->target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + a->face : 0; return;
-            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER:
-                *v = t && (t->target == GL_TEXTURE_2D_ARRAY || t->target == GL_TEXTURE_3D) ? a->face : 0; return;
-        }
-    } else error = 0x502;
-fail:
-    if (!g_gl_error) g_gl_error = error;
-}
-GL(glGetFramebufferAttachmentParameterivEXT, void, GLenum target, GLenum attachment, GLenum p, GLint *v) {
-    h_glGetFramebufferAttachmentParameteriv(target, attachment, p, v);
-}
 // A framebuffer's colour image: the texture, its level and its slice (a cube face or an array layer) or 3D slice
 static id<MTLTexture> fb_color(GLuint fb, int *level, int *slice) {
     *level = *slice = 0;
@@ -1870,12 +1719,13 @@ static void sh_capture(const shader_t *s) {
 GL(glCreateShader, GLuint, GLenum type) {
     GLuint n = name_new((void ***)&g_sps, &g_nsps, &g_capsps, sizeof(sp_t)); g_sps[n]->s.type = type; return n;
 }
-GL(glIsProgram, uint32_t, GLuint pr) { return prog_of(pr) != NULL; }
 GL(glCreateProgram, GLuint, void) {
     GLuint n = name_new((void ***)&g_sps, &g_nsps, &g_capsps, sizeof(sp_t)); g_sps[n]->is_prog = 1; return n;
 }
 GL(glShaderSource, void, GLuint sh, GLsizei count, const GLchar *const *str, const GLint *len) {
-    shader_t *s = shader_of(sh); if (!s) return;
+    if (!SP_CHECK(sh, 0)) return;
+    if (count < 0) { gl_error(GL_INVALID_VALUE); return; }
+    shader_t *s = shader_of(sh);
     size_t n = 0;
     for (GLsizei i = 0; i < count; i++) n += len && len[i] >= 0 ? (size_t)len[i] : strlen(str[i]);
     free(s->src); s->src = zalloc(n + 1); s->len = 0;
@@ -1884,7 +1734,8 @@ GL(glShaderSource, void, GLuint sh, GLsizei count, const GLchar *const *str, con
     s->compiled = 0;
 }
 GLB(glCompileShader, void, GLuint sh) {
-    shader_t *s = shader_of(sh); if (!s || !s->src) return;
+    if (!SP_CHECK(sh, 0)) return;
+    shader_t *s = shader_of(sh); if (!s->src) return;
     uint8_t h[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(s->src, (CC_LONG)s->len, h);
     for (int i = 0; i < 8; i++) snprintf(s->key + 2 * i, 3, "%02x", h[i]);
     sh_capture(s);
@@ -1895,21 +1746,44 @@ GLB(glCompileShader, void, GLuint sh) {
     else OLOG("CompileShader %s", s->key);
 }
 GL(glGetShaderiv, void, GLuint sh, GLenum p, GLint *v) {
-    shader_t *s = shader_of(sh); if (!s) { *v = 0; return; }
+    if (!SP_CHECK(sh, 0)) { *v = 0; return; }
+    shader_t *s = shader_of(sh);
     switch (p) {
         case GL_COMPILE_STATUS: *v = 1; return;   // a shader the library lacks still compiles: its program's draws are skipped (and reported)
         case GL_INFO_LOG_LENGTH: *v = 0; return;
         case GL_SHADER_TYPE: *v = s->type; return;
         case GL_SHADER_SOURCE_LENGTH: *v = (GLint)s->len + 1; return;
-        case GL_DELETE_STATUS: *v = 0; return;
+        case GL_DELETE_STATUS: *v = s->deleted; return;
     }
     RED1("glGetShaderiv(%#x) not implemented", p); *v = 0;
 }
 GL(glGetShaderInfoLog, void, GLuint sh, GLsizei size, GLsizei *len, GLchar *log) { (void)sh; if (len) *len = 0; if (log && size > 0) log[0] = 0; }
-GL(glDeleteShader, void, GLuint sh) { shader_t *s = shader_of(sh); if (!s) return; free(s->src); s->fn = nil; free(g_sps[sh]); g_sps[sh] = NULL; }
+static void shader_free(GLuint sh) { shader_t *s = &g_sps[sh]->s; free(s->src); s->fn = nil; free(g_sps[sh]); g_sps[sh] = NULL; }
+static void shader_release(GLuint *slot) {   // a program lets go of the shader in one of its stages
+    GLuint sh = *slot; shader_t *s = shader_of(sh); *slot = 0;
+    if (s && --s->refs <= 0 && s->deleted) shader_free(sh);
+}
+GL(glDeleteShader, void, GLuint sh) {
+    if (!sh || !SP_CHECK(sh, 0)) return;   // 0 is silently ignored
+    shader_t *s = shader_of(sh);
+    OLOG("DeleteShader %u%s", sh, s->refs ? " (attached: flagged)" : "");
+    if (s->refs) s->deleted = 1; else shader_free(sh);
+}
+// One shader per stage: attaching another replaces it (GLES refuses a second one; the shader tables have one stage each), said once: desktop GL would link both. The same
+// shader again is GL_INVALID_OPERATION, and nothing changes, its count included
 GL(glAttachShader, void, GLuint pr, GLuint sh) {
-    prog_t *p = prog_of(pr); shader_t *s = shader_of(sh); if (!p || !s) return;
-    if (s->type == GL_VERTEX_SHADER) p->vs = sh; else p->fs = sh;
+    if (!SP_CHECK(pr, 1) || !SP_CHECK(sh, 0)) return;
+    prog_t *p = prog_of(pr); shader_t *s = shader_of(sh);
+    GLuint *slot = s->type == GL_VERTEX_SHADER ? &p->vs : &p->fs;
+    if (*slot == sh) { gl_error(GL_INVALID_OPERATION); return; }
+    if (*slot) RED1("program %u: a second %s shader (%u) replaces the first (%u): desktop GL links both, the shader tables have one per stage", pr, s->type == GL_VERTEX_SHADER ? "vertex" : "fragment", sh, *slot);
+    shader_release(slot); *slot = sh; s->refs++;
+}
+GL(glDetachShader, void, GLuint pr, GLuint sh) {
+    if (!SP_CHECK(pr, 1) || !SP_CHECK(sh, 0)) return;
+    prog_t *p = prog_of(pr);
+    OLOG("DetachShader %u from %u", sh, pr);
+    if (p->vs == sh) shader_release(&p->vs); else if (p->fs == sh) shader_release(&p->fs); else gl_error(GL_INVALID_OPERATION);   // not attached to it
 }
 static void prog_clear(prog_t *p) {
     for (int i = 0; i < p->npc; i++) if (p->pc[i].pso) CFRelease(p->pc[i].pso);
@@ -1919,7 +1793,8 @@ static void prog_clear(prog_t *p) {
 // Uniforms are merged by name over both stages, as GL links them; a location is uniform index × 4096 + array element
 GLB(glLinkProgram, void, GLuint pr) {
     static uint32_t serials;
-    prog_t *p = prog_of(pr); if (!p) return;
+    if (!SP_CHECK(pr, 1)) return;
+    prog_t *p = prog_of(pr);
     prog_clear(p);
     shader_t *vs = shader_of(p->vs), *fs = shader_of(p->fs);
     if (!vs || !fs || !vs->fn || !fs->fn) { RED1("program %u: a shader is missing from the library, its draws are skipped", pr); return; }
@@ -1932,9 +1807,9 @@ GLB(glLinkProgram, void, GLuint pr) {
             const char *nm = i < si->nu ? si->u[i].name : si->t[i - si->nu].name;
             puni_t *u = NULL;
             for (int j = 0; j < p->nu; j++) if (!strcmp(p->u[j].name, nm)) u = &p->u[j];
-            if (!u) { u = &p->u[p->nu++]; strlcpy(u->name, nm, sizeof u->name); u->off[0] = u->off[1] = -1; memset(u->slot, -1, sizeof u->slot); }
+            if (!u) { u = &p->u[p->nu++]; strlcpy(u->name, nm, sizeof u->name); u->off[0] = u->off[1] = -1; u->slot[0] = u->slot[1] = -1; }
             if (i < si->nu) { const shuni *m = &si->u[i]; u->type = m->type; u->count = m->count; u->off[st] = m->off; u->stride[st] = m->stride; }
-            else { const shsamp *m = &si->t[i - si->nu]; u->type = m->type; u->count = m->count; u->slot[st][m->elem] = m->slot; }
+            else { const shsamp *m = &si->t[i - si->nu]; u->type = m->type; u->slot[st] = m->slot; }
         }
     }
     // the game's attribute indices: glBindAttribLocation's for the inputs it names, the input's own number for the others (or the lowest index no binding took)
@@ -1952,14 +1827,17 @@ GLB(glLinkProgram, void, GLuint pr) {
     OLOG("LinkProgram %u: vs %s fs %s, %d uniforms", pr, vs->key, fs->key, p->nu);
 }
 GL(glBindAttribLocation, void, GLuint pr, GLuint index, const GLchar *name) {   // takes effect at the next link
-    prog_t *p = prog_of(pr); if (!p || index >= 16 || !name) return;
+    if (!SP_CHECK(pr, 1)) return;
+    if (index >= 16) { gl_error(GL_INVALID_VALUE); return; }   // GL_MAX_VERTEX_ATTRIBS
+    prog_t *p = prog_of(pr); if (!name) return;
     int j = 0; while (j < p->nbind && strcmp(p->bind[j].name, name)) j++;
     if (j == 16) { RED1("more than 16 attribute bindings in a program"); return; }
     if (j == p->nbind) { strlcpy(p->bind[j].name, name, sizeof p->bind[j].name); p->nbind++; }
     p->bind[j].index = (int)index;
 }
 GL(glGetProgramiv, void, GLuint pr, GLenum p, GLint *v) {
-    prog_t *x = prog_of(pr); if (!x) { *v = 0; return; }
+    if (!SP_CHECK(pr, 1)) { *v = 0; return; }
+    prog_t *x = prog_of(pr);
     switch (p) {
         case GL_LINK_STATUS: case GL_VALIDATE_STATUS: *v = 1; return;   // as glGetShaderiv's compile status
         case GL_INFO_LOG_LENGTH: *v = 0; return;
@@ -1967,14 +1845,28 @@ GL(glGetProgramiv, void, GLuint pr, GLenum p, GLint *v) {
         case GL_ACTIVE_UNIFORM_MAX_LENGTH: { int m = 0; for (int i = 0; i < x->nu; i++) m = (int)umax(m, (uint32_t)strlen(x->u[i].name) + 4); *v = m; return; }
         case GL_ATTACHED_SHADERS: *v = (x->vs != 0) + (x->fs != 0); return;
         case GL_ACTIVE_ATTRIBUTES: *v = x->si[0] ? x->si[0]->na : 0; return;
-        case GL_DELETE_STATUS: *v = 0; return;
+        case GL_DELETE_STATUS: *v = x->deleted; return;
     }
     RED1("glGetProgramiv(%#x) not implemented", p); *v = 0;
 }
-GL(glDeleteProgram, void, GLuint pr) { prog_t *p = prog_of(pr); if (!p) return; prog_clear(p); free(g_sps[pr]); g_sps[pr] = NULL; if (S.prog == pr) S.prog = 0; }
-GL(glUseProgram, void, GLuint pr) { S.prog = pr; }
+static void prog_free(GLuint pr) {   // the program goes, and its attachments with it
+    prog_t *p = &g_sps[pr]->p; prog_clear(p); shader_release(&p->vs); shader_release(&p->fs); free(g_sps[pr]); g_sps[pr] = NULL;
+}
+// As in GL, the current program deleted stays in use, its draws going on, until another is made current
+GL(glDeleteProgram, void, GLuint pr) {
+    if (!pr || !SP_CHECK(pr, 1)) return;   // 0 is silently ignored
+    prog_t *p = prog_of(pr);
+    OLOG("DeleteProgram %u%s", pr, S.prog == pr ? " (current: flagged)" : "");
+    if (S.prog == pr) p->deleted = 1; else prog_free(pr);
+}
+GL(glUseProgram, void, GLuint pr) {
+    if (pr && !SP_CHECK(pr, 1)) return;   // an error leaves the current program as it is
+    GLuint old = S.prog; S.prog = pr;
+    prog_t *o = prog_of(old); if (old != pr && o && o->deleted) prog_free(old);
+}
 GL(glGetAttribLocation, GLint, GLuint pr, const GLchar *name) {
-    prog_t *p = prog_of(pr); if (!p || !p->linked) return -1;
+    if (!SP_CHECK(pr, 1)) return -1;
+    prog_t *p = prog_of(pr); if (!p->linked) return -1;
     for (int i = 0; i < p->si[0]->na; i++) if (!strcmp(p->si[0]->a[i].name, name)) return p->amap[p->si[0]->a[i].slot];
     return -1;
 }
@@ -2011,14 +1903,7 @@ static void uni_write(GLint loc, GLsizei count, const void *v, int comps, int is
     int i = loc / 4096, el = loc % 4096;
     if (i >= p->nu) return;
     puni_t *u = &p->u[i];
-    if (is_samp(u->type)) {
-        int n = u->count ? u->count : 1;
-        if (is_int && comps == 1 && el < n) {
-            if (count > n - el) count = n - el;
-            memcpy(&u->unit[el], v, (size_t)count * sizeof *u->unit);
-        }
-        return;
-    }
+    if (is_samp(u->type)) { if (is_int) u->unit = *(const GLint *)v; return; }
     int n = u->count ? u->count : 1, rows = cols ? comps / cols : comps, size = cols ? cols * 16 : 16;
     if (el + count > n) count = n - el;
     for (int st = 0; st < 2; st++) {
@@ -2076,11 +1961,7 @@ static void uni_read(GLuint pr, GLint loc, void *out, int as_int) {
     prog_t *p = prog_of(pr);
     if (!p || !p->linked || loc < 0 || loc / 4096 >= p->nu) return;
     const puni_t *u = &p->u[loc / 4096]; int el = loc % 4096;
-    if (is_samp(u->type)) {
-        if (el >= (u->count ? u->count : 1)) return;
-        if (as_int) *(GLint *)out = u->unit[el]; else *(GLfloat *)out = (GLfloat)u->unit[el];
-        return;
-    }
+    if (is_samp(u->type)) { if (as_int) *(GLint *)out = u->unit; else *(GLfloat *)out = (GLfloat)u->unit; return; }
     int st = u->off[0] >= 0 ? 0 : 1; if (u->off[st] < 0) return;
     int cols = u->type == T_MAT4 ? 4 : u->type == T_MAT3 ? 3 : u->type == T_MAT2 ? 2 : 0, rows = cols ? cols : tcomps(u->type);
     const uint8_t *d = p->ub[st] + u->off[st] + (size_t)el * (u->stride[st] ? u->stride[st] : cols ? cols * 16 : 16);
@@ -2126,19 +2007,9 @@ static void frame_end(void) {
     dm_guest_frame_tick();
 }
 EGL(eglGetDisplay, EGLDisplay, void *native) { (void)native; dev_init(); return (EGLDisplay)&g_egl; }
-// EGL current bindings belong to the calling thread, including an unbound
-// thread. Keep the handles from MakeCurrent rather than inventing a display.
-static _Thread_local EGLint g_egl_error;
-EGL(eglGetCurrentDisplay, EGLDisplay, void) { return g_egl_current.display; }
-EGL(eglGetCurrentContext, EGLContext, void) { return g_egl_current.context; }
-EGL(eglGetCurrentSurface, EGLSurface, EGLint which) {
-    if (which == 0x3059) return g_egl_current.draw;   // EGL_DRAW
-    if (which == 0x305a) return g_egl_current.read;   // EGL_READ
-    g_egl_error = 0x300c; return NULL;               // EGL_BAD_PARAMETER
-}
 EGL(eglInitialize, EGLBoolean, EGLDisplay d, EGLint *major, EGLint *minor) { (void)d; dev_init(); g_egl.init = 1; if (major) *major = 1; if (minor) *minor = 5; return EGL_TRUE; }
 EGL(eglTerminate, EGLBoolean, EGLDisplay d) { (void)d; return EGL_TRUE; }
-EGL(eglReleaseThread, EGLBoolean, void) { memset(&g_egl_current, 0, sizeof g_egl_current); g_egl_error = 0; return EGL_TRUE; }
+EGL(eglReleaseThread, EGLBoolean, void) { return EGL_TRUE; }
 // SDL binds 0 (its API before it has chosen one) when it makes the window again (Balatro's love.window.setMode): nothing to change
 EGL(eglBindAPI, EGLBoolean, EGLenum api) { if (api && api != 0x30a2) RED1("eglBindAPI(%#x): only desktop OpenGL (0x30a2) is implemented", api); return EGL_TRUE; }
 // One configuration: RGBA8, depth 24 (32F here), stencil 8, a window surface, desktop OpenGL; it matches the game's attributes
@@ -2171,7 +2042,7 @@ EGL(eglQueryString, const char *, EGLDisplay d, EGLint name) {
     switch (name) { case 0x3053: return "NVIDIA"; case 0x3054: return "1.5"; case 0x3055: return "EGL_KHR_create_context"; case 0x308d: return "OpenGL"; }   // VENDOR, VERSION, EXTENSIONS, CLIENT_APIS
     return NULL;
 }
-EGL(eglGetError, EGLint, void) { EGLint error = g_egl_error; g_egl_error = 0; return error ? error : 0x3000; }   // SUCCESS
+EGL(eglGetError, EGLint, void) { return 0x3000; }   // SUCCESS
 EGL(eglQueryAPI, EGLenum, void) { return 0x30a2; }   // OPENGL_API
 EGL(eglWaitNative, EGLBoolean, EGLint engine) { (void)engine; return EGL_TRUE; }
 EGL(eglWaitGL, EGLBoolean, void) { return EGL_TRUE; }
@@ -2181,14 +2052,8 @@ EGL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig cfg, EGLContext share,
     (void)d; (void)cfg;
     int major = 0, minor = 0; for (int i = 0; attr && attr[i] != 0x3038 && i < 32; i += 2) { if (attr[i] == 0x3098) major = attr[i + 1]; else if (attr[i] == 0x30fb) minor = attr[i + 1]; }
     if (share) RED1("shared EGL contexts are not implemented (one context)");
-    // Storm 4's Scaleform loader uses the default ES API and parses
-    // "OpenGL ES %d.%d". A desktop version leaves its glGetIntegerv dispatch
-    // slot empty, so a zero texture limit leads to an undersized decode buffer.
-    // Restrict the implicit ES context to the verified NSO; desktop callers
-    // still use the existing GL 4.5 identity and state.
-    int es3 = major == 3 && minor == 0 && !strcmp(dm_main_build(), "d3016fc0c0402dfb70fba6b826ea772f");
-    GLOG("EGL context: OpenGL%s %d.%d", es3 ? " ES" : "", major, minor);
-    return (EGLContext)(uintptr_t)(es3 ? EGL_CONTEXT_ES3 : EGL_CONTEXT_DESKTOP);
+    GLOG("EGL context: OpenGL %d.%d", major, minor);
+    return (EGLContext)(uintptr_t)2;
 }
 EGL(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig cfg, void *win, const EGLint *attr) {
     (void)d; (void)cfg; (void)win; (void)attr; dev_init();
@@ -2201,8 +2066,7 @@ EGL(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig cfg, void *win, 
 }
 EGL(eglDestroySurface, EGLBoolean, EGLDisplay d, EGLSurface s) { (void)d; (void)s; return EGL_TRUE; }
 EGL(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface dr, EGLSurface rd, EGLContext c) {
-    g_egl_current.display = c ? d : NULL; g_egl_current.context = c;
-    g_egl_current.draw = c ? dr : NULL; g_egl_current.read = c ? rd : NULL;
+    (void)d; (void)rd;
     static pthread_t th; static int known, sized;
     if (c && dr) { pthread_t me = pthread_self(); if (!known || !pthread_equal(th, me)) { th = me; known = 1; OLOG("context current on a new thread"); } }
     // a context's viewport and scissor box start as its first drawable's size (LÖVE reads them back at start)
@@ -2235,31 +2099,11 @@ EGL(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface s) {
     frame_end();
     return EGL_TRUE;
 }
-// EGL 1.5 resolves implemented EGL and client API functions through the same
-// table as direct imports. Unknown names remain null (not generic stubs).
+// eglGetProcAddress: GL names from the same table as direct imports; anything else is null (the game's loader asks for every GL name it knows)
 static void *gl_lookup(const char *name) {
     static const hle_ent *sec; static unsigned long sz;
-    if (!sec) sec = (const hle_ent *)getsectiondata(DM_HOST_IMAGE, "__DATA", "swhle", &sz);
+    if (!sec) sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
     for (unsigned long i = 0; i < sz / sizeof *sec; i++) if (!strcmp(sec[i].name, name)) return sec[i].fn;
-    // Fate/stay night requests the EXT FBO entry points. Resolve only
-    // extension functions whose signatures and supported semantics match
-    // the core operations; unknown extension names remain null.
-    static const struct { const char *ext, *core; } framebuffer_ext[] = {
-#define EXT_FBO(core) { #core "EXT", #core }
-        EXT_FBO(glGenFramebuffers), EXT_FBO(glDeleteFramebuffers), EXT_FBO(glBindFramebuffer),
-        EXT_FBO(glCheckFramebufferStatus), EXT_FBO(glFramebufferTexture2D),
-        EXT_FBO(glFramebufferTexture3D), EXT_FBO(glFramebufferRenderbuffer),
-        EXT_FBO(glGenRenderbuffers), EXT_FBO(glDeleteRenderbuffers), EXT_FBO(glBindRenderbuffer),
-        EXT_FBO(glGetRenderbufferParameteriv), EXT_FBO(glRenderbufferStorage),
-        EXT_FBO(glRenderbufferStorageMultisample), EXT_FBO(glGenerateMipmap),
-#undef EXT_FBO
-    };
-    for (size_t j = 0; j < sizeof framebuffer_ext / sizeof *framebuffer_ext; j++) {
-        if (strcmp(framebuffer_ext[j].ext, name)) continue;
-        for (unsigned long i = 0; i < sz / sizeof *sec; i++)
-            if (!strcmp(sec[i].name, framebuffer_ext[j].core)) return sec[i].fn;
-        break;
-    }
     return NULL;
 }
 // DM_GL_STUBS=1 (bring-up): a GL name the layer does not implement gets a stub of its own instead of a null pointer, which reports its first call and returns 0; a game that calls
@@ -2291,7 +2135,7 @@ static void note_miss(const char *name) {
 }
 EGL(eglGetProcAddress, void *, const char *name) {
     static int asked, found; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    void *fn = name && (!strncmp(name, "gl", 2) || !strncmp(name, "egl", 3)) ? gl_lookup(name) : NULL;
+    void *fn = name && !strncmp(name, "gl", 2) ? gl_lookup(name) : NULL;
     pthread_mutex_lock(&mu);
     asked++; if (fn) found++;
     if (!fn && name && !strncmp(name, "gl", 2)) note_miss(name);
@@ -2300,3 +2144,5 @@ EGL(eglGetProcAddress, void *, const char *name) {
     pthread_mutex_unlock(&mu);
     return fn;
 }
+
+#endif

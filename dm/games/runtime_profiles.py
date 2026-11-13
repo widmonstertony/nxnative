@@ -12,6 +12,11 @@ from pathlib import Path
 from game import Game, header
 
 FIELDS = {
+    'BUILD_MODULES': ('build_modules', 'dm_display_version[64]'), 'MULTI': ('multi', 'int'),
+    'FPS_MAX': ('fps_max', 'int'), 'SCREEN_ASPECT': ('screen_aspect', 'double'),
+    'UPSCALER_KEYS': ('upscaler_keys', 'const char *'), 'UPSCALER_N': ('upscaler_n', 'int'),
+    'DRAW_BARRIERS_GAME': ('draw_barriers_game', 'int'),
+    'LAUNCH_PARAM': ('launch_param', 'const char *'),
     'ID': ('id', 'const char *'), 'NAME': ('name', 'const char *'),
     'PROGRAM_ID': ('program_id', 'uint64_t'),
     'ROMFS_MARKER': ('romfs_marker', 'const char *'),
@@ -74,7 +79,8 @@ def generate(out, profiles):
         source.append('    {')
         source.append(f'        .embed_ns = "{alphabet[index // 36]}{alphabet[index % 36]}",')
         for key, (field, _type) in FIELDS.items():
-            source.append(f'        .{field} = {v[key]},')
+            value = '{' + v.get(key, '') + '}' if key == 'BUILD_MODULES' else v.get(key, '0')
+            source.append(f'        .{field} = {value},')
         source += [f'        .modules = {v["MODULES"]},',
                    f'        .nmod = {nmod},',
                    f'        .display_versions = {{{v["DISPLAY_VERSIONS"]}}},',

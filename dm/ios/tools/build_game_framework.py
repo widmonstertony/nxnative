@@ -149,7 +149,7 @@ def build(args):
             if not (patched / f'{module}.{suffix}').is_file():
                 raise ValueError(f'missing module input {module}.{suffix}')
     chain_match = re.search(r'^#define DMSH_CHAIN "([0-9a-f]+)"',
-                            (ROOT / 'dm/gfx/nvn/dmsh_chain.h').read_text(), re.M)
+                            (ROOT / 'dm/gfx/nvn/legacy/dmsh_chain.h').read_text(), re.M)
     if chain_match is None:
         raise ValueError('missing shader chain identity in dmsh_chain.h')
     chain = chain_match.group(1)

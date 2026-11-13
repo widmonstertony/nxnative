@@ -10,6 +10,10 @@ typedef struct {
 } dm_display_version;
 
 typedef struct {
+    dm_display_version build_modules[64];
+    int multi, fps_max, upscaler_n, draw_barriers_game;
+    double screen_aspect;
+    const char *upscaler_keys, *launch_param;
     const char *id, *name, *romfs_marker, *args, *env, *feedback_snap;
     char embed_ns[3]; // two base36 characters; distinguishes signed guest sections
     uint64_t program_id, mem_reserve, mem_alias, mem_stack, app_pool;

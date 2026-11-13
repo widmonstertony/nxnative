@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_cover.h"
+#else
 // Geometric proof of a full-coverage first draw (pure function, unit test tests/t_cover.c): whether this draw touches every pixel of the whole block of that attachment level.
 // Conditions (all must hold): the scissor covers the whole block; the viewport is exactly (0, 0, W, H) (NDC [-1,1]^2 is the whole block); some non-culled triangle encloses the four corners in NDC (closed containment:
 // pixel centers are all inside the square, so the four corners being in the closed triangle means the whole block is inside); every vertex has w = 1 and z in [0,1] (unchanged by perspective divide and depth clipping).
@@ -39,3 +43,5 @@ static inline int nvn_cover(const float (*v)[4], int n, int prim, int cull, int 
     }
     return 0;
 }
+
+#endif

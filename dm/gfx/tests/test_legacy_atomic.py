@@ -59,7 +59,7 @@ int main(int argc,const char**argv) { @autoreleasepool {
 } }
 ''')
         cls.binary=root/'check'
-        subprocess.run(['xcrun','clang','-fobjc-arc','-I'+str(ROOT/'dm/gfx/nvn'),str(code),str(ROOT/'dm/gfx/nvn/nvn_refl.m'),'-framework','Metal','-framework','Foundation','-o',str(cls.binary)],check=True)
+        subprocess.run(['xcrun','clang','-DDM_NVN_LEGACY_RENDERER_TEST=1','-fobjc-arc','-I'+str(ROOT/'dm/gfx/nvn'),str(code),str(ROOT/'dm/gfx/nvn/nvn_refl.m'),'-framework','Metal','-framework','Foundation','-o',str(cls.binary)],check=True)
     @classmethod
     def tearDownClass(cls): cls.tmp.cleanup()
     def native_accepts(self, meta, digest=DIGEST):

@@ -32,7 +32,7 @@ srcs = [s for s in dict.fromkeys(srcs) if not os.path.splitext(s)[0].endswith('_
 srcs += sorted(os.path.join(ios_src, f) for f in os.listdir(ios_src) if f.endswith(('.c', '.m')))
 dirs = list(dict.fromkeys(os.path.dirname(s) for s in srcs))
 if renderer == 'metal4': defs.append('-DDM_NVN_MODERN_RENDERER=1')
-flags = ['-arch', 'arm64', '-miphoneos-version-min=' + minimum, '-mcpu=' + ('apple-a10' if renderer == 'legacy' else 'apple-a18'), '-fobjc-arc', '-O1', '-w'] + defs + [f'-I{d}' for d in incs + dirs]
+flags = ['-arch', 'arm64', '-miphoneos-version-min=' + minimum, '-mcpu=' + ('apple-a10' if renderer == 'legacy' else 'apple-m1'), '-fobjc-arc', '-O1', '-w'] + defs + [f'-I{d}' for d in incs + dirs]
 def one(s):
     c = ['xcrun', '-sdk', 'iphoneos', 'clang'] + flags + (['-Dmain=dm_main'] if s == os.path.join(host, 'main.c') else []) + ['-c', s, '-o', '/dev/null']
     if s.endswith('.c'): c[4:4] = ['-std=gnu11']

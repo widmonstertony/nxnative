@@ -1,5 +1,7 @@
 #pragma once
 #import <Metal/Metal.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX || defined(DM_NVN_MODERN_RENDERER)
 // Opt-in image-based interpolation, independent of MetalFX's depth/MV API.
 // Caller serializes one queue and fences each of its three parameter slots.
 @interface DmFrameGenerator : NSObject
@@ -12,3 +14,5 @@
 // midpoint, or nil on first/reset/late frames. Real image: currentTexture.
 - (id<MTLTexture>)encode:(id<MTL4CommandBuffer>)cb source:(id<MTLTexture>)source rect:(const NSUInteger[4])rect interval:(double)seconds slot:(int)slot;
 @end
+
+#endif

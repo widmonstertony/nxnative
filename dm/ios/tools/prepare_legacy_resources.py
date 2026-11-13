@@ -25,7 +25,7 @@ def module(tools, name):
 def prepare(source, cache, libraries, report):
     tools = source / 'dm/ios/tools'
     match = re.search(r'#define DMSH_CHAIN "([a-f0-9]+)"',
-                      (source / 'dm/gfx/nvn/dmsh_chain.h').read_text())
+                      (source / 'dm/gfx/nvn/legacy/dmsh_chain.h').read_text())
     if match is None:
         raise ValueError('Host shader chain is missing')
     chain = match.group(1)

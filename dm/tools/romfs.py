@@ -21,6 +21,13 @@ from typing import TYPE_CHECKING
 HEAD = struct.Struct('<8sQQQ')
 ENT = struct.Struct('<QQIHBB')
 MAGIC = b'DMROMFS1'
+MSL_ZSTD = b'\0DMZMSL1'   # only source text in shader library images; the native reader maps the unchanged Metal binaries
+
+
+def shader_zstd():
+    try: from compression import zstd
+    except ImportError: from backports import zstd
+    return zstd
 
 
 class Image:
@@ -149,6 +156,13 @@ else:
         image, relative = resolved; k = image.find(relative)
         if not image.entry(k)[4]: raise IsADirectoryError(file)
         raw = _File(image, k)
+        if relative.endswith('.metal') and _os.path.basename(image.path).startswith('b-'):
+            if raw.read(len(MSL_ZSTD)) == MSL_ZSTD:
+                with raw:
+                    data = shader_zstd().decompress(raw.read())
+                raw = io.BytesIO(data)
+            else:
+                raw.seek(0)
         if buffering == 0 and 'b' in mode: return raw
         reader = io.BufferedReader(raw, io.DEFAULT_BUFFER_SIZE if buffering < 0 else buffering or io.DEFAULT_BUFFER_SIZE)
         return reader if 'b' in mode else io.TextIOWrapper(reader, encoding=encoding, errors=errors, newline=newline)

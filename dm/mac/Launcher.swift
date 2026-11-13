@@ -10,37 +10,210 @@ import SwiftUI
 
 private func info(_ key: String) -> String? { Bundle.main.object(forInfoDictionaryKey: key) as? String }
 
+private func tr(_ text: String) -> String {
+    if text.hasSuffix(" fps") {
+        let format = Bundle.main.localizedString(forKey: "%@ fps", value: "%@ fps", table: "Launcher")
+        return String(format: format, String(text.dropLast(4)))
+    }
+    return Bundle.main.localizedString(forKey: text, value: text, table: "Launcher")
+}
+
+/// The host's comparison of the two saves (dm/host/save_sync.c). This launcher links save_sync.o but imports no C header (pack_app.py builds it with swiftc and no bridging
+/// header), so the symbol is declared here.
+@_silgen_name("save_sync_report")
+private func save_sync_report(_ save: UnsafePointer<CChar>, _ title: UnsafePointer<CChar>, _ folder: UnsafePointer<CChar>?, _ waitMs: Int32,
+                              _ out: UnsafeMutablePointer<CChar>, _ n: Int) -> Int32
+
+/// Cloud saves before Play: this Mac's save against the cloud's (SaveSyncReport, shared with the iPhone launcher), and the question it needs, as alerts.
+/// It runs with the window's Play and, with the window off, before dmMacLauncher returns; DM_LAUNCHER=0 asks nothing (the host takes the newer save).
+enum SaveCheck {
+    enum Outcome { case play(String?), retry, cancel }
+
+    /// Blocks while the cloud's file comes (SaveSyncReport.waitMs at most): call it off the main thread. nil: no report (sync is then left to the host as before)
+    static func report() -> SaveSyncReport? {
+        // getenv, not ProcessInfo.environment: launcher.c sets DM_SAVE and applies the env files in this process before the window
+        guard let save = getenv("DM_SAVE") else { fputs("launcher: save sync: no DM_SAVE\n", stderr); return nil }
+        guard let id = info("DMTitleID"), !id.isEmpty else { fputs("launcher: save sync: no DMTitleID\n", stderr); return nil }
+        // the folder as launcher.c will pass it (cloud_saves_folder): DM_SAVE_SYNC from the launch environment or an env file, else the window's choice; "0" = off
+        let folder = getenv("DM_SAVE_SYNC").map { String(cString: $0) } ?? (UserDefaults.standard.string(forKey: "cloudSaves.folder") ?? "")
+        var buf = [CChar](repeating: 0, count: 1024)
+        let automatic = info("DMCloudSaveContainer")?.hasPrefix("iCloud.") == true || getenv("DM_CLOUDKIT_CONTAINER") != nil
+        let r = automatic && folder.isEmpty
+            ? save_sync_report(save, id, nil, SaveSyncReport.waitMs, &buf, buf.count)
+            : (folder.isEmpty ? "0" : folder).withCString { save_sync_report(save, id, $0, SaveSyncReport.waitMs, &buf, buf.count) }
+        let line = String(cString: buf)
+        guard r == 0 else { fputs("launcher: save sync: no report on \(String(cString: save))\n", stderr); return nil }
+        fputs("launcher: save sync: \(line)\n", stderr)
+        return SaveSyncReport(line: line)
+    }
+
+    /// The question the report needs, as a modal alert; `cancel` names the way back ("Cancel" to the window, "Quit" without one)
+    static func ask(_ r: SaveSyncReport?, cancel: String) -> Outcome {
+        switch SaveSyncReport.step(r) {
+        case .play(let choice): return .play(choice)
+        case .choose:
+            guard let r else { return .play(nil) }
+            let a = NSAlert()
+            a.messageText = SaveSyncReport.chooseTitle
+            a.informativeText = r.chooseMessage(here: "Mac")
+            a.alertStyle = .warning
+            a.addButton(withTitle: r.localLabel(here: "Mac"))
+            a.addButton(withTitle: r.cloudLabel)
+            a.addButton(withTitle: tr(cancel))
+            a.buttons[0].keyEquivalent = ""   // no default: Return must not pick a save (the newer is not always the one to keep)
+            a.buttons[2].keyEquivalent = "\u{1b}"
+            switch a.runModal() {
+            case .alertFirstButtonReturn: return .play(r.localChoice)
+            case .alertSecondButtonReturn: return .play(r.cloudChoice)
+            default: return .cancel
+            }
+        case .unreadable:
+            let a = NSAlert()
+            a.messageText = SaveSyncReport.unreadableTitle
+            a.informativeText = r?.unreadableMessage(here: "Mac") ?? ""
+            a.addButton(withTitle: tr("Play This Mac's Save"))
+            a.addButton(withTitle: tr("Try Again"))
+            a.addButton(withTitle: tr(cancel))
+            a.buttons[2].keyEquivalent = "\u{1b}"
+            switch a.runModal() {
+            case .alertFirstButtonReturn: return .play("offline")   // the mount does not wait for the cloud again
+            case .alertSecondButtonReturn: return .retry
+            default: return .cancel
+            }
+        }
+    }
+
+    static func apply(_ choice: String?) {
+        guard let choice else { return }
+        setenv("DM_SAVE_SYNC_CHOICE", choice, 1)
+        fputs("launcher: DM_SAVE_SYNC_CHOICE=\(choice)\n", stderr)
+    }
+
+    /// With the window off: the check and its question before the game, the app in front only while it asks. false: the player quit
+    static func withoutWindow() -> Bool {
+        final class Box: @unchecked Sendable { let lock = NSLock(); var report: SaveSyncReport?; var waiting = false }
+        let app = NSApplication.shared
+        defer { app.setActivationPolicy(.prohibited) }
+        while true {
+            let box = Box(), sem = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = report()
+                box.lock.lock(); box.report = r; box.lock.unlock()
+                sem.signal()
+                DispatchQueue.main.async { if box.waiting { app.abortModal() } }   // runs inside the waiting alert's modal loop, if there is one
+            }
+            if sem.wait(timeout: .now() + 0.5) == .timedOut {   // a cloud file to download: say so, and let the player go on without it
+                app.setActivationPolicy(.regular); app.activate(ignoringOtherApps: true)
+                let a = NSAlert()
+                a.messageText = tr("Checking the cloud save…")
+                a.informativeText = tr("Waiting for iCloud to deliver this game's save.")
+                a.addButton(withTitle: tr("Play Without It"))
+                a.addButton(withTitle: tr("Quit"))
+                box.waiting = true
+                let answer = a.runModal()
+                box.waiting = false
+                if answer == .alertFirstButtonReturn { apply("offline"); return true }
+                if answer == .alertSecondButtonReturn { return false }
+                sem.wait()   // aborted: the report is in
+            }
+            box.lock.lock(); let r = box.report; box.lock.unlock()
+            if case .play(let choice) = SaveSyncReport.step(r) { apply(choice); return true }
+            app.setActivationPolicy(.regular); app.activate(ignoringOtherApps: true)
+            switch ask(r, cancel: "Quit") {
+            case .play(let choice): apply(choice); return true
+            case .retry: continue
+            case .cancel: return false
+            }
+        }
+    }
+}
+
 struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let done: (Bool) -> Void
     let fit: (CGFloat) -> Void
+    let name: String
+    let version: String
+    let icon: NSImage
+    let cancelTitle: String
+    let environment: [String: String]
+    let cloudKitContainer: String?
+    let managedCloudSync: Bool
+    let desktopBindings: [[String]]
+    let desktopMovement: String
     @AppStorage("window.show") private var show = true
     @AppStorage("window.advanced") private var advanced = false
+    @State private var checking = false
+    @State private var check = 0   // which Play the running check is for: one the player went on from without it is dropped
+
+    init(m: LauncherModel, name: String = info("CFBundleName") ?? "Game",
+         version: String = info("CFBundleShortVersionString") ?? "1.0",
+         icon: NSImage = NSApp.applicationIconImage, cancelTitle: String = "Quit",
+         environment: [String: String] = ProcessInfo.processInfo.environment,
+         cloudKitContainer: String? = info("DMCloudSaveContainer"),
+         managedCloudSync: Bool = false,
+         desktopProfile: URL? = Bundle.main.resourceURL?.appendingPathComponent("dm/desktop.tsv"),
+         done: @escaping (Bool) -> Void, fit: @escaping (CGFloat) -> Void) {
+        self.m = m
+        self.name = name
+        self.version = version
+        self.icon = icon
+        self.cancelTitle = cancelTitle
+        self.environment = environment
+        self.cloudKitContainer = cloudKitContainer
+        self.managedCloudSync = managedCloudSync
+        self.desktopMovement = desktopProfile.flatMap { try? String(contentsOf: $0, encoding: .utf8) }?
+            .components(separatedBy: .newlines).first(where: { $0.hasPrefix("movement\t") })?
+            .components(separatedBy: "\t").dropFirst().first ?? "stick"
+        self.desktopBindings = desktopProfile.flatMap { try? String(contentsOf: $0, encoding: .utf8) }?
+            .components(separatedBy: .newlines).compactMap { line in
+                let parts = line.components(separatedBy: "\t")
+                return parts.count == 3 && !line.hasPrefix("#") && parts[1] != "NONE" ? parts : nil
+            } ?? []
+        self.done = done
+        self.fit = fit
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
+                Image(nsImage: icon).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(info("CFBundleName") ?? "Game").font(.title2.weight(.semibold))
-                    Text("Version \(info("CFBundleShortVersionString") ?? "1.0")").foregroundStyle(.secondary)
+                    Text(name).font(.title2.weight(.semibold))
+                    Text(String(format: tr("Version %@"), version)).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .padding([.horizontal, .top], 20)
             Form {
                 settingSections(basic: true)
-                CloudSavesSection()
+                if !desktopBindings.isEmpty && m.values["DM_DESKTOP_CONTROLS"] != "0" {
+                    Section {
+                        DisclosureGroup(tr("Keyboard and mouse controls")) {
+                            LabeledContent("W / A / S / D", value: tr("Move / steer"))
+                            ForEach(desktopBindings, id: \.self) { row in
+                                LabeledContent(desktopKeyLabel(row[0]), value: tr(row[2]) + (["RUN", "TOUCH"].contains(row[1]) ? "" : " · " + row[1]))
+                            }
+                        }
+                        DesktopControlsView(model: m, rows: desktopBindings, movement: desktopMovement)
+                    } footer: {
+                        Text(tr("Escape or F8 releases the mouse. Click the game to capture it again. F1 shows the controls while playing."))
+                    }
+                }
+                if m.values["DM_PAD_MAP"] != nil {
+                    Section(tr("Controls")) { ControllerButtonsView(model: m) }
+                }
+                CloudSavesSection(environment: environment, cloudKitContainer: cloudKitContainer, managed: managedCloudSync)
                 Section {
-                    DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
+                    DisclosureGroup(tr("Advanced settings"), isExpanded: $advanced) {}
                 }
                 if advanced {
                     settingSections(basic: false)
                     Section {
-                        Button("Reset to tested defaults") { m.reset() }
+                        Button(tr("Reset to tested defaults")) { m.reset() }
                             .disabled(!m.changed)
                     } footer: {
-                        Text("Brings back all settings this game was tested with.")
+                        Text(tr("Brings back all settings this game was tested with."))
                     }
                 }
             }
@@ -51,22 +224,46 @@ struct LauncherView: View {
                 fit(extraHeight)
             }
             HStack {
-                Toggle("Show this window at launch", isOn: $show).toggleStyle(.checkbox)
+                Toggle(tr("Show this window at launch"), isOn: $show).toggleStyle(.checkbox)
                 Spacer()
-                Button("Quit") { done(false) }
-                Button("Play") { done(true) }.keyboardShortcut(.defaultAction)
+                if checking {
+                    ProgressView().controlSize(.small)
+                    Text(tr("Checking the cloud save…")).foregroundStyle(.secondary)
+                    Button(tr("Play Without It")) { checking = false; SaveCheck.apply("offline"); done(true) }
+                }
+                Button(tr(cancelTitle)) { done(false) }.keyboardShortcut(.cancelAction)
+                Button(tr("Play")) { start() }.keyboardShortcut(.defaultAction).disabled(checking)
             }
             .padding(20)
         }
         .frame(minWidth: 520, idealWidth: 560)
     }
 
+    /// Play, once the cloud's save is compared with this Mac's: a save that changed on both sides is the player's pick, not the newer file's (SaveCheck)
+    private func start() {
+        if managedCloudSync { done(true); return }
+        check += 1; checking = true
+        let mine = check
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = SaveCheck.report()
+            DispatchQueue.main.async {
+                guard checking, check == mine else { return }   // the player played without it
+                checking = false
+                switch SaveCheck.ask(r, cancel: "Cancel") {
+                case .play(let choice): SaveCheck.apply(choice); done(true)
+                case .retry: start()
+                case .cancel: break   // back to the window, nothing chosen
+                }
+            }
+        }
+    }
+
     @ViewBuilder private func settingSections(basic: Bool) -> some View {
         ForEach(m.sections(basic: basic), id: \.self) { section in
-            let rows = m.rows(in: section, basic: basic)
+            let rows = m.rows(in: section, basic: basic).filter { $0.kind != "keymap" && $0.kind != "padmap" }
             if !rows.isEmpty {
-                Section(section) {
-                    ForEach(rows) { SettingRow(s: $0, m: m) }
+                Section(tr(section)) {
+                    ForEach(rows) { SettingRow(s: $0, m: m, translate: tr) }
                 }
             }
         }
@@ -77,33 +274,38 @@ struct LauncherView: View {
 /// preferences as cloudSaves.folder, which launcher.c puts into DM_SAVE_SYNC before the host starts; a DM_SAVE_SYNC an env file or the launch environment set wins, and is shown here.
 struct CloudSavesSection: View {
     @AppStorage("cloudSaves.folder") private var folder = ""
-    private let fixed: String? = {
-        let env = ProcessInfo.processInfo.environment
+    private let fixed: String?
+    private let cloudKitEnabled: Bool
+    private let managed: Bool
+
+    init(environment env: [String: String], cloudKitContainer: String?, managed: Bool = false) {
         let keys = ((env["DM_ENV_FILE_KEYS"] ?? "") + " " + (env["DM_ENV_LAUNCH_KEYS"] ?? "")).split(separator: " ")
-        return keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
-    }()
+        fixed = keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
+        cloudKitEnabled = managed || cloudKitContainer?.hasPrefix("iCloud.") == true
+        self.managed = managed
+    }
 
     var body: some View {
-        if Bundle.main.object(forInfoDictionaryKey: "DMCloudSaveContainer") is String {
+        if cloudKitEnabled {
             Section {
-                LabeledContent("iCloud saves", value: "Automatic")
+                LabeledContent(tr("iCloud saves"), value: tr(fixed == "0" ? "Off" : "Automatic"))
             } footer: {
-                Text("Use the same iCloud account on all your devices. The game reads your save when it starts and syncs after each save.")
+                Text(tr(managed ? "TonTon checks iCloud before the game starts and syncs when it exits. Different progress is kept on both devices until resolved." : "Use the same iCloud account on all your devices. The game reads your save when it starts and syncs after each save."))
             }
         } else {
             Section {
-                LabeledContent("Cloud saves") {
-                    Text(fixed.map { "\(Self.shown($0)) (env.txt)" } ?? (folder.isEmpty ? "Off" : Self.shown(folder)))
+                LabeledContent(tr("Cloud saves")) {
+                    Text(fixed.map { "\(Self.shown($0)) (env.txt)" } ?? (folder.isEmpty ? tr("Off") : Self.shown(folder)))
                         .foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                 }
                 if fixed == nil {
                     HStack {
-                        Button(folder.isEmpty ? "Choose a folder…" : "Choose a different folder…", action: choose)
-                        if !folder.isEmpty { Button("Turn off") { folder = "" } }
+                        Button(tr(folder.isEmpty ? "Choose a folder…" : "Choose a different folder…"), action: choose)
+                        if !folder.isEmpty { Button(tr("Turn off")) { folder = "" } }
                     }
                 }
             } footer: {
-                Text("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder.")
+                Text(tr("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder."))
             }
         }
     }
@@ -111,8 +313,8 @@ struct CloudSavesSection: View {
     private func choose() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.canCreateDirectories = true
-        panel.prompt = "Use for Cloud Saves"
-        panel.message = "The folder the iPhone app chose in its launcher's Cloud saves"
+        panel.prompt = tr("Use for Cloud Saves")
+        panel.message = tr("The folder the iPhone app chose in its launcher's Cloud saves")
         panel.directoryURL = URL(fileURLWithPath: folder.isEmpty ? Self.drive : folder)
         if panel.runModal() == .OK, let url = panel.url { folder = url.path }
     }
@@ -136,8 +338,8 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate 
     func applicationDidFinishLaunching(_ n: Notification) {
         let name = info("CFBundleName") ?? "Game"
         let menu = NSMenu(), item = NSMenuItem(), app = NSMenu()
-        app.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        app.addItem(withTitle: "Quit \(name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        app.addItem(withTitle: tr("Close Window"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        app.addItem(withTitle: String(format: tr("Quit %@"), name), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.submenu = app; menu.addItem(item); NSApp.mainMenu = menu
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 660), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         w.title = name; w.isReleasedWhenClosed = false; w.delegate = self
@@ -193,7 +395,7 @@ public func dmMacLauncher() -> Int32 {
     guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return 2 }
     if (UserDefaults.standard.object(forKey: "window.show") as? Bool) == false && !NSEvent.modifierFlags.contains(.option) {
         fputs("launcher: settings window off (hold Option at launch to show it)\n", stderr)
-        return 2
+        return SaveCheck.withoutWindow() ? 2 : 0
     }
     let model = LauncherModel(file.settings)
     let app = NSApplication.shared, launcher = Launcher(model)

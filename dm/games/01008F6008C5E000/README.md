@@ -94,6 +94,9 @@ No `patches.py`.
   4.0.0 copy was damaged ([Scarlet, Files and builds](../0100A3D008C5C000/README.md#files-and-builds));
   whether Violet's is intact has not been checked.
 - Outdoor exploration and battles have not been validated, as on Scarlet.
+- [The freeze in Trinity's rendezvous](../../../docs/reference/threads.md#trinitys-rendezvous-loses-its-release-on-apple-cores)
+  was reported here too, by its return addresses only. No main of this game is
+  on the drive, so whether its completer matches the rewriter's rule is unchecked.
 - [Conservative rasterization](../../../docs/reference/rendering.md#conservative-rasterization-remains-unimplemented)
   is unimplemented, as on Scarlet.
 
@@ -173,3 +176,6 @@ consumed game clock tracks active elapsed time, and cover an absent gate,
 a paused channel and restoration of the original table. Actual movement,
 jump height, animations and battle timing on M2 still require device
 verification. A [fixed 60 fps mod was reported to alter jump height](https://github.com/seedds/nxnative/issues/436).
+The other findings are Scarlet's ([Found on this game](../0100A3D008C5C000/README.md#found-on-this-game)).
+
+- [Bluetooth LE at boot](../../../docs/reference/services.md#bluetooth-le-at-boot): 3.0.1 (`v720896`, a derived profile) calls `nn::bluetooth::InitializeBle` a second after boot and aborted without the `bt` service; the host answers the BLE calls offline (resolved).

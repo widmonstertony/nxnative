@@ -29,6 +29,9 @@ if not profiles:
 # Full repository source inventory across all relevant subdirectories
 ALL_SOURCES = sorted(list(dict.fromkeys(
     list((DM / 'ios/Sources').glob('*.[mc]')) +
+    list((DM / 'gfx').glob('*.[mc]')) +
+    list((DM / 'gfx/gl').glob('*.[mc]')) +
+    list((DM / 'gfx/vk').glob('*.[mc]')) +
     list((DM / 'gfx/nvn').glob('*.[mc]')) +
     list((DM / 'gfx/tex').glob('*.[mc]')) +
     list((DM / 'host').glob('*.[mc]'))
@@ -89,6 +92,7 @@ def compile_profile(selected_profile, sources):
         '-Wno-deprecated-declarations',
         '-I' + str(out_dir),
         '-I' + str(DM / 'games' / selected_profile),
+        '-I' + str(DM / 'host/gen/msl-iphoneos'),
         '-I' + str(DM / 'third_party/libvpx/config')
     ] + ['-I' + i for i in incs]
 
@@ -145,7 +149,7 @@ def main():
         print(f"Profile {p}: {rep['translation_units']} units -> {status_str}")
 
     summary = {
-        'scope': 'All actual iOS/host sources cross-compiled for arm64 iOS17, not linked or device-run',
+        'scope': 'C and Objective-C iOS/host/graphics sources cross-compiled for arm64 iOS16.1, not linked or device-run',
         'profiles_evaluated': target_profiles,
         'total_units_compiled': total_units,
         'total_failures': total_failures,
