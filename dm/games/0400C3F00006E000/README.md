@@ -140,6 +140,35 @@ Frame step (current): the framework's interval function is `main+0x69cbb0` on 1.
 
 ## TonTon iPad compatibility validation (2026-11-12)
 
+The latest verified baseline is M2 **60.96**, not the experimental 540p
+packages. It preserves the `b88c9e5f457c` libraries and adds the
+[explicit SDK graphics-tier queries](../../../docs/reference/services.md#an-explicit-graphics-tier-is-ignored-by-a-frozen-host).
+The actual Mario Bros. Circuit 50cc race used 1280x720 scene color/depth
+attachments, a 1920x1080 UI composite and MetalFX output at 2732x1536.
+Late race windows averaged **47.1–48.0 FPS**, frame p50 20.68–20.97 ms and
+GPU p50 18.23–18.24 ms, thermal state 0. A bounded three-second A hold moved
+the kart; no GPU command-buffer fault or crash occurred in the measured
+session. Audio windows through 154,000 callbacks reported no underrun.
+Cold pipeline stalls up to 3.22 seconds remain. Original save hashes matched
+after the isolated test. This is an improvement, not a 60 FPS race pass.
+
+Air **60.75** removes a shelf override that forced tier 0 after loading the
+per-game profile. Its installed configuration was read back with tier 2,
+native game timing and MetalFX retained. Actual Air race resolution and
+performance on that version still require gameplay validation.
+
+The **60.97** 540p experiment changed shared extent defaults and shrank the
+3D scene into a corner while leaving the HUD full size. It was rejected,
+replaced on M2, and never installed on Air. **60.98** preserved the layout
+defaults and probed the two current-extent stores. The race dump verified real
+960x540 color/depth, but the final copy retained a 960x540 viewport inside a
+1280x720 layout; that candidate was rejected too. **60.99** instead probes
+the computed dynamic scene dimensions, leaving every screen extent intact;
+it is pending device validation, not a released resolution patch. None of
+these candidates changes the shader chain or reuploads a game body. Fixed guest
+addresses are restricted to main build ID
+`9e244438c3d8ef1c703a6a85ef99c4f0`, with instruction and padding guards.
+
 The M2 iPadOS 16.1 test on TonTon 60.94 used the existing frozen
 `b88c9e5f457c` shader libraries and signed guest modules. A new isolated-save
 session reached the title, Single Player menus, Mushroom Cup selection and
@@ -177,3 +206,22 @@ the shelf was reopened with temporary save/diagnostic overrides removed. The pro
 settings, so the individual contribution of priority mapping is not isolated. Air's separate buffered-present
 configuration also still needs a fresh user gameplay log; this iPad result is
 not an Air race pass.
+
+### M2 60.99 scene-only 540p candidate
+
+This candidate changes only the computed renderer-scale stores for main build
+`9e244438c3d8ef1c703a6a85ef99c4f0`, retaining the original layout/default and
+maximum extents. Pass dump F32060 in a Mario Bros. Circuit 50cc race shows
+960×540 color/depth scene attachments, full scene viewport and intact scene/HUD.
+The classic MetalFX path is active. A late race sample is 48 FPS at thermal
+level 2, so this is **not a 60 FPS performance pass**. Original saves were
+SHA-256 unchanged after the isolated test; no original body or shader-chain
+inputs changed. The candidate is installed only on M2, not Air.
+
+### Classic pacing source backport (November 12, 2026; deployment pending)
+
+The retained CPU controller now uses the upstream bounded-average lateness and
+clock-ramp recovery logic, and the classic caller passes the loaded stub's
+`STEP_MAX`. Modern and classic selections each pass 86 simulated timing checks.
+No shader ABI, chain or texture ownership layout changes. This is not part of
+the earlier 60.99 race result; a new device performance test is still required.

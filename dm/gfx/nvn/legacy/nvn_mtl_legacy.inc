@@ -10321,6 +10321,26 @@ uint64_t mtl_ext_tex(void *tex) {
     res_add(t); tex_put(serial, t);
     return serial;
 }
+// External producers make no NVN submissions to drain the deferred-release queue.
+// Retire their textures directly after all queued presents and GPU readers finish.
+// Classic queues retain encoded resources; keep this registry's ownership local.
+void mtl_ext_tex_release(uint64_t serial) {
+    if (serial < (1ull << 62)) return;
+    pthread_mutex_lock(&g_pq_mu); uint64_t ticket = g_pq_in; pthread_mutex_unlock(&g_pq_mu);
+    mtl_present_wait(ticket);
+    pthread_mutex_lock(&g_pq_mu);
+    while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+    pthread_mutex_unlock(&g_pq_mu);
+    for (int i = 0; i < g_xv_npresent; ) {
+        if (g_xv_present[i] == serial) g_xv_present[i] = g_xv_present[--g_xv_npresent]; else i++;
+    }
+    pthread_mutex_lock(&g_smu);
+    void *entry = nvn_hm_del(&g_by_serial, &serial);
+    id<MTLTexture> texture = entry ? CFBridgingRelease(entry) : nil;
+    if (texture) g_ser_gen++;
+    pthread_mutex_unlock(&g_smu);
+    if (texture) { res_remove(texture); res_commit(); }
+}
 uint64_t mtl_present_ext(uint64_t serial, double period, void *event, uint64_t event_value, const int crop[4]) {
     (void)event; (void)event_value;
     tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 0); t.serial = serial;

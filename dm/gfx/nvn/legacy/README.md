@@ -22,3 +22,19 @@ Classic multi-program embedding is not supported; use the modern renderer for
 `PROGRAMS_TSV`. The retained game library uses its explicit namespace format.
 
 Validation does not install builds on iOS devices or change existing game saves.
+
+## Selective timing backport
+
+The frame-step controller now follows the upstream bounded-average lateness and
+clock-ramp recovery rules. The classic caller uses the loaded stub's `STEP_MAX`
+contract and retains 60 Hz units; it does not enable modern 120 Hz pacing or alter
+shader/reflection layouts. `t_fstep_legacy` runs the same simulated timing routes
+as the modern controller. Source validation is separate from a device update.
+
+## External presentation lifetime
+
+The Vulkan surface bridge releases external textures after the classic present
+queue and its GPU readers finish. It uses the private serial/residency registry,
+without modern ownership records or the NVN-only deferred queue. The upstream
+140-recreation scenario passes through both backend selections; mobile deployment
+remains separate from this source check.
