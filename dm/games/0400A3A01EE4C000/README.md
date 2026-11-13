@@ -146,9 +146,19 @@ counts were reported, and full per-operation timing increased submission CPU
 time to about 18–19 ms. Those timings are perturbed diagnostics, not a new
 baseline regression. Temporary CPU/wait flags were removed and read back;
 the change takes effect on restart. A narrow host-only diagnostic correction
-has compiled, linked and passed signature checks; its in-place Air installation
-is pending. It reports each submitting thread and samples each phase,
-without changing shaders, game code, rendering semantics or saves.
+is installed as Air 60.74 after compile, link and signature checks. Installation
+retained all 26 game directories and the checked ROM sizes. It reports each
+submitting thread and samples each phase,
+without changing shaders, game code, rendering semantics or saves. A
+`DM_NVN_CPUPROF=64` capture is configured and read back; its scene result
+is pending. The four diagnostic tests pass against both host source versions,
+and all 11 documentation tests pass. The gameplay regression harness was
+not configured (`REGRESS_ROOT` / `REGRESS_GAMES`); no harness pass is claimed.
+
+The retained Air renderer compile command ends in `-O1`, overriding an earlier
+`-O3`. The same diagnostic source was compiled separately with effective
+`-O3` for a possible CPU-cost comparison. That object is not installed, and
+compile success alone establishes no gameplay speedup.
 
 ## Open
 
