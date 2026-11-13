@@ -91,13 +91,31 @@ A subsequent bounded `DM_HITCH_DUMP=35:45` run identified the producer as
 main+0x10ecb64). All 24 snapshots found it waiting there, one during mutex
 reacquisition; these are frame-hitch samples, not samples triggered by an
 audio underrun. The same host assigns priority-39/44 workers and that audio
-thread the same interactive QoS by default. A **pending per-game comparison**
+thread the same interactive QoS by default. A per-game comparison
 uses existing `DM_QOS_MAP=1`, `DM_QOS_EDGES=30,44`: audio remains interactive,
 workers in 39–44 become user-initiated, and lower-priority workers become
 utility. The 540p plus MetalFX cap is retained; hitch dumps are removed for
-the comparison. This is a scheduling hypothesis, not a proven repair or a
-new default for other games. No sustained 60 fps or universal resolution
-control is claimed.
+the comparison. The next launch confirmed those bands, logged zero underruns
+through 16,000 device callbacks, and the player reported much less crackling.
+The scene still ran at about 41–45 fps: frame p50 21.7–23.2 ms, GPU p50
+10.4–11.3 ms, submit/present p50 16.9–17.4 ms. MetalFX presentation took
+about 2.6–2.9 ms separately; these overlapping intervals must not be added
+as a serial critical path. The device was already in thermal state 2.
+This supports retaining the narrow comparison for now; it is not a permanent
+all-scene audio fix or a new default for other games.
+
+The next per-game comparison enables existing `DM_PRESENT_SNAP=2`, absent
+from the measured launch, to release swapchain textures after a queued copy
+rather than the display tick ([frame buffering](../../../docs/settings.md#frame-buffering)).
+It retains the audio bands, 540p cap and MetalFX; device config readback is
+confirmed, gameplay effect is pending. Upstream's frame-buffering phone
+measurements are for Breath of the Wild, not proof of a Pokopia gain. The
+[iPhone-specific Pokopia Native guide](https://pokopia-native.vercel.app/iphone)
+reports a default 30 fps target and serious thermal state after about six
+minutes, with render-scale reduction as its mitigation. Its custom scaling
+and Android/Vulkan frame generation cannot be assumed to exist in this
+retained Metal runtime. No sustained 60 fps or universal resolution control
+is claimed.
 
 ## Open
 
