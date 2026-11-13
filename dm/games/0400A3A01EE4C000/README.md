@@ -150,9 +150,22 @@ is installed as Air 60.74 after compile, link and signature checks. Installation
 retained all 26 game directories and the checked ROM sizes. It reports each
 submitting thread and samples each phase,
 without changing shaders, game code, rendering semantics or saves. A
-`DM_NVN_CPUPROF=64` capture is configured and read back; its scene result
-is pending. The four diagnostic tests pass against both host source versions,
-and all 11 documentation tests pass. The gameplay regression harness was
+`DM_NVN_CPUPROF=64` capture confirmed the actual priority-39 graphics
+submission thread in the reports. On the next user-tested scene the player
+reported no stutter and no audio interruptions. The final four 300-frame
+windows ran at 58.8–59.9 fps, frame p50 16.63–16.74 ms and p95
+18.03–20.06 ms; GPU p50 was 11.66–11.86 ms. The last six audio windows
+(12,000 callbacks) had zero underruns, with the PCM queue averaging four
+blocks. The full 18,000-callback capture included 100 underruns (499.4 ms
+zero padding) in the window spanning callbacks 4,001–6,000, which also
+contained a background/foreground transition; that coincidence does not
+establish sole causation. Thermal state still reported 2. This is a successful scene retest, not proof
+of sustained 60 fps across all areas or of one change being the sole cause:
+these runs were not matched for thermal state, route and scene progression.
+The tested 540p plus MetalFX, snapshot and QoS settings are retained; the
+uninstalled O3 candidate is not credited with this result. The four diagnostic
+tests pass against both host source versions, and all 11 documentation tests
+pass. The gameplay regression harness was
 not configured (`REGRESS_ROOT` / `REGRESS_GAMES`); no harness pass is claimed.
 
 The retained Air renderer compile command ends in `-O1`, overriding an earlier
