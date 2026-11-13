@@ -80,6 +80,23 @@ separate verified transfers from outstanding runtime work.
 | GTA V | Uses the Gamebox mode picker with the separate native iPadOS 16 engine ([mode picker](https://github.com/widmonstertony/nxnative/commit/421e5cd)) | Air player confirmed gameplay and access to per-game settings. |
 | Red Alert 2 and Yuri's Revenge | Added native entry and touch controls: tap for left click, drag to select, two-finger tap for right click ([touch](https://github.com/widmonstertony/nxnative/commit/3cd0d50)) | Old iPad testing confirmed map interaction in the original app. The updated signed Gamebox on that device requires the retail-resource restoration before it can be retested. |
 
+### TonTon ports without a title-specific upstream profile
+
+At the audited upstream snapshot, the following titles have no dedicated upstream
+profile. Their TonTon support, local repairs and unresolved defects are recorded
+in the table above and [the per-title audit](docs/tonton-upstream-audit.md#every-installed-title-plus-the-new-fate-request):
+
+- Fate/Samurai Remnant; Fate/EXTELLA LINK; Crisis Core: Final Fantasy VII Reunion.
+- Naruto Shippuden: Ultimate Ninja Storm 4; The Witcher 3; Pokkén Tournament DX.
+- Fate/stay night REMASTERED; Fate/hollow ataraxia REMASTERED; Witch on the Holy Night; Tsukihime -A piece of blue glass moon-.
+- Everyday Today’s MENU for EMIYA Family; Knowledge, or Know Lady; Ladies, Don’t Tempt My Immortality.
+
+Shared engine improvements can still apply to these games. A missing profile is
+not a claim that upstream has no useful optimization, and a TonTon entry does
+not imply that all devices or all scenes pass. GTA V, Red Alert 2 and Yuri’s
+Revenge use separate native engines and are tracked independently of the
+nxnative renderer.
+
 Library changes include [private CloudKit save transport](https://github.com/widmonstertony/nxnative/commit/4fe54cb),
 [independent game engines](https://github.com/widmonstertony/nxnative/commit/2798a14),
 [verified single-file shader images](https://github.com/widmonstertony/nxnative/commit/b51852e),
