@@ -1,0 +1,48 @@
+[
+  {
+    "worktree": "nxnative-tonton-1794a35a",
+    "branch": "refs/heads/tonton-mac-1794a35a",
+    "base": "e30702d96b4e03573d5e380e3ba9df175f1af70d",
+    "patch": "nxnative-tonton-1794a35a.patch",
+    "untracked": [
+      {
+        "path": "scripts/prepare_zip_dump.py",
+        "snapshot": "untracked-6608d091ce926e1ec14f0a54e27183d733acd0f8180c828baa9d8f748a463c02.txt",
+        "sha256": "6608d091ce926e1ec14f0a54e27183d733acd0f8180c828baa9d8f748a463c02"
+      }
+    ]
+  },
+  {
+    "worktree": "nxnative-tonton-c78d7375",
+    "branch": "refs/heads/tonton-mac-c78d7375",
+    "base": "522a4a35a8c0e035c77608ff12d5a9b8a84c2d27",
+    "patch": "nxnative-tonton-c78d7375.patch",
+    "untracked": [
+      {
+        "path": "scripts/prepare_zip_dump.py",
+        "snapshot": "untracked-6608d091ce926e1ec14f0a54e27183d733acd0f8180c828baa9d8f748a463c02.txt",
+        "sha256": "6608d091ce926e1ec14f0a54e27183d733acd0f8180c828baa9d8f748a463c02"
+      }
+    ]
+  },
+  {
+    "worktree": "nxnative-tonton-merged",
+    "branch": "refs/heads/tonton-mac-upstream",
+    "base": "4c2308d48e659cdd15d8f493ad0761d99f9157d1",
+    "patch": "nxnative-tonton-merged.patch",
+    "untracked": []
+  },
+  {
+    "worktree": "nxnative-tonton-next",
+    "branch": "refs/heads/tonton-mac-next",
+    "base": "9861f557636271fadb5ff755656388e912cb032c",
+    "patch": "nxnative-tonton-next.patch",
+    "untracked": [
+      {
+        "path": "scripts/prepare_zip_dump.py",
+        "snapshot": "untracked-6608d091ce926e1ec14f0a54e27183d733acd0f8180c828baa9d8f748a463c02.txt",
+        "sha256": "6608d091ce926e1ec14f0a54e27183d733acd0f8180c828baa9d8f748a463c02"
+      }
+    ]
+  }
+]

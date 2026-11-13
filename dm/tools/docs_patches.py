@@ -68,6 +68,8 @@ def payoff(gap):   # the Gaps order: open gaps, then blocked, kept and unreviewe
 
 # The host's build-keyed rows: (table, the start of the row's label ('' = any), main build ('' = any), entry); the first that fits classifies a row
 HOST_BINDING = [
+    ('', '', 'b151a224a429f9a73abb05c5a3de9468', {'what': 'Classic Witcher 3 REDengine timing observation', 'now': 'build', 'goal': 'engine', 'purpose': 'frame rate',
+     'why': 'The retained timing observer uses fixed sites for this verified main build; other REDengine builds need their own disassembly'}),
     ('k_locks', 'RE Engine', '', {'what': "RE Engine's frame limit at a fixed pointer", 'now': 'build', 'goal': 'engine', 'purpose': 'frame rate',
      'why': 'engine code other RE Engine games ship', 'blocked': 'one RE Engine game here'}),
     ('k_locks', 'NLG', '', {'what': "Next Level Games' frame limiter target at a fixed address", 'now': 'build', 'goal': 'engine', 'purpose': 'frame rate',
@@ -83,6 +85,13 @@ HOST_BINDING = [
      'why': "the game's own display object; the Asian release's function is the global one's 0x13c0 further on, so the rewriter's function match could give the host both releases' "
             "addresses. No PlatinumGames sibling shares the code: none of its sites has an exact match in ASTRAL CHAIN or Bayonetta 1-3 (nso_fnmap, 2026-11-09)",
      'kept': "1.0.3 (v131072) is the newest update of both releases and likely their last: a function match would serve no other build; the rewriter would also need matched rules that write fixups and declare capabilities, a new mechanism (2026-11-09)"}),
+    ('', '', 'd3016fc0c0402dfb70fba6b826ea772f', {'what': 'Use the implicit OpenGL ES 3 context for Storm 4 Scaleform', 'now': 'build', 'goal': 'engine', 'purpose': 'rendering', 'why': 'Scaleform parses the ES version string before querying the texture limit; keep desktop GL callers on their existing context'}),
+    ('k_locks', 'Unity', '', {'what': "Unity's Application.targetFrameRate at a fixed address", 'now': 'build', 'goal': 'engine', 'purpose': 'frame rate', 'why': "an IL2CPP player registers the setter by its icall name, so the field can be found in any Unity game; whether to raise it stays the profile's"}),
+    ('k_nier_dr', '', '', {'what': "NieR's frame interval and dynamic-resolution floor at fixed addresses", 'now': 'build', 'goal': 'game', 'purpose': 'frame rate', 'checked': "both releases' mains, where these rows were found", 'why': "the game's own display object; the Asian release's function is the global one's 0x13c0 further on, so the rewriter's function match could give the host both releases' addresses"}),
+    ('', '', 'aee8f150dda1b5a838806e1a5ea6827a', {'what': 'Arceus exact-build camera, HUD, timing and task diagnostics', 'now': 'build', 'goal': 'game', 'purpose': 'rendering', 'why': 'Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them.', 'blocked': 'No reviewed function matcher for these host accesses.'}),
+    ('', '', 'b1f12fd919eae86ab8a978317677e64b', {'what': 'Z-A exact-build camera, HUD and timing', 'now': 'build', 'goal': 'game', 'purpose': 'rendering', 'why': 'Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them.', 'blocked': 'No reviewed function matcher for these host accesses.'}),
+    ('', '', '709bfd66115298640155fcc4979dba15', {'what': 'Violet exact-build camera and HUD', 'now': 'build', 'goal': 'game', 'purpose': 'rendering', 'why': 'Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them.', 'blocked': 'No reviewed function matcher for these host accesses.'}),
+    ('', '', '799d1061182c1302e08e706b84ce76e5', {'what': 'Criterion validated simulation and frame-rate writes', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate', 'why': 'Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them.', 'blocked': 'No reviewed function matcher for these host accesses.'}),
 ]
 # Translator rules keyed by one shader's code hash: (the start of the rule's comment, entry)
 SHADER_BINDING = [

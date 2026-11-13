@@ -2650,3 +2650,129 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** every Metal compile of translated shaders passes `-fwrapv`: `dmsh_build.py` (Mac), `ios_metal.py` (iOS), `vk_shaders.py` and `gl_shaders.py`. The flag also drops `inbounds` from pointer arithmetic, because Metal's clang has no separate `-fwrapv-pointer`. It also makes the compiler keep loop bounds that may wrap (an extra `smax` before a loop). In a sample of 1,000 of Ocarina's shaders, compiled to LLVM IR on an older chain, 12 came out identical, 746 differed only in their `nsw` / `nuw` / `inbounds` flags, and 242 had other changes. None of it shows on the GPU. On Ocarina's `kokiri-deck` route ([`bench.tsv`](../../dm/games/0400486024DEC000/bench.tsv)) on an M6 (12-core GPU, 2026-11-09), both sides built from the same main with their own libraries and warmed pipeline archives, the medians of three runs a side were 9.94 / 10.51 ms GPU p50 / p95 and 59.4 fps without the flag, and 9.91 / 10.43 ms and 59.6 fps with it. Runs of one side differ by about 0.1 ms.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game), found by nawangwe ([PR #1844](https://github.com/seedds/nxnative/pull/1844)) on an M4 Pro.
 - **Check:** `test_dmsh_wrapv.py` compiles the sign extension, an overflow test (`x + 0x7fffffff < x`) and a doubling and halving with `dmsh_build.py`'s command and checks the results on the Mac's GPU over 65,536 inputs. It also checks that the iPhone command keeps the shift and that all four tools pass the flag. Without `-fwrapv`, the GPU check and the iPhone check both fail.
+
+### REDengine compressed shader caches are missed
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** The Witcher 3 reaches its frame loop but shows black or solid magenta blocks, with runtime shader keys absent from the offline map. The initial split found 563 loose programs, mostly ancillary shaders.
+- **Cause:** the main caches are compressed containers. `staticshadernx.cache` uses an FZLC table of zstd chunks; a GLSLC output may cross chunk boundaries. `shadernx.cache` stores engine-key/codec/raw-size/packed-size records followed by lookup data. Scanning either as an ordinary file sees no GLSLC outputs inside its compressed payloads.
+- **Fix:** `redshader.py` validates FZLC count, reserved table, contiguous bounded ranges and exact frame lengths, then joins chunks before shader parsing. Hash records require the supported codec, bounded sizes and exact zstd-frame consumption. The existing GLSLC parser still validates stages, control/code lengths and identities. Resplit the complete profile, rebuild matching libraries and stamps, and rebuild the host; never rename old caches to make a new table appear compatible.
+- **Found on:** the external provisional US v4.04b profile, build `b151a224a429f9a73abb05c5a3de9468`, on M2 iPad with iOS 16.1-compatible host .4. All eleven missing keys in the owner's current run match programs in the decoded static cache exactly. The static cache yields 619 stages; the main cache yields 8,186 GLSLC records. These are extraction results; corrected gameplay remains unverified until the rebuilt package is installed and tested by its owner.
+- **Checks:** `test_redshader.py` uses synthetic frames and a synthetic GLSLC output spanning chunks, exercises the real file scanner, hash-record lookup tails, bad codecs, lengths, ranges and reserved bytes. Existing size-prefixed-frame and Unity GLSLC tests remain unchanged.
+
+
+### Captured NVN stages missing from the offline map
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** a game continues submitting frames and audio, but the scene is black and the log reports shader keys missing from the map.
+- **Cause:** a completed static split does not prove that every program constructed by the running game was discovered. Matching only a similar control section or instruction stream would select the wrong program.
+- **Fix:** on iOS, `DM_NVN_SHDUMP=auto` resolves to the app's own `Documents/shader-dumps` directory. `dm/ios/tools/pack_shader_dumps.py` validates complete control/code pairs, their lengths, graphics stage and exact runtime hash before producing offline package records and map rows. Each runtime key gets a distinct package filename and index zero, so a later capture batch cannot overwrite earlier program records or change their indices. Import these into the external provisional profile, rebuild its complete matching shader set/stamp and rebuild the host. No shader data belongs in Git, and this introduces no runtime translator.
+- **Switch 2 diagnostic:** legacy Metal now reads the code length from the NVN2 control header and dumps its key bytes alongside the code, just like the modern renderer. The old Switch 1 offset caused control-only captures of missing Pokopia shaders on M2. This enables offline matching; the original shader packer path above still requires Switch 1 graphics captures.
+- **Found on:** [Pokken Tournament DX](../../dm/games/0100B3F000BE2000/README.md): four real M2 captures absent from the original map; the complete set, including these captures, translates successfully. Remaining runtime coverage and gameplay stay open.
+- **Checks:** `test_ios_shader_dumps.py` covers identity, byte preservation, lengths, stage rejection, refusal to overwrite an existing package, and stable package identities across separate capture batches.
+
+
+### Geometry kernel ViewportIndex on viewport-zero replay
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** a translated geometry kernel fails Metal compilation with `invalid return type 'main0_out' for kernel function`. Its only returned field is `gl_ViewportIndex`; compute kernels cannot return a stage-output structure.
+- **Cause:** the fixed-input geometry translator keeps the original geometry shader's `ViewportIndex` output after lowering the stage to compute. The output is not part of the geometry scratch ABI, so SPIRV-Cross leaves it in `main0_out`. Replay currently binds viewport zero only, as for geometry-reader viewport masks above.
+- **Fix:** `dmsh_geometry.kernel_viewport_zero` changes this exact kernel shape to `void`, tracks the index in a local integer and writes primitive-restart instead of each emitted raw index while the selected viewport is not zero. Viewport-zero geometry and restart padding remain byte-for-byte equivalent. A returned structure with any other field, an unknown assignment or an unrecognized index store fails the build rather than losing an output silently. Rebuild shaders and the host for the new chain.
+- **Found on:** a provisional Grand Theft Auto V Switch profile (main build `6e3e9b3af5746e74b615bd981080c927`): 17 of its 19 geometry shaders write `ViewportIndex`, including cascade shadows. The title is not yet a supported game.
+- **Check:** `test_dmsh_geometry.py` checks unchanged ordinary kernels, viewport-zero index gating, rejection of another returned field and Mac/iOS Metal compilation. All 19 real geometry shaders build for iOS 16.1 (113 libraries compiled and 20 reused across their topology variants and readers); a representative six-stage sample then builds 6/6. This establishes compilation and viewport-zero culling, not GTA V gameplay or multi-viewport rendering.
+
+
+### Metal frame scratch allocation under memory pressure
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** `FATAL cannot allocate 30676992 bytes of frame scratch` during a geometry draw, followed by a host abort.
+- **Cause:** Metal returned no shared buffer for the capture. Geometry capture also advanced the ordinary argument arena, so a burst could leave the next small allocation asking for a fresh 4 MiB block. Completed arena wrappers could stay autoreleased until the submission ended, retaining their buffers after cache eviction.
+- **Fix:** release the underlying buffers of completed arenas immediately and retry the allocation. The pressure-prone iOS game keeps an ordinary argument arena separate from geometry scratch. After an allocation failure, reclaim a preceding fence with a bounded wait and let small requests retry at page size. If a geometry capture still cannot allocate, fall back from batched replay and try the existing primitive-preserving split for supported direct draws. When even that fails, report the affected draw rather than aborting the process. Unrelated required allocations retain their existing failure behavior.
+- **Found on:** Crisis Core on iPhone Air after roughly ten minutes of gameplay. Its iOS release caps the idle arena cache at 96 MiB and opts into a 384 MiB Unreal texture streaming ceiling (`DM_UE_TEXTURE_POOL_MAX`) as extra headroom. No shader chain change. Replay of the original gameplay segment is pending.
+
+
+### Install a large iOS NVN shader library as one file
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** Installing a title with tens of thousands of loose compiled shader files can stall during package extraction.
+- **Cause:** The installer must create each reflection and Metal library file independently. The host already has an offline compilation result for each one.
+- **Fix:** Set `DM_PACK_SHADER_IMAGE=1` on an IPA build to package those outputs in `msl/b-<chain>.img`. The packer checks the index and hashes each file after writing; it retains the loose originals. The host checks the image's profile stamp against the loose stamp and maps only the needed shader range. Readiness tables and auxiliary variant directories stay in their normal locations. A loose shader override takes precedence over the corresponding packed family.
+- **Found on:** A Pokémon Violet transfer fixture reproduced the many-file layout. Both iOS renderers compile with the image reader, and a synthetic packed shader executed on the Mac GPU; a full iOS install remains to be checked.
+
+
+### Mixed driver texture and raw guest sampler IDs
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** Witcher 3 has all shader keys but a black movie/composite, with `B binding fp_t_cb720898_2000005ASmplr has no resolved slot number`.
+
+The Witcher 3 can resolve all runtime shader keys and still draw a black movie
+or composite. Route-B names such as `fp_t_cb720898_2000005ASmplr` encode a
+`SeparateSamplerId` (type 2): the texture comes from driver bank c2, whereas the
+unshifted sampler ID comes from c10 word 0. The older reflection builder records
+that texture as slot 128 but leaves its sampler slot null; rejecting the whole
+fragment program removes the blit, depth, and final-color programs. Treating the
+raw value as a combined handle and shifting it by 20 instead selects sampler 0.
+
+The host recovers this older reflection layout only when the name has type 2,
+the second bank is a guest uniform bank c3 through c16, the first offset names a
+valid driver texture slot, and a matching resolved texture binding is present.
+It reads the sampler word from guest uniform slot `bank - 3`, masks its low 12
+bits, and applies the bound descriptor pool base and existing lifetime handling.
+The legacy replay now retains sampler-pool changes instead of ignoring their
+commands; combined handles read from guest uniforms use that base too. Invalid or other
+unresolved layouts still fail. The modern renderer and legacy renderer both
+understand the flag; normal combined handles keep their upper-12-bit semantics.
+This is host interpretation of existing metadata, without changing shader code,
+reflection files, or the shader chain identifier.
+
+`t_refl` covers both raw offsets, paired texture validation, invalid banks,
+other handle types and existing combined handles. `t_legacy_pipeline` exercises
+production reflection, uniform reads, sampler registration, argument encoding
+and four GPU draws: changing the same guest word selects nearest, linear, then
+nearest filtering, followed by a draw using a different descriptor pool. The real
+recorder test also switches between two pools in both directions. These host tests establish the binding fix, not a device
+playability result.
+
+
+## Mixed driver textures and guest sampler IDs
+
+**Symptom:** route-B reflection rejects a type-2 sampler with an unresolved slot;
+compute dispatch then has no mapped program. A sampled texture may also be bound
+to an unrelated combined slot.
+
+**Cause:** a type-2 handle stores the texture word in driver c2 and a raw sampler
+ID in a separate guest constant bank. `decode_tex` considered both offsets as
+possible texture words. When the sampler offset happened to name a combined
+texture slot, it won over the actual separate texture. The sampler's bank was
+not represented in generated reflection.
+
+**Fix:** only the first offset selects a texture for type 2. Reflect the second
+bank/offset as `samp_ubo` with `samp_raw=true`; replay masks the unshifted 12-bit
+sampler ID. Reject unresolved/unsupported encodings instead of assigning slot 0.
+The legacy renderer also loads packaged unsigned fragment entries and selects
+one only when all written attachments are unsigned integer formats. Package
+that alternate entry for every colour writer: sampled float bits can reach an
+integer attachment too, so source-expression heuristics are insufficient.
+
+**Found on:** Witcher 3 US 4.04a/b on M2/iPadOS 16.1. The current log's compute
+handle used guest uniform slot 4, byte 40; its texture was separate slot 128, not
+combined slot 1. An R16Uint pass separately rejected a float fragment output.
+Synthetic production-parser, production-descriptor and GPU readback tests pass;
+matching-chain full resources and device picture verification remain required.
+
+
+### Offline non-point vertex variants on iOS Metal 3
+
+*Retained classic-backend finding; modern implementations may differ.*
+The legacy Mario Kart World renderer can load selected non-point vertex
+variants from `nonpoint-metal3-v1` under the game's MSL resource directory.
+`dm/ios/tools/build_nonpoint_metal3.py` builds keys from the on-device
+compile log against the exact companion source manifest and base libraries.
+The loader checks the chain, source and library hashes, and argument buffer
+length before using the variant. Missing or incompatible variants keep using
+the existing compiler path. The original point and transform-feedback entry
+stays in use for those draws.
+
+On M2 with iPadOS 16.1 the legacy renderer loaded the packaged variants.
+The title sequence still showed long frames with new pipeline compilation
+and texture uploads; a cache hit does not establish gameplay frame rate.

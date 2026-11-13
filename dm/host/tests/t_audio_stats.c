@@ -82,7 +82,6 @@ int main(void) {
     report_done = dispatch_semaphore_create(0); released_event = dispatch_semaphore_create(0);
     uint32_t out[16] = {0}; uint8_t prm[8] = {0}, ev[64] = {0};
     CHECK(!h_au_OpenDef(out, ev, prm), "open output with a guest release event");
-    atomic_store(&ao(out)->consumer, BK_AU); // The fixture drives the AU callback, not the null backend.
     atomic_store(&ao(out)->state, STATE_STARTED); atomic_store(&block_report, 1);
     CHECK(render(out, 2000, 1), "PCM and release order at first statistics boundary");
     audio_stats health = ao(out)->st_report;
@@ -113,7 +112,6 @@ int main(void) {
     // The watchdog's local report may outlive the output; Close owns any newer pending snapshot.
     atomic_store(&signals, 0);
     CHECK(!h_au_OpenDef(out, ev, prm), "open another output with a guest event");
-    atomic_store(&ao(out)->consumer, BK_AU); // The fixture drives the AU callback, not the null backend.
     atomic_store(&ao(out)->state, STATE_STARTED); atomic_store(&block_report, 1);
     CHECK(render(out, 2000, 0), "publish a close-case report");
     CHECK(!pthread_create(&logger, NULL, drain_stats, NULL) && wait_for(report_entered), "hold a copied watchdog report");
@@ -129,7 +127,6 @@ int main(void) {
     // boundary. Bulk PCM stress can coalesce releases and miss a stranded wake.
     atomic_store(&signals, 0);
     CHECK(!h_au_OpenDef(out, ev, prm), "open output for release-handoff stress");
-    atomic_store(&ao(out)->consumer, BK_AU); // The fixture drives the AU callback, not the null backend.
     atomic_store(&ao(out)->state, STATE_STARTED);
     CHECK(render(out, 100000, 1), "every individual release handoff makes progress");
     CHECK(atomic_load(&signals) == 100000, "all 100000 event-driven buffers are released");

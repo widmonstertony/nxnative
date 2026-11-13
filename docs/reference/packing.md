@@ -499,3 +499,31 @@
 - **Cause:** the base game's HtmlDocument NCA can be sparse too (16 KB, beside the sparse Program NCA). `--html` reads the update's HtmlDocument NCAs, each over a base one when it is a patch, and then every base HtmlDocument NCA on its own; a sparse one read alone fails the hash check while its tables open.
 - **Fix:** `dm/tools/nx_extract/Program.cs` reads no sparse base HtmlDocument NCA on its own (`a sparse HtmlDocument NCA of the base game (… bytes): read only through the update's patch, not alone`), as Horizon mounts it only through its patch.
 - **Found on:** [Minecraft Dungeons II](../../dm/games/0100A7C01B792000/README.md), base v0 with update v131072: the update's patch (`accessible-urls`) and its full legal information NCA are read, the base's legal information NCA too.
+
+### An exFAT-built IPA restores resource forks and cannot be signed
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** after extracting an IPA with `ditto`, `codesign` rejects the app with `resource fork, Finder information, or similar detritus not allowed`.
+- **Cause:** exFAT keeps macOS extended metadata in AppleDouble `._` sidecars. The packer included these files, and extraction restored their resource forks onto the app's files.
+- **Fix:** `pack_ipa.py` excludes regular `._` files only when their first eight bytes identify an AppleDouble version 2 header, including explicitly mapped files. Ordinary game files with a `._` prefix or an unrelated filename containing those bytes remain packed. For an already extracted disposable app stage, remove its extended attributes before signing; do not modify source game files or device saves. Regression tests cover nested metadata, explicit mappings, retained game content and repeat packs.
+- **Found on:** the provisional Pokémon Legends: Arceus package, which contained 30,304 AppleDouble entries on an exFAT USB SSD; signing and device gameplay remain separate validation steps.
+
+
+### Updating the iOS library shell invalidates a game's shader chain
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** after a shell update, a cartridge that ships its own engine appears incompatible even though the installed game framework and shader library have not changed.
+- **Cause:** a shared-host cartridge (`FR`) uses the shell's engine, so its manifest and shader resources must match that engine. An independent cartridge (`FH`) carries its own engine and can require a different chain.
+- **Fix:** select the resource chain from the signed manifest only for `tonton-independent-host-v1`. The shell validates the title, module tables and minimum OS, then checks the entry points and the engine's declared chain against that same signed image before starting it. Old shared-host cartridges keep their existing path. This avoids rebuilding a compatible independent cartridge when the shell alone is updated. A change to the game's own engine or shader contract still needs a matching build. Code lives in the signed app bundle; game data and saves remain separate.
+- **Check:** the iOS framework tests check both manifest routes, symbol ownership and rejection of a mismatched chain. The library starts one game engine per app process; the tests do not imply that a running game can be unloaded to start another in the same process.
+
+## RomFS images
+
+
+### AppleDouble files are mistaken for game packages
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** package discovery reports duplicate updates or tries to decompress a `._` file from a macOS-managed external drive.
+- **Cause:** AppleDouble metadata preserves the original package extension and can also contain its title/version pattern. Filename-only discovery treats it as a second game package.
+- **Fix:** before package classification, skip a `._` name only when its first eight bytes are the AppleDouble version 2 signature. Real packages whose names start with `._` remain eligible; game packages and saves are not deleted.
+- **Found on:** [NSP/NSZ discovery fixtures](../../dm/tools/tests/test_nsp_nsz.py), including an unversioned update with metadata sidecars and a real `._`-prefixed add-on package.

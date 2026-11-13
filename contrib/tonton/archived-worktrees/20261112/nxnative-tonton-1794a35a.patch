@@ -1,0 +1,552 @@
+diff --git a/dm/ios/Sources/LauncherSettings.swift b/dm/ios/Sources/LauncherSettings.swift
+index aec4414c..4fe7e6eb 100644
+--- a/dm/ios/Sources/LauncherSettings.swift
++++ b/dm/ios/Sources/LauncherSettings.swift
+@@ -43,10 +43,10 @@ final class LauncherModel: ObservableObject {
+ 
+     private let defaults: UserDefaults
+ 
+-    init(_ settings: [Setting], defaults: UserDefaults = .standard) {
++    init(_ settings: [Setting], defaults: UserDefaults = .standard,
++         environment env: [String: String] = ProcessInfo.processInfo.environment) {
+         self.defaults = defaults
+         self.settings = settings
+-        let env = ProcessInfo.processInfo.environment
+         fromLaunch = Set((env["DM_ENV_LAUNCH_KEYS"] ?? "").split(separator: " ").map(String.init))
+         fixed = fromLaunch.union((env["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init))
+         ignoreSaved = env["DM_SAVED_CHOICES"] == "0"
+@@ -107,6 +107,13 @@ final class LauncherModel: ObservableObject {
+         if !ignoreSaved { if s.isDefault(v) { defaults.removeObject(forKey: "launcher." + s.env) } else { defaults.set(v, forKey: "launcher." + s.env) } }
+     }
+ 
++    func saveChoices() {
++        for s in settings where !fixed.contains(s.env) {
++            let value = values[s.env] ?? s.def
++            if s.accepts(value) { store(s, value) }
++        }
++    }
++
+     // A choice made while the game runs (the iOS in-game menu, GameMenu.swift): saved as Play saves it, so the settings screen shows it at the next start, and put in the environment.
+     // A value an env file or the launch fixed stays
+     func choose(_ s: Setting, _ v: String) {
+diff --git a/dm/mac/Gamebox.swift b/dm/mac/Gamebox.swift
+index 94d6d033..9bee6724 100644
+--- a/dm/mac/Gamebox.swift
++++ b/dm/mac/Gamebox.swift
+@@ -43,6 +43,54 @@ private func gameLibrary() -> [Game] {
+     return planned + installed.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+ }
+ 
++private struct GameSettings: Identifiable {
++    let game: Game
++    let app: URL
++    let version: String
++    let defaults: UserDefaults
++    let model: LauncherModel
++    let environment: [String: String]
++    var id: String { game.id }
++
++    init?(_ game: Game) {
++        guard let app = game.app, let bundle = Bundle(url: app),
++              let domain = bundle.bundleIdentifier, let defaults = UserDefaults(suiteName: domain),
++              let dm = bundle.resourceURL?.appendingPathComponent("dm"),
++              let data = try? Data(contentsOf: dm.appendingPathComponent("launcher.json")),
++              let file = try? JSONDecoder().decode(SettingsFile.self, from: data),
++              !file.settings.isEmpty else { return nil }
++        self.game = game
++        self.app = app
++        self.version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
++        self.defaults = defaults
++        let support = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent("Library/Application Support/nxnative")
++            .appendingPathComponent(game.id)
++        let env = Self.readEnvironment([support, dm].map { $0.appendingPathComponent("env.txt") })
++        self.environment = env
++        self.model = LauncherModel(file.settings, defaults: defaults, environment: env)
++    }
++
++    // Match launcher.c: the user's file takes precedence and the first definition wins.
++    private static func readEnvironment(_ urls: [URL]) -> [String: String] {
++        let whitespace = CharacterSet(charactersIn: " \t\r")
++        var result: [String: String] = [:]
++        for url in urls {
++            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
++            for rawLine in text.components(separatedBy: "\n") {
++                let line = rawLine.trimmingCharacters(in: whitespace)
++                guard !line.hasPrefix("#"), let equals = line.firstIndex(of: "=") else { continue }
++                let key = line[..<equals].trimmingCharacters(in: whitespace)
++                guard !key.isEmpty, result[key] == nil else { continue }
++                result[key] = String(line[line.index(after: equals)...])
++            }
++        }
++        result["DM_ENV_FILE_KEYS"] = result.keys.sorted().joined(separator: " ")
++        result["DM_ENV_LAUNCH_KEYS"] = ""
++        return result
++    }
++}
++
+ @main
+ struct TonTonGamebox: App {
+     var body: some Scene {
+@@ -57,6 +105,7 @@ struct TonTonGamebox: App {
+ private struct GameboxLibrary: View {
+     @State private var games: [Game] = []
+     @State private var launchError: String?
++    @State private var settings: GameSettings?
+     @Environment(\.scenePhase) private var scenePhase
+ 
+     var body: some View {
+@@ -91,10 +140,26 @@ private struct GameboxLibrary: View {
+                 } else {
+                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 174), spacing: 16)], alignment: .leading, spacing: 22) {
+                         ForEach(games) { game in
+-                            Button { open(game) } label: { GameCard(game: game) }
+-                                .buttonStyle(.plain)
+-                                .disabled(game.app == nil)
+-                                .help(game.app == nil ? "待构建" : "启动 \(game.name)")
++                            VStack(alignment: .leading, spacing: 6) {
++                                Button { open(game) } label: { GameCard(game: game) }
++                                    .buttonStyle(.plain)
++                                    .disabled(game.app == nil)
++                                    .help(game.app == nil ? "待构建" : "启动 \(game.name)")
++                                if let app = game.app {
++                                    HStack {
++                                        Button("游戏设置", systemImage: "gearshape") { showSettings(game) }
++                                            .help("打开 \(game.name) 的启动设置")
++                                        Menu {
++                                            Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([app]) }
++                                            Button("查看运行日志") { showLog(game) }
++                                        } label: {
++                                            Image(systemName: "ellipsis.circle")
++                                        }
++                                        .fixedSize()
++                                        .accessibilityLabel("更多游戏操作")
++                                    }
++                                }
++                            }
+                         }
+                     }
+                 }
+@@ -108,16 +173,43 @@ private struct GameboxLibrary: View {
+         }
+         .onAppear { games = gameLibrary() }
+         .onChange(of: scenePhase) { _, phase in if phase == .active { games = gameLibrary() } }
+-        .alert("无法启动游戏", isPresented: Binding(get: { launchError != nil }, set: { if !$0 { launchError = nil } })) {
++        .sheet(item: $settings) { state in
++            LauncherView(m: state.model, name: state.game.name, version: state.version,
++                         icon: NSWorkspace.shared.icon(forFile: state.app.path), cancelTitle: "取消",
++                         environment: state.environment, done: { play in
++                settings = nil
++                if play {
++                    state.model.saveChoices()
++                    open(state.game, skipSettings: true)
++                }
++            }, fit: { _ in })
++            .defaultAppStorage(state.defaults)
++            .frame(width: 560, height: 620)
++        }
++        .alert("游戏匣", isPresented: Binding(get: { launchError != nil }, set: { if !$0 { launchError = nil } })) {
+             Button("好", role: .cancel) { launchError = nil }
+         } message: {
+             Text(launchError ?? "")
+         }
+     }
+ 
+-    private func open(_ game: Game) {
++    private func showSettings(_ game: Game) {
++        if let state = GameSettings(game) { settings = state }
++        else { launchError = "这款游戏的应用没有可读取的启动设置。你仍可直接启动游戏。" }
++    }
++
++    private func showLog(_ game: Game) {
++        let url = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent("Library/Logs/nxnative")
++            .appendingPathComponent(game.id + ".log")
++        if !NSWorkspace.shared.open(url) { launchError = "还没有可打开的运行日志。" }
++    }
++
++    private func open(_ game: Game, skipSettings: Bool = false) {
+         guard let app = game.app else { return }
+-        NSWorkspace.shared.openApplication(at: app, configuration: .init()) { _, error in
++        let configuration = NSWorkspace.OpenConfiguration()
++        if skipSettings { configuration.arguments = ["--no-launcher"] }
++        NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, error in
+             if let error { Task { @MainActor in launchError = error.localizedDescription } }
+         }
+     }
+diff --git a/dm/mac/Launcher.swift b/dm/mac/Launcher.swift
+index 4a96434e..139c775b 100644
+--- a/dm/mac/Launcher.swift
++++ b/dm/mac/Launcher.swift
+@@ -14,23 +14,43 @@ struct LauncherView: View {
+     @ObservedObject var m: LauncherModel
+     let done: (Bool) -> Void
+     let fit: (CGFloat) -> Void
++    let name: String
++    let version: String
++    let icon: NSImage
++    let cancelTitle: LocalizedStringKey
++    let environment: [String: String]
+     @AppStorage("window.show") private var show = true
+     @AppStorage("window.advanced") private var advanced = false
+ 
++    init(m: LauncherModel, name: String = info("CFBundleName") ?? "Game",
++         version: String = info("CFBundleShortVersionString") ?? "1.0",
++         icon: NSImage = NSApp.applicationIconImage, cancelTitle: LocalizedStringKey = "Quit",
++         environment: [String: String] = ProcessInfo.processInfo.environment,
++         done: @escaping (Bool) -> Void, fit: @escaping (CGFloat) -> Void) {
++        self.m = m
++        self.name = name
++        self.version = version
++        self.icon = icon
++        self.cancelTitle = cancelTitle
++        self.environment = environment
++        self.done = done
++        self.fit = fit
++    }
++
+     var body: some View {
+         VStack(spacing: 0) {
+             HStack(spacing: 12) {
+-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
++                Image(nsImage: icon).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
+                 VStack(alignment: .leading, spacing: 2) {
+-                    Text(info("CFBundleName") ?? "Game").font(.title2.weight(.semibold))
+-                    Text("Version \(info("CFBundleShortVersionString") ?? "1.0")").foregroundStyle(.secondary)
++                    Text(name).font(.title2.weight(.semibold))
++                    Text("Version \(version)").foregroundStyle(.secondary)
+                 }
+                 Spacer()
+             }
+             .padding([.horizontal, .top], 20)
+             Form {
+                 settingSections(basic: true)
+-                CloudSavesSection()
++                CloudSavesSection(environment: environment)
+                 Section {
+                     DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
+                 }
+@@ -53,7 +73,7 @@ struct LauncherView: View {
+             HStack {
+                 Toggle("Show this window at launch", isOn: $show).toggleStyle(.checkbox)
+                 Spacer()
+-                Button("Quit") { done(false) }
++                Button(cancelTitle) { done(false) }.keyboardShortcut(.cancelAction)
+                 Button("Play") { done(true) }.keyboardShortcut(.defaultAction)
+             }
+             .padding(20)
+@@ -77,11 +97,12 @@ struct LauncherView: View {
+ /// preferences as cloudSaves.folder, which launcher.c puts into DM_SAVE_SYNC before the host starts; a DM_SAVE_SYNC an env file or the launch environment set wins, and is shown here.
+ struct CloudSavesSection: View {
+     @AppStorage("cloudSaves.folder") private var folder = ""
+-    private let fixed: String? = {
+-        let env = ProcessInfo.processInfo.environment
++    private let fixed: String?
++
++    init(environment env: [String: String]) {
+         let keys = ((env["DM_ENV_FILE_KEYS"] ?? "") + " " + (env["DM_ENV_LAUNCH_KEYS"] ?? "")).split(separator: " ")
+-        return keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
+-    }()
++        fixed = keys.contains("DM_SAVE_SYNC") || env["DM_SAVE_SYNC"] != nil ? env["DM_SAVE_SYNC"] : nil
++    }
+ 
+     var body: some View {
+         Section {
+diff --git a/dm/tools/shader_cache.py b/dm/tools/shader_cache.py
+index 77aa67f8..419e2662 100644
+--- a/dm/tools/shader_cache.py
++++ b/dm/tools/shader_cache.py
+@@ -6,6 +6,7 @@
+ # one file it would be two copies, so bytes are stored by their hash. A file removed from the cache gives its pages back at the next prune (incremental vacuum), with no copy of the file.
+ # It only saves work: a damaged file costs the work it held and is made anew, and a full drive is one [RED] line. An entry is written and read whole, so its file is never seen half written.
+ # Names, as in the folder this replaces: metallib/<target>/<digest>[_x].metallib (dmsh_mtlcache.py), shader/<digest>/<mac|ios>/<output>, index/<key>.json, variant/<digest>/<file> (dmsh_build.py).
++# A separate *.zstd.db cache stores a one-byte codec before each blob. Hashes still name the original bytes.
+ # Not part of the translation chain: it decides no output (dmsh_chain.py), like dmsh_mtlcache.py.
+ import contextlib, hashlib, json, os, re, shutil, sqlite3, tarfile, threading, time
+ 
+@@ -21,17 +22,26 @@ class Store:
+         self.path, self.say = os.fspath(path), say
+         self.lock = threading.RLock()   # one connection, for dmsh_build.py's threads: a read or a write of an entry takes microseconds next to a compile
+         self.full = False
++        self.zstd = None
+         self._open()
+ 
+     def _open(self):
+         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+         self.db = sqlite3.connect(self.path, timeout=WAIT, check_same_thread=False, isolation_level=None)
+         try:
+-            self.db.execute('PRAGMA page_size=16384'); self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')   # both only before the first table
++            compact = self.path.endswith('.zstd.db')
++            self.db.execute(f'PRAGMA page_size={4096 if compact else 16384}'); self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')   # both only before the first table
+             # WAL: a reader in another process does not wait for a writer, and a commit needs no fsync. A drive that cannot share its memory file stays on the rollback journal, unsynced: a stop costs the cache at worst
+             if self.db.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal': self.db.execute('PRAGMA synchronous=NORMAL')
+             else: self.db.execute('PRAGMA synchronous=OFF')
+             for s in SCHEMA: self.db.execute(s)
++            if compact:
++                first = self.db.execute('SELECT hash, data FROM blob ORDER BY id LIMIT 1').fetchone()
++                # Older tools let DMSH_CAS point to any name. Keep an existing raw cache under that name readable.
++                if not first or hashlib.blake2b(first[1], digest_size=16).digest() != first[0]:
++                    try: from compression import zstd
++                    except ImportError: from backports import zstd
++                    self.zstd = zstd
+         except sqlite3.DatabaseError as e:
+             if not self._damage(e): raise
+ 
+@@ -54,8 +64,21 @@ class Store:
+     def has(self, name): return bool(self._run('SELECT 1 FROM entry WHERE name=?', name))
+ 
+     def get(self, name):   # an entry's bytes, None when there is none
+-        rows = self._run('SELECT b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name)
+-        return bytes(rows[0][0]) if rows else None
++        rows = self._run('SELECT b.id, b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name)
++        if not rows: return None
++        blob, data = rows[0]
++        if self.zstd is None: return bytes(data)
++        if data[:1] == b'\0': return data[1:]
++        try:
++            if data[:1] == b'\1': return self.zstd.decompress(data[1:])
++        except self.zstd.ZstdError:
++            pass
++        self.say(f'[RED] invalid compressed shader cache blob for {name}; rebuilding it')
++        with self.batch():
++            if self._run('SELECT 1 FROM blob WHERE id=? AND data=?', blob, data):
++                self._run('DELETE FROM entry WHERE blob=?', blob)
++                self._run('DELETE FROM blob WHERE id=?', blob)
++        return None
+ 
+     def names(self, prefix):   # the set of names starting with prefix
+         return {r[0] for r in self._run('SELECT name FROM entry WHERE name>=? AND name<?', prefix, prefix + '\U0010ffff')}
+@@ -67,7 +90,13 @@ class Store:
+             try:
+                 with self.batch():
+                     row = self.db.execute('SELECT id FROM blob WHERE hash=?', (digest,)).fetchone()
+-                    blob = row[0] if row else self.db.execute('INSERT INTO blob(hash, data) VALUES(?, ?)', (digest, data)).lastrowid
++                    if row:
++                        blob = row[0]
++                    else:
++                        if self.zstd is not None:
++                            packed = self.zstd.compress(data, level=1)
++                            data = b'\1' + packed if len(packed) < len(data) else b'\0' + data
++                        blob = self.db.execute('INSERT INTO blob(hash, data) VALUES(?, ?)', (digest, data)).lastrowid
+                     self.db.execute('INSERT OR REPLACE INTO entry(name, blob, mtime) VALUES(?, ?, ?)', (name, blob, time.time() if when is None else when))
+             except sqlite3.OperationalError as e:
+                 if any(w in str(e) for w in _DAMAGED): self._damage(e)
+diff --git a/dm/tools/tests/test_nsp_dump.py b/dm/tools/tests/test_nsp_dump.py
+index 2ca5f845..f74b9f1a 100644
+--- a/dm/tools/tests/test_nsp_dump.py
++++ b/dm/tools/tests/test_nsp_dump.py
+@@ -108,6 +108,24 @@ class Scan(Base):
+ class Pack(Base):
+     def out(self): return self.dump / 'out'
+ 
++    def test_prepacked_update_and_dlc_are_imported_without_repacking(self):
++        src = self.dump / f'updates/{VER}'
++        _, _, dlc = pack_dump.scan(self.dump)
++        for folder in [src / 'romfs', *dlc.values()]:
++            romfs_image.pack(folder, folder.with_suffix('.img'))
++            shutil.rmtree(folder)
++        (src / 'control.nacp').write_bytes(b'extracted control data')
++        _, _, dlc = pack_dump.scan(self.dump)
++        pack_dump.pack_version(src, TID, self.out(), say=lambda s: None)
++        pack_dump.pack_dlc(TID, dlc, self.out() / 'aoc', say=lambda s: None)
++        image = self.out() / 'RomFS.img'
++        self.assertEqual(image.read_bytes(), (src / 'romfs.img').read_bytes())
++        self.assertIn('dlcfile', romfs_image.read_index(self.out() / 'aoc/1.img'))
++        self.assertEqual((self.out() / 'control.nacp').read_bytes(), b'extracted control data')
++        inode = image.stat().st_ino
++        pack_dump.pack_version(src, TID, self.out(), say=lambda s: None)
++        self.assertEqual(image.stat().st_ino, inode)
++
+     def test_update_packed_on_its_own(self):
+         pack_dump.pack_version(self.dump / f'updates/{VER}', TID, self.out(), say=lambda s: None)
+         self.assertEqual((self.out() / 'ExeFS/main').read_bytes(), b'new code')
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index 2df13467..26a13d4a 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -726,24 +726,31 @@ def code_modules(fam, k, dst):   # the ExeFS of a NUP package or a dump's versio
+ 
+ def package_size(fam, k):   # (name, bytes) of a package for the survey report: an NSP file, a NUP package (its files' size), or a dump's folder (its code and RomFS: the folder of a flat dump also holds the build)
+     if fam.get('nup'): return k.name, fam['nup'].tree_bytes(k.root)
+-    if fam.get('dump'): return k.name, sum(tree_size(d)[1] for d in (k / 'exefs', k / 'romfs')) or tree_size(k)[1]
++    if fam.get('dump'): return k.name, tree_size(k / 'exefs')[1] + dump_romfs_size(k)
+     return k.name, k.stat().st_size
+ 
+ 
+ MANIFEST_HEAD = '# path\tbytes\tfirst 32 bytes (hex)\n'   # nx_extract --manifest's header
+ 
+ 
++def dump_romfs_size(src):
++    rom = pack_dump.romfs_of(src)
++    return (rom.stat().st_size if rom.is_file() else tree_size(rom)[1]) if rom is not None else 0
++
++
+ def survey_dump(src, out):
+-    """A dump's version folder as survey_nup leaves a NUP package's, with no control data (a dump has none). Returns the files listed"""
++    """A dump's version folder as survey_nup leaves a NUP package's. Returns the files listed"""
+     if not pack_dump.is_version(src): raise BuildError(f'{src}: no exefs/main.npdm and romfs')
+     out.mkdir(parents=True)
+     pack_dump.exefs(src / 'exefs', out / 'ExeFS')
++    pack_dump.control(src, out)
+     rows = []
+-    for p, size, head in pg.romfs_files(src / 'romfs'):
++    rom = rfs.Path(pack_dump.romfs_of(src))
++    for p, size, head in pg.romfs_files(rom):
+         rows.append(f'{p}\t{size}\t{head.hex()}\n')
+         if p.lower().endswith('.nro'):
+             o = out / 'romfs_nro' / p.lstrip('/'); o.parent.mkdir(parents=True, exist_ok=True)
+-            pack_dump.clone(src / 'romfs' / p.lstrip('/'), o)
++            with (rom / p.lstrip('/')).open('rb') as f, o.open('wb') as dst: shutil.copyfileobj(f, dst)
+     (out / 'romfs_manifest.tsv').write_text(MANIFEST_HEAD + ''.join(rows))
+     return len(rows)
+ 
+@@ -1311,7 +1318,7 @@ def extract_dump(ex, name, src, app):   # one version of a dump folder (src: bas
+     def poll():
+         try: return {'done': part.stat().st_size}
+         except OSError: return None
+-    PROG.stage(f'pack {name}', poll=poll, unit='B', total=tree_size(src / 'romfs')[1], est=True)
++    PROG.stage(f'pack {name}', poll=poll, unit='B', total=dump_romfs_size(src), est=True)
+     try: pack_dump.pack_version(src, app, dst, say=lambda s: None)
+     except pack_dump.Error as e: raise BuildError(str(e)) from e
+     PROG.end(amount((dst / 'RomFS.img').stat().st_size, 'B'))
+@@ -3096,7 +3103,7 @@ def main(args=None):
+         try: xcode_projects.check_bundle_id(workspace, project, bundle_id)
+         except ValueError as e: raise BuildError(str(e)) from e
+     # the app version is the packed game's display version: the update's control data when an update is packed (nx_extract saves it next to the RomFS), else the base game's
+-    app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp')
++    app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp') or g.builds().get(pkg_ver, {}).get('display')
+     if mac_pack and not (args.out or OUT_IPA): out_ipa = work.parent / f'{mac_app_name(app_name)}{"-provisional" if shadowed else ""}.app'
+     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').exists()), None)   # the game icon nx_extract saved from the control data (English, icon.jpg); the packed version's first, then the base game's
+     if (not mac or mac_pack) and getattr(args, 'in_programs', None) is None:   # an app is made, once: a program packed with the application's first (in_programs) is part of its app
+diff --git a/scripts/build_mac_gamebox.py b/scripts/build_mac_gamebox.py
+index 774c06f0..6fc81764 100644
+--- a/scripts/build_mac_gamebox.py
++++ b/scripts/build_mac_gamebox.py
+@@ -10,7 +10,7 @@ import tempfile
+ REPO = Path(__file__).resolve().parents[1]
+ MAC = REPO / 'dm/mac'
+ sys.path.insert(0, str(MAC))
+-from pack_app import make_icns, run
++from pack_app import make_icns, run, swift_sources
+ 
+ 
+ def main():
+@@ -29,11 +29,11 @@ def main():
+         resources = contents / 'Resources'
+         executable.parent.mkdir(parents=True)
+         resources.mkdir()
+-        min_os = '14.0'
++        min_os = '15.0'
+         sdk = run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()
+         run(['xcrun', '--sdk', 'macosx', 'swiftc', '-parse-as-library', '-O', '-sdk', sdk,
+              '-target', f'arm64-apple-macosx{min_os}', '-module-cache-path', Path(temp) / 'modules',
+-             MAC / 'Gamebox.swift', '-o', executable])
++             '-swift-version', '5', MAC / 'Gamebox.swift', *swift_sources(), '-o', executable])
+         icon = MAC / 'GameboxIcon.png'
+         make_icns(icon, resources / 'AppIcon.icns')
+         if args.catalog:
+@@ -47,8 +47,8 @@ def main():
+                 'CFBundleExecutable': executable.name,
+                 'CFBundleIconFile': 'AppIcon',
+                 'CFBundlePackageType': 'APPL',
+-                'CFBundleShortVersionString': '0.1',
+-                'CFBundleVersion': '1',
++                'CFBundleShortVersionString': '0.2',
++                'CFBundleVersion': '2',
+                 'LSMinimumSystemVersion': min_os,
+                 'LSApplicationCategoryType': 'public.app-category.games',
+             }, info)
+diff --git a/scripts/pack_dump.py b/scripts/pack_dump.py
+index 50225fa7..80faa546 100644
+--- a/scripts/pack_dump.py
++++ b/scripts/pack_dump.py
+@@ -13,7 +13,7 @@
+ #   extract/v<version>/ExeFS/   the newest version's code modules (APFS clones, or copies on another volume)
+ #   extract/v<version>/RomFS.img   its RomFS as one image (dm/tools/romfs_image.py: the host's DM_ROMFS, the IPA's romfs.img)
+ #   aoc/<index>.img   each DLC's RomFS (index = DLC title ID − base title ID − 0x1000), the host's DM_AOC_DIR
+-# A dump has no control data, so there is no control.nacp or icon.jpg beside them, as there is after nx_extract.
++# A complete indexed RomFS image from nx_extract can stand in for each romfs/ directory as romfs.img. A version can also carry its extracted control.nacp and icon.jpg.
+ # The title ID is the program ID in main.npdm. A repeat run keeps code modules that are the same and an image whose source tree, packer and image are unchanged (romfs_image.py --reuse).
+ # Usage: pack_dump.py <dump folder> [--version N] [--work-dir DIR]   (exit 1 on error)
+ import argparse, filecmp, shutil, struct, subprocess, sys
+@@ -46,9 +46,33 @@ def exefs(src, dst):
+     shutil.rmtree(dst, ignore_errors=True); tmp.rename(dst)
+ 
+ 
++def control(src, out):
++    for name in ('control.nacp', 'icon.jpg'):
++        f, dst = src / name, out / name
++        if not f.is_file(): dst.unlink(missing_ok=True)
++        elif not dst.is_file() or not filecmp.cmp(f, dst, shallow=False): shutil.copyfile(f, dst)
++
++
+ def pack(src, img, say=print):
+     img.parent.mkdir(parents=True, exist_ok=True)
+     say(f'packing {src} → {img}')
++    if src.is_file():
++        src = src.resolve()
++        dst = str(img)
++        before = romfs_image.file_identity(src)
++        stamp = f'image:{src}:{before}'
++        if romfs_image.reusable(dst, stamp): return
++        part = img.with_suffix(img.suffix + '.part')
++        part.unlink(missing_ok=True)
++        try:
++            expected = romfs_image.identity(src)
++            clone(src, part)
++            if romfs_image.file_identity(src) != before or romfs_image.identity(part) != expected:
++                raise Error(f'{src}: source changed or copy is incomplete')
++            romfs_image.publish(part, dst, stamp)
++        except ValueError as e: raise Error(str(e)) from e
++        finally: part.unlink(missing_ok=True)
++        return
+     try: n = romfs_image.pack(src, img, reuse=True)
+     except RuntimeError as e: raise Error(f'{src}: {e}') from e   # the files changed while packing
+     say(f'  {n:,} entries, {img.stat().st_size / 2**30:.2f} GB')
+@@ -58,8 +82,13 @@ def has_code(src):   # base/ or updates/<version>/ with its code
+     return (src / 'exefs/main.npdm').is_file()
+ 
+ 
++def romfs_of(src):
++    folder, image = src / 'romfs', src / 'romfs.img'
++    return folder if folder.is_dir() else image if image.is_file() else None
++
++
+ def is_version(src):   # base/ or updates/<version>/ with its code and its RomFS
+-    return has_code(src) and (src / 'romfs').is_dir()
++    return has_code(src) and romfs_of(src) is not None
+ 
+ 
+ def updates(folder):   # {version: updates/<version>/}
+@@ -74,7 +103,7 @@ def base_of(folder):   # the base game's folder: base/, or the folder itself whe
+ 
+ def is_dump(folder):   # whether a folder has the layout above: a base game's code with a RomFS beside it or in an update, or an update with its code and RomFS and no base
+     base, ups = base_of(folder), updates(folder).values()
+-    if base: return (base / 'romfs').is_dir() or any((p / 'romfs').is_dir() for p in ups)
++    if base: return romfs_of(base) is not None or any(romfs_of(p) is not None for p in ups)
+     return any(is_version(p) for p in ups)
+ 
+ 
+@@ -89,17 +118,19 @@ def scan(dump):
+         try: tid = int(d.name, 16)
+         except ValueError: raise Error(f'{d}: not a DLC title ID') from None
+         if not 0 < tid - app - 0x1000 <= 2000: raise Error(f'{d}: {tid:016X} is not a DLC of {app:016X}')
+-        roms = sorted(d.glob('*/romfs')) or ([d / 'romfs'] if (d / 'romfs').is_dir() else [])
++        roms = [p for version in sorted(d.iterdir()) if version.is_dir() and (p := romfs_of(version)) is not None]
++        if not roms and (rom := romfs_of(d)) is not None: roms = [rom]
+         if len(roms) != 1: raise Error(f'{d}: expected one <n>/romfs folder, found {len(roms)}')
+         dlc[tid] = roms[0]
+     return app, vers, dlc
+ 
+ 
+ def pack_version(src, app, out, say=print):   # one version's folder (base/ or updates/<version>/) → out/ExeFS and out/RomFS.img
+-    if not (src / 'exefs/main').is_file() or not (src / 'exefs/main.npdm').is_file() or not (src / 'romfs').is_dir(): raise Error(f'{src}: no exefs/main, exefs/main.npdm and romfs')
++    if not (src / 'exefs/main').is_file() or not (src / 'exefs/main.npdm').is_file() or (rom := romfs_of(src)) is None: raise Error(f'{src}: no exefs/main, exefs/main.npdm and romfs')
+     if (pid := program_id(src / 'exefs/main.npdm')) != app: raise Error(f'{src}: program ID {pid:016X}, the base is {app:016X}')
+     exefs(src / 'exefs', out / 'ExeFS')
+-    pack(src / 'romfs', out / 'RomFS.img', say)
++    pack(rom, out / 'RomFS.img', say)
++    control(src, out)
+ 
+ 
+ def pack_dlc(app, dlc, aoc, say=print):   # {DLC title ID: its RomFS folder} → aoc/<index>.img; images of DLC no longer in the folder go

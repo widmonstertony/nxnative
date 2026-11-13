@@ -1391,3 +1391,21 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** an NRR with 1 in the byte at +5 (the Switch 2's) has a header 0x180 bytes longer. The same fields follow it: program ID +0x4b0, size +0x4b8, hash table +0x4c0, its count +0x4c4.
 - **Fix:** `hle_ro.c` and `nro_collect.py` read the table by that byte.
 - **Found on:** [Mario Tennis Fever](../../dm/games/0400D4201C6EA000/README.md).
+
+### Offline gRPC requires local event descriptors
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** startup calls `nn::diag::Abort` while gRPC selects a polling backend, after audio output has already started.
+- **Cause:** gRPC probes `nn::socket::EventFd(0, 0)` and closes it through `nnsocketClose`. The offline socket stub returned `ENETDOWN` for the probe, which disabled every candidate that needs a wakeup descriptor.
+- **Fix:** the host supplies process-local event counters with nonblocking reads, poll readiness and thread wakeups (`hle_net.c`). Creating an event counter does not create a network connection. The usual socket, name resolution and SSL calls still behave as offline.
+- **Found on:** the Ocarina of Time Switch 2 package (0400486024DEC000, boot abort at `main+0x21f0c7c`).
+
+
+### Backbone button letters and automatic touch visibility
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** Backbone A/B and X/Y invoke the opposite game letters; virtual buttons remain visible after connecting a controller.
+- **Cause:** the iOS adapter always used Nintendo positional mapping, while `DM_PAD_KEEP_TOUCH=1` also overrode controller-driven hiding.
+- **Fix:** recognized Backbone vendor/category names select printed-letter ABXY mapping. Other controllers keep their established Nintendo positional mapping. A connected extended gamepad or keyboard always hides the touch layer, including when keep-touch is enabled. The shared policy applies to every iPhone/iPad game. Disconnect restores touch when no keyboard/gamepad remains; keep-touch now affects mouse-only visibility. Touch geometry, battle layout, keyboard J=A/K=B/U=X/I=Y, and native trigger bits are unchanged.
+- **Checks:** the actual C policy is tested over every face-button combination and connection/keyboard/mouse/preference state; existing keyboard and face-layout regressions remain enabled. Physical Backbone gameplay is left to the user after installation.
+- **Found on:** [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md) and [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md), iPhone Air.
