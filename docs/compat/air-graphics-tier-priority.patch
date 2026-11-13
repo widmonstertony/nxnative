@@ -1,0 +1,15 @@
+--- a/dm/ios/LibraryApp/Sources/main.m
++++ b/dm/ios/LibraryApp/Sources/main.m
+@@ -107,12 +107,6 @@
+         if(valid){setenv(key.UTF8String,value.UTF8String,1);NSLog(@"TonTon global %@=%@ for %@",key,value,titleID);}
+     }
+     TTApplyGameOverrides(titleID);
+-    // The MKW profile can request the highest scene tier even when the game
+-    // is in handheld mode. Match the scene tier to the effective mode.
+-    if([titleID.lowercaseString isEqual:@"0400c3f00006e000"]){
+-        const char *mode=getenv("DM_OPMODE");
+-        if(mode&&!strcmp(mode,"0"))setenv("DM_GRAPHICS_SCALE","0",1);
+-    }
+     TTApplyTouchLayout(titleID);
+     // A profile-owned map remains authoritative, including an empty map.
+     if(!librarySetting(titleID,@"DM_PAD_MAP")) {

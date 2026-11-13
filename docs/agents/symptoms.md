@@ -412,6 +412,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - a crash in `ro::RegisterModuleInfo`, or an NRR that seems to register millions of hashes: the words at +0x340 and +0x344 are random. → [NRR version 1](../reference/services.md#nrr-version-1)
 - startup calls `nn::diag::Abort` while gRPC selects a polling backend, after audio output has already started. → [Offline gRPC requires local event descriptors](../reference/services.md#offline-grpc-requires-local-event-descriptors)
 - Backbone A/B and X/Y invoke the opposite game letters; virtual buttons remain visible after connecting a controller. → [Backbone button letters and automatic touch visibility](../reference/services.md#backbone-button-letters-and-automatic-touch-visibility)
+- a per-game reduced graphics tier is selected but the SDK still reports the operation-mode default. A handheld title continues choosing its full-budget renderer path. → [An explicit graphics tier is ignored by a frozen host](../reference/services.md#an-explicit-graphics-tier-is-ignored-by-a-frozen-host)
 
 ## Movies
 
