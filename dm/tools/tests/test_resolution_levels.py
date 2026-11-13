@@ -22,6 +22,11 @@ class ResolutionLevelsTests(unittest.TestCase):
         cls.root = Path(cls.temp.name)
         source = cls.root / "wrapper.c"
         source.write_text('''#include "resolution_levels.h"
+int open_contract(const char *dir, const char *selected, const char *rom) {
+    FILE *f = dm_resolution_contract_open(dir, selected, rom);
+    if (!f) return -1;
+    int c = fgetc(f); fclose(f); return c;
+}
 int apply(const char *path, const char *build, unsigned char *data,
           size_t size, const char *request, dm_resolution_result *result) {
     FILE *f = fopen(path, "r"); if (!f) return -2;
@@ -62,6 +67,28 @@ int apply(const char *path, const char *build, unsigned char *data,
                               len(self.image), request.encode() if request else None,
                               ctypes.byref(result))
         return code, result
+
+    def test_contract_tracks_current_cartridge_and_preserves_overrides(self):
+        signed = self.root / "signed-profile"
+        current = self.root / "current-container" / "Resources"
+        moved = self.root / "moved-container" / "Resources"
+        for folder in (signed, current / "dm", moved / "dm"):
+            folder.mkdir(parents=True, exist_ok=True)
+        (current / "dm/resolution_levels.tsv").write_text("C")
+        (moved / "dm/resolution_levels.tsv").write_text("M")
+        def opened(folder, override, rom):
+            return self.lib.open_contract(str(folder).encode(),
+                str(override).encode() if override else None, str(rom).encode())
+        self.assertEqual(opened(signed, None, current / "romfs.img"), ord("C"))
+        self.assertEqual(opened(signed, None, moved / "romfs.img"), ord("M"))
+        (signed / "resolution_levels.tsv").write_text("S")
+        self.assertEqual(opened(signed, None, current / "romfs.img"), ord("S"))
+        self.assertEqual(opened(signed, current / "dm/resolution_levels.tsv",
+                                moved / "romfs.img"), ord("C"))
+        self.assertEqual(opened(signed, signed / "missing.tsv",
+                                current / "romfs.img"), -1)
+        self.assertEqual(opened(self.root / "missing", None, "relative.img"), -1)
+        self.assertEqual(opened("/" + "x" * 1500, None, current / "romfs.img"), ord("C"))
 
     def test_default_caps_scene_without_resizing_targets(self):
         before = bytes(self.image)

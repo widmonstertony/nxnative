@@ -180,7 +180,42 @@ compile success alone establishes no gameplay speedup.
 - The pipeline archive saved nothing on the walk from the language list to the first area, on the partial library: archive lookups found 0 and found none 655 times, and 216 bases were compiled, though the host's probe found the archive's bases. The draws' pairs seem not to be those of `shader_pairs.tsv`, which come from BNSH variations. Whether a full library differs is not checked.
 - An IPA has not been built. A full iOS shader build would be needed first.
 
+## TonTon M2 performance port
+
+The M2 uses the frozen independent iPadOS 16.1 engine (`a432daafc3d0`),
+not Air's Metal 4 renderer. The first targeted 60.93 installation retained
+the guest module sections and every other game's framework. Original ROM
+identities and save hashes matched before and after installation. Its
+isolated test confirmed QoS bands 39/44 and no audio underruns through
+16,000 callbacks, but only the language-selection screen was observed;
+this was not a verified 540p/MetalFX or 3D gameplay pass.
+
+That test exposed two execution-path gaps, documented under
+[independent-engine performance options](../../../docs/reference/rendering.md#an-independent-ipad-engine-reads-performance-options-without-applying-them).
+The follow-up 60.94 is installed in place. It fixes current-cartridge
+contract lookup and the classic scaler's title restriction, preserving
+original module bytes, the existing shader chain and shader libraries.
+The fresh device log confirms all nine dynamic lists capped at 960x540
+and an actual classic MetalFX spatial pass from the retained 1920x1080
+UI/composite texture to the 2732x1536 drawable. This is a 540p scene cap;
+it does not make every intermediate or the scaler's input 540p. The
+opening's 3D character and dialogue animate around 59.9 fps, with no
+underruns in the recorded audio callback windows. A cold transition into
+character creation stalled for 6.37 seconds; stable-screen measurements
+do not erase that loading stall. The isolated run then reached the first-map
+tutorial and accepted stick movement. Stable 300-frame windows there ran
+at 55.4--60.0 fps in the final minute (usually 59.9), with frame p50
+16.64--17.06 ms and p95 17.17--22.47 ms. The final 16,000 audio callbacks
+retained four queued blocks without underruns.
+Cold pipeline/library creation still caused multi-second transitions, and
+some legacy render pipelines still report internal compiler errors. This
+is a first-map performance check, not a complete graphics or all-area pass;
+Air's successful-scene measurements must not be presented as M2 results. The classic renderer does not
+implement Air's `DM_PRESENT_SNAP` setting.
+
 ## Found on this game
+
+- [Independent-engine performance options](../../../docs/reference/rendering.md#an-independent-ipad-engine-reads-performance-options-without-applying-them): verify execution, not only saved preferences, on the frozen M2 engine.
 
 - [CPU phase reports miss the queued submission thread](../../../docs/reference/frame-rate.md#cpu-phase-reports-miss-the-queued-submission-thread).
 

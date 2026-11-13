@@ -19,6 +19,22 @@ static int dm_resolution_inside(uint64_t off, size_t len, size_t size,
     return off >= first && off <= end && end <= size && len <= end - off;
 }
 
+// Prefer the signed CPU-table contract. Independent engines may import their
+// data-only contract next to the current cartridge image. Explicit overrides
+// remain authoritative, including a missing override.
+static FILE *dm_resolution_contract_open(const char *dir, const char *selected,
+                                         const char *rom) {
+    if (selected && *selected) return fopen(selected, "r");
+    char path[1200];
+    int n = dir ? snprintf(path, sizeof path, "%s/resolution_levels.tsv", dir) : -1;
+    FILE *f = n >= 0 && (size_t)n < sizeof path ? fopen(path, "r") : NULL;
+    if (f) return f;
+    const char *slash = rom && rom[0]=='/' ? strrchr(rom, '/') : NULL;
+    if (!slash || slash-rom >= (int)sizeof(path)-32) return NULL;
+    snprintf(path, sizeof path, "%.*s/dm/resolution_levels.tsv", (int)(slash-rom), rom);
+    return fopen(path, "r");
+}
+
 // Returns 1 when applied, 0 for another build / original, -1 for an invalid
 // contract or image. Validate everything before writing even a single byte.
 static int dm_resolution_levels(FILE *file, const char *build, uint8_t *image,

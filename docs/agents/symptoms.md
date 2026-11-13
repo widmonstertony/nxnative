@@ -606,6 +606,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 ## Rendering
 
 - a mobile game remains GPU-bound with handheld mode and MetalFX enabled; its log still shows a 1080p window. A 1080p allocation alone is not proof of the scene size: Violet's retained Air log crops such a window to 1280x720 before MetalFX. → [A handheld setting leaves the scene at 1080p](../reference/rendering.md#a-handheld-setting-leaves-the-scene-at-1080p)
+- Pokopia logs `DM_WINDOW_SIZE=960x540` and `DM_PRESENT_UPSCALE=metalfx`, but neither a verified scene cap nor a MetalFX dispatch appears. → [An independent iPad engine reads performance options without applying them](../reference/rendering.md#an-independent-ipad-engine-reads-performance-options-without-applying-them)
 - clang reports null dereferences in `nvnWindowInitialize` and `clear_tex`; clearing a null texture crashes with `DM_NVN_PASSDUMP=1`. → [Null textures in diagnostic logs](../reference/rendering.md#null-textures-in-diagnostic-logs)
 - Metal aborts on a texture descriptor with an absurd size (`height (1869367126) greater than … 16384`). → [Texture objects copied into command records](../reference/rendering.md#texture-objects-copied-into-command-records)
 - a decoded movie stays black even though its YUV textures contain the picture; disabling its depth test makes it visible. → [New textures start as zero](../reference/rendering.md#new-textures-start-as-zero)

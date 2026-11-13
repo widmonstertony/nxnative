@@ -842,10 +842,8 @@ static void map_image(module_t *m, const char *dir) {
 #include "resolution_levels.h"
 static void apply_resolution_levels(module_t *m, const char *dir) {
     if (m->nro || strcmp(m->name, "main") || m->patch_off <= 0) return;
-    char path[1200];
-    snprintf(path, sizeof path, "%s/resolution_levels.tsv", dir);
-    const char *selected = getenv("DM_RESOLUTION_LEVELS_PATH");
-    FILE *f = fopen(selected && *selected ? selected : path, "r");
+    FILE *f = dm_resolution_contract_open(dir, getenv("DM_RESOLUTION_LEVELS_PATH"),
+                                          getenv("DM_ROMFS"));
     if (!f) return;
     dm_resolution_result result;
     int status = dm_resolution_levels(f, m->build_id, m->base, m->size,

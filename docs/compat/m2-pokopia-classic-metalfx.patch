@@ -1,0 +1,33 @@
+--- a/dm/gfx/nvn/nvn_mtl_legacy.inc
++++ b/dm/gfx/nvn/nvn_mtl_legacy.inc
+@@ -10035,10 +10035,10 @@
+ #import <MetalFX/MTLFXSpatialScaler.h>
+ // This is the drawable path only. Each scaler and its two textures share
+ // the present uniform slot's completion fence, so reuse cannot race the GPU.
+-static id<MTLTexture> legacy_mkw_spatial(id<MTLCommandBuffer> cb, id<MTLTexture> raw,
++static id<MTLTexture> legacy_present_spatial(id<MTLCommandBuffer> cb, id<MTLTexture> raw,
+                                         NSUInteger x, NSUInteger y, NSUInteger w, NSUInteger h,
+                                         MTLViewport vp, int slot) {
+-    if (DM_GAME_PROGRAM_ID != 0x0400C3F00006E000ull || slot < 0 || slot >= 3) return nil;
++    if (slot < 0 || slot >= 3) return nil;
+     if (@available(iOS 16.0, *)) {
+         static int enabled = -1;
+         if (enabled < 0) {
+@@ -10079,7 +10079,7 @@
+             if (!input || !output) return nil;
+             s->scaler = scaler;
+             s->input = input; s->output = output;
+-            MLOG("MKW classic MetalFX spatial: %lux%lu -> %lux%lu (present slot %d)",
++            MLOG("classic MetalFX spatial: %lux%lu -> %lux%lu (present slot %d)",
+                  (unsigned long)w, (unsigned long)h, (unsigned long)ow, (unsigned long)oh, slot);
+         }
+         if (!s->scaler) return nil;
+@@ -10133,7 +10133,7 @@
+     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
+     id<MTLTexture> tex = present_raw_src(src);
+ #if TARGET_OS_IOS
+-    id<MTLTexture> scaled = legacy_mkw_spatial(cb, tex, cx, cy, cw, ch, vp, uv_i);
++    id<MTLTexture> scaled = legacy_present_spatial(cb, tex, cx, cy, cw, ch, vp, uv_i);
+     if (scaled) { tex = scaled; cx = cy = 0; cw = tex.width; ch = tex.height; }
+ #endif
+     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor new];

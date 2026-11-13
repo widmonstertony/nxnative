@@ -15,6 +15,15 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ## Textures and formats
 
+### An independent iPad engine reads performance options without applying them
+
+- **Symptom:** Pokopia logs `DM_WINDOW_SIZE=960x540` and `DM_PRESENT_UPSCALE=metalfx`, but neither a verified scene cap nor a MetalFX dispatch appears.
+- **Cause:** its frozen independent engine reads CPU tables from the signed framework, while the imported resolution contract lives beside the cartridge. Its classic MetalFX helper also rejected every title except Mario Kart World, despite advertising device capability. Capability and environment logs do not establish execution.
+- **Fix:** the resolution loader prefers its signed table directory, then resolves an imported contract relative to the current `DM_ROMFS`; an explicit override remains authoritative. Build, original-value and writable-range checks remain unchanged. The frozen iPadOS 16.1 renderer adaptation is retained in [the compatibility patch](../compat/m2-pokopia-classic-metalfx.patch): remove the title gate while retaining supported-format, device, crop, size and per-slot GPU completion checks. This does not replace a shader chain. Classic present snapshots remain a separate, unimplemented path in that frozen renderer; merely setting `DM_PRESENT_SNAP` does not port it.
+- **Found on:** [Pokopia on TonTon M2](../../dm/games/0400A3A01EE4C000/README.md#tonton-m2-performance-port).
+- **Check:** the resolution C fixture covers moved cartridge containers, signed-table precedence, missing explicit overrides, relative paths and oversized paths. Device validation must check the cap and actual scaler dispatch independently.
+- **Front-ends:** distinguish supported MetalFX capability from a scaler that actually ran. Do not report a saved preference as verified execution.
+
 ### Null textures in diagnostic logs
 
 - **Symptom:** clang reports null dereferences in `nvnWindowInitialize` and `clear_tex`; clearing a null texture crashes with `DM_NVN_PASSDUMP=1`.
