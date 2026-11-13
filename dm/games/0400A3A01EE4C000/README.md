@@ -140,6 +140,16 @@ and Android/Vulkan frame generation cannot be assumed to exist in this
 retained Metal runtime. No sustained 60 fps or universal resolution control
 is claimed.
 
+The subsequent full-timing run reproduced the stutter but exposed
+[missing queued-thread CPU reports](../../../docs/reference/frame-rate.md#cpu-phase-reports-miss-the-queued-submission-thread): only small texture/index
+counts were reported, and full per-operation timing increased submission CPU
+time to about 18–19 ms. Those timings are perturbed diagnostics, not a new
+baseline regression. Temporary CPU/wait flags were removed and read back;
+the change takes effect on restart. A narrow host-only diagnostic correction
+has compiled, linked and passed signature checks; its in-place Air installation
+is pending. It reports each submitting thread and samples each phase,
+without changing shaders, game code, rendering semantics or saves.
+
 ## Open
 
 - The picture has not been compared with a Switch 2. The user's playtest found it fine. Sunlit ground matches published iPhone shots of the game. Shaded ground and walls are lavender. The player carries fine contour lines, already present in colour target 5435, which may be the material. In some moving shots far blocks showed through near ones; this has not been rechecked since the fixes below.
@@ -148,6 +158,8 @@ is claimed.
 - An IPA has not been built. A full iOS shader build would be needed first.
 
 ## Found on this game
+
+- [CPU phase reports miss the queued submission thread](../../../docs/reference/frame-rate.md#cpu-phase-reports-miss-the-queued-submission-thread).
 
 - [Distinguishing PCM production from release-notification starvation](../../../docs/reference/audio.md#distinguishing-pcm-production-from-release-notification-starvation): Air crackling remains under investigation; no repaired-audio claim.
 - [One compile for a pixel shader's side entry points](../../../docs/reference/shaders.md#one-compile-for-a-pixel-shaders-side-entry-points): 57% of the map's compiles were `_ba` and `_bl` libraries; a cold build of 1,021 shaders now takes 48% of the CPU on the Mac's flags and 47% on the iPhone's.

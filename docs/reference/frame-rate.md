@@ -488,6 +488,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Fix:** main-thread registration calls the same `qos_apply` used by worker threads, before recording the actual class, and logs the resulting class. With diagnostics enabled, `DM_NVN_CPUPROF=1` measures inclusive CPU/wall time in pass begin/end, pipeline lookup, argument encoding, texture lookup, draw, geometry, and submission indexing. These nested phase times overlap. The thread regression confirms `0x21`; on-device performance remains to be validated.
 - **Found on:** [NieR:Automata US 1.0.3](../../dm/games/010056B015FE8000/README.md), where the slow gameplay captures show 159–160 million host translation instructions per frame, considerable scheduling delay, nominal thermal state, and ample memory headroom.
 
+### CPU phase reports miss the queued submission thread
+
+- **Symptom:** `DM_NVN_CPUPROF=1` reports only small texture/index counts despite thousands of draws and substantial submission CPU time. Enabling full per-operation timing also noticeably slows the scene.
+- **Cause:** phase counters are thread-local, but only `mtl_stats` reported them. When the NVN queue executes submission on another thread, its draw, pass and argument timings never reach that reporting call. Reading the wall and thread-CPU clocks at every nested operation adds diagnostic overhead.
+- **Fix:** submission commit also reports its own thread's counters. Reports identify the thread. `DM_NVN_CPUPROF=N` takes one in every N calls independently for each phase (bounded to 4096); `1` retains full timing, absent/zero/negative reads no clocks. Reports give sampled/total calls and **raw sampled** CPU/wall time, not extrapolated totals. Nested times overlap, and repeated engine call patterns can bias deterministic sampling. Use sampling to locate candidates, then verify changes with diagnostics disabled.
+- **Check:** `python3 dm/gfx/tests/test_cpuprof.py` compiles the actual diagnostic functions, exercises nested phases on independent pthreads, checks disabled clock reads, full coverage, sampling and the stride bound. It does not establish gameplay performance.
+- **Found on:** [Pokémon Pokopia on Air](../../dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680). The full-timing run increased scene submission CPU time and reported no draw phases; no new smoothness claim follows from it.
+
 ### Time-constraint computation declared below the thread's peaks
 
 - **Symptom:** stalls of 30–60 ms about once a second, at 30 fps and at 60 (99th percentile 63–127 ms); the main thread waits 20–34 ms for the render thread once a second.
