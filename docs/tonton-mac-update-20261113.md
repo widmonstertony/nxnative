@@ -2,7 +2,7 @@
 
 The Mac frontend reuses NX2Apple at `d0adbda8f505a137ef254e4b7e7e58744244255c`.
 Its source and MIT notices are under `contrib/tonton/nx2apple`. The engine includes
-upstream `2c3fcae52`, plus NX2Apple's Mac controls, Home menu, background pause,
+upstream `32faef7c039d868e2430ce28aec020c9b3997013`, plus NX2Apple's Mac controls, Home menu, background pause,
 runtime profiles, library metadata, input deadzones, Joy-Con and Steam Controller
 support. The upstream bounded post-completion ring is retained instead of the
 older NX2Apple ring workaround. Aliased pool storage flags and capture metadata

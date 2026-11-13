@@ -52,7 +52,7 @@ run: $(B)/t_launcher_contract $(B)/t_profile_runtime
 	$(B)/t_net_eventfd
 	$(B)/t_sf
 	$(B)/t_time
-	$(B)/t_sync_wait
+	$(B)/t_sync_wait $(QUIET)
 	$(B)/t_shared_font
 	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
 	$(B)/t_system_event
