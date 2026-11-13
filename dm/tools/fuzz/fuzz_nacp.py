@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fuzz dm/tools/nacp.py, the reader of an NSP's control.nacp (the app name, display version and languages).
 Seeds: a 0x4000-byte NACP with a name and publisher in two languages, a display version and a language flag, and one whose title area is compressed (u16 size + raw deflate).
-Clean rejection: none raises; name() and version() return '' and languages() returns [] for data they cannot read (their docstrings). Any exception is a finding, and so is a
+Clean rejection: none raises; name() and version() return '', languages() returns [] and names() {} for data they cannot read (their docstrings). Any exception is a finding, and so is a
 result of another type. Usage: see fuzzlib.py"""
 import struct
 import sys
@@ -34,8 +34,9 @@ _file = fuzzlib.InputFile('control.nacp')
 
 def check(data):
     p = _file.write(data)
-    n, v, langs = nacp.name(p), nacp.version(p), nacp.languages(p)
+    n, v, langs, names = nacp.name(p), nacp.version(p), nacp.languages(p), nacp.names(p)
     if not isinstance(n, str) or not isinstance(v, str) or not isinstance(langs, list): raise fuzzlib.broken('nacp.py', f'unexpected result types {n!r} {v!r} {langs!r}')
+    if not isinstance(names, dict) or not all(isinstance(t, str) and t.isprintable() for t in names.values()): raise fuzzlib.broken('nacp.py', f'unexpected names {names!r}')
 
 
 if __name__ == '__main__':

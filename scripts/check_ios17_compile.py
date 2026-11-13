@@ -17,7 +17,7 @@ sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
 # All directory includes inside dm/ excluding git/build
 incs = [
     str(p) for p in DM.rglob('*')
-    if p.is_dir() and '.git' not in p.parts and ('Gen' not in p.parts) and p.name not in ('gen', 'bin', 'obj')
+    if p.is_dir() and '.git' not in p.parts and ('Gen' not in p.parts) and 'tests' not in p.parts and p.name not in ('gen', 'bin', 'obj')
 ]
 
 # Discover all 7 registered game profiles
@@ -36,7 +36,7 @@ ALL_SOURCES = sorted(list(dict.fromkeys(
     list((DM / 'gfx/tex').glob('*.[mc]')) +
     list((DM / 'host').glob('*.[mc]'))
 )))
-ALL_SOURCES = [p for p in ALL_SOURCES if p.name != 'front_mac.m']
+ALL_SOURCES = [p for p in ALL_SOURCES if not p.stem.endswith('_mac')]
 
 # Check Gen/src if present (from local xcode gen)
 gen_src = DM / 'ios/Gen/src'

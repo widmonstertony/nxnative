@@ -38,8 +38,9 @@ enum GameboxCloud {
         title.range(of: "^[0-9A-F]{16}$", options: .regularExpression) != nil
     }
 
-    static func start(title: String, app: URL, skipSettings: Bool) throws {
-        guard valid(title), let exe = Bundle.main.executableURL else { return }
+    @discardableResult
+    static func start(title: String, app: URL, skipSettings: Bool, environment: [String: String] = [:]) throws -> Process {
+        guard valid(title), let exe = Bundle.main.executableURL else { throw NSError(domain: "TonTon", code: 2) }
         let logDir = home.appendingPathComponent("Library/Logs/nxnative")
         try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         let path = logDir.appendingPathComponent(title + ".icloud.log").path
@@ -49,9 +50,13 @@ enum GameboxCloud {
         let worker = Process()
         worker.executableURL = exe
         worker.arguments = ["--cloud-game", title, app.path, skipSettings ? "1" : "0"]
+        var inherited = ProcessInfo.processInfo.environment
+        inherited["TONTON_GAME_ENV"] = String(data: try JSONEncoder().encode(environment), encoding: .utf8)
+        worker.environment = inherited
         worker.standardOutput = log
         worker.standardError = log
         try worker.run()
+        return worker
     }
 
     static func status(title: String?) async {
@@ -120,8 +125,13 @@ enum GameboxCloud {
                     if settings[key] == nil { settings[key] = parts[1].trimmingCharacters(in: .whitespacesAndNewlines) }
                 }
             }
+            let launchData = ProcessInfo.processInfo.environment["TONTON_GAME_ENV"]?.data(using: .utf8)
+            let overrides = launchData.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+            // Custom player saves and explicit folder transports retain their own location.
             // The managed path and the standalone launcher must agree on the save location.
-            let useCloud = settings["DM_SAVE"] == nil && settings["DM_ROOT"] == nil
+            let useCloud = overrides["DM_SAVE"] == nil && overrides["DM_ROOT"] == nil
+                && overrides["DM_SAVE_SYNC"] == nil
+                && settings["DM_SAVE"] == nil && settings["DM_ROOT"] == nil
                 && settings["DM_SAVE_SYNC"] != "0"
             let save = support.appendingPathComponent("save").path
             var compared = false
@@ -136,7 +146,12 @@ enum GameboxCloud {
             }
             let configuration = NSWorkspace.OpenConfiguration()
             if args[3] == "1" { configuration.arguments = ["--no-launcher"] }
-            if useCloud { configuration.environment = ["DM_SAVE_SYNC": "0"] }
+            var launchEnvironment: [String: String] = [:]
+            if let data = ProcessInfo.processInfo.environment["TONTON_GAME_ENV"]?.data(using: .utf8) {
+                launchEnvironment = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+            }
+            if useCloud { launchEnvironment["DM_SAVE_SYNC"] = "0" }
+            configuration.environment = launchEnvironment
             if let game = running(id) { game.activate(); return }
             let game = try await NSWorkspace.shared.openApplication(at: app, configuration: configuration)
             while !game.isTerminated { try await Task.sleep(for: .seconds(1)) }

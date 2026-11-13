@@ -19,3 +19,5 @@ __attribute__((weak)) void *gl_host_export_gl_fence(uint64_t serial) { (void)ser
 __attribute__((weak)) int gl_host_get_fence(void *handle, uint64_t *serial, int *nvn) { (void)handle; (void)serial; (void)nvn; return 0; }
 __attribute__((weak)) int gl_host_wait_fence(uint64_t serial, uint64_t timeout) { (void)serial; (void)timeout; return 0; }
 #endif
+// The runtime profile the NVN layer reads (dm_profile in hle_profile.c): no DM_PROFILE in a test, so these are the compiled game_profile.h values
+#include "../../host/hle_profile.c"

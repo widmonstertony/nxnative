@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/LNPANDY/NX2Apple",
+  "commit": "d0adbda8f505a137ef254e4b7e7e58744244255c",
+  "path": "frontend",
+  "engine": "https://github.com/seedds/nxnative",
+  "engine_commit": "32faef7c039d868e2430ce28aec020c9b3997013",
+  "adaptations": "TonTon bundle identity, local library, CloudKit broker and desktop input editor",
+  "mac_patch_base": "2dee3811b52ff1b6d58d2ba99f55e813c7f3ba31",
+  "additional_patches": [
+    "0044 separate Joy-Con haptic channels",
+    "0045 alias storage flags, retaining upstream address/sampler bounds"
+  ]
+}

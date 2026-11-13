@@ -11,18 +11,22 @@ IOS_MIN_FLAG = '-mios-version-min=16.1'
 IOS_FLAGS = [IOS_MIN_FLAG, '-fmetal-math-mode=relaxed']
 METAL = ['xcrun', '-sdk', 'iphoneos', 'metal', '-c', '-O1', *IOS_FLAGS, '-fpreserve-invariance', '-fwrapv']   # -fwrapv: see dmsh_chain.py MAC_METAL
 METALLIB = ['xcrun', '-sdk', 'iphoneos', 'metallib']
-RECORD = ' '.join(METAL) + '; ' + ' '.join(METALLIB) + '; legacy-image-atomic-buffer-v1'                                # Written into json chain.metal
-DEPTH = ['-fbracket-depth=1024']   # more nested brackets than the front end's 256 (as dmsh_build.py's METAL_DEPTH): no output changes with it, so RECORD does not name it
+# Per-vertex fragment inputs require MSL 4.0 / iOS 26. Other sources keep
+# the classic deployment language and image-atomic lowering.
+METAL4, METAL4_FLAG = b'vertex_value<', '-std=metal4.0'
+RECORD = ' '.join(METAL) + f' ({METAL4_FLAG} for a source using vertex_value); ' + ' '.join(METALLIB) + '; legacy-image-atomic-buffer-v1'
+DEPTH = ['-fbracket-depth=1024']
 
 def compile(msl, air, lib):
-    source = open(msl).read()
+    with open(msl) as f: source = f.read()
+    v4 = METAL4.decode() in source
     lowered = None
     try:
         if dmsh_legacy_atomic.needed(source):
             text, _ = dmsh_legacy_atomic.lower(source)
             lowered = air + '.legacy.metal'
             with open(lowered, 'w') as f: f.write(text)
-        dmsh_pch.compile(METAL + DEPTH, lowered or msl, air)
+        dmsh_pch.compile(METAL + ([METAL4_FLAG] if v4 else []) + DEPTH, lowered or msl, air)
         subprocess.run([*METALLIB, air, '-o', lib], check=True)
     finally:
         if lowered and os.path.exists(lowered): os.unlink(lowered)

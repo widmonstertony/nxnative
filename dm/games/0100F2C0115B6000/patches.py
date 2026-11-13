@@ -8,9 +8,11 @@ from nso_asm import ADRP, B, NOP, STP_PRE
 # sites) the same, which the consumers read. Until the host has decided a step (the first frames) the step is the measured frame time (timing frame +0xd8, 19.2 MHz
 # ticks), clamped to [1 / cap, 1 / 15 s]; game time that ran ahead after a short frame (the "lead", at most 0.25 s; totk-mobile) is paid back by later frames. Prerendered movies hold 30 (the host's movie flag, state +4, hle_movie.c
 # dm_movie_playing), the D-pad menu fade starts at full rate (FPSLocker's fix at main+0x1fbc80) and the swapchain argument at main+0xbe14a8 becomes 1 as in FPSLocker
-def stub(ctx, step, read1, read2, fade, swap, view):
+def stub(ctx, step, read1, read2, fade, swap, view, fade_regs=(24, 10)):
     """The frame step at the frame-step function (step), the two readers of the integer fps (read1, read2), the D-pad menu fade (fade), the swapchain argument (swap) and
-    the view render size (view): each patched at its own offsets"""
+    the view render size (view): each patched at its own offsets. fade_regs: the menu entry's base register and the fade's destination, x24 and s10 on 1.4.3, x25 and s9 on 1.4.2"""
+    base, dst = fade_regs
+    fmadd = 0x1f080400 | dst   # fmadd s<dst>,s0,s8,s1
     here, emit, fs_site, fs_put, FS_STATE_OFF = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state
     # frame step (replaces ldrb w9,[x0,#0x58], the first instruction after the prologue)
     fs_site(step + 0x18, '09604139')
@@ -87,15 +89,15 @@ def stub(ctx, step, read1, read2, fade, swap, view):
         fs_put(site, [B(site, start)], 'game step reads the float fps (original integer fps and scvtf when off)')
         fs_put(cvt, [NOP], 'scvtf moved into the stub at the load')
     # D-pad menu fade (w8 is overwritten right after the site)
-    fs_site(fade + 0x130, '0820201e0a04081f')
+    fs_site(fade + 0x130, '0820201e' + struct.pack('<I', fmadd).hex())
     start = here(); emit(ADRP(8, here(), FS_STATE_OFF))
     for w in (0xb9400108, 0x340001a8,       # ldr w8,[x8]; cbz w8,off (+52)
               0x1e202028, 0x54000101,       # fcmp s1,#0.0; b.ne go
-              0x785fa308, 0x7100151f, 0x540000a1,   # ldurh w8,[x24,#-6]; cmp w8,#5; b.ne go
-              0x785f8308, 0x7100151f, 0x54000041,   # ldurh w8,[x24,#-8]; cmp w8,#5; b.ne go
+              0x785fa008 | base << 5, 0x7100151f, 0x540000a1,   # ldurh w8,[x<base>,#-6]; cmp w8,#5; b.ne go
+              0x785f8008 | base << 5, 0x7100151f, 0x54000041,   # ldurh w8,[x<base>,#-8]; cmp w8,#5; b.ne go
               0x1e2e1008,                   # fmov s8,#1.0
-              0x1f08040a, 0x1e202008, 0x14000003,   # go: fmadd s10,s0,s8,s1; fcmp s0,#0.0; b end
-              0x1e202008, 0x1f08040a):      # off: the original fcmp s0,#0.0; fmadd s10,s0,s8,s1
+              fmadd, 0x1e202008, 0x14000003,   # go: fmadd s<dst>,s0,s8,s1; fcmp s0,#0.0; b end
+              0x1e202008, fmadd):           # off: the original fcmp s0,#0.0; fmadd s<dst>,s0,s8,s1
         emit(w)
     emit(B(here(), fade + 0x138))
     fs_put(fade + 0x130, [B(fade + 0x130, start), NOP], 'D-pad menu fade starts at full rate under fractional steps (FPSLocker)')
@@ -142,6 +144,11 @@ def matched_frame_step(ctx):
     parts = [o.get(k) for k in ('game step reader 1', 'game step reader 2', 'menu fade', 'swapchain argument', 'view render size')]
     if None in parts: return
     stub(ctx, ctx.base, *parts)
+
+# Tears of the Kingdom 1.4.2 (main 5cb42b1c...) is packed from a derived profile and has no match rule of its own, so its functions are named by offset: the frame step, the fps readers, the
+# D-pad fade and the swapchain argument from FPSLocker's config for that build (5CB42B1CF25469FB.yaml), the render scale sites by 1.4.3's bytes (one match each, at the same distance apart);
+# every site's original instructions and the registers the stubs rely on checked by disassembly. Each value is the start of the function, which the stub offsets from (as in MATCH_FRAME_STEP)
+FRAME_STEP = {'5cb42b1cf25469fb0635fd046453d843': lambda ctx: stub(ctx, 0x2d4e50, 0x2d46fc, 0x37ea10, 0x387260, 0xbbf0b4, 0x102470, (25, 9))}   # 1.4.2
 
 # Placed by the functions they patch, on any build that keeps all six (checked on 1.4.3, 2026-11-09: rewritten byte-identical to the build entry it had until then,
 # FRAME_STEP of build 277178b7…, at main+0x2db174, +0x2daa20, +0x3e55e0, +0x1fbb50, +0xbe1304 and +0xd5c24)

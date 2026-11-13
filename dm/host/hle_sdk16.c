@@ -14,10 +14,10 @@
 HLE_FORCE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", "CPU boost mode; the host does not scale clocks", void, h_oe_CpuBoost, int m) { (void)m; }
 // DisplayVersion = char[16] (the application's display version): the value from that version's control data (NACP), chosen by main's build ID (the game profile's build rows); unknown builds get 1.0.0
 HLE_FORCE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", "display version (by the main build ID)", void, h_oe_DispVer, char *v) {
-    const struct { const char *build, *ver; } k[] = {DM_GAME_DISPLAY_VERSIONS};
+    const struct dm_profile *p = dm_profile();
     const char *ver = "1.0.0";
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main"))
-        for (unsigned j = 0; j < sizeof k / sizeof *k; j++) if (k[j].build && !strcmp(g_mod[i].build_id, k[j].build)) ver = k[j].ver;
+        for (int j = 0; j < p->nver; j++) if (!strcmp(g_mod[i].build_id, p->ver[j].build)) ver = p->ver[j].ver;
     memset(v, 0, 16); strlcpy(v, ver, 16);
 }
 HLE_FORCE("_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_", "system / application volume balance; the host always reports 1:1", void, h_oe_GetVolBal, float *sys, float *app) { *sys = 1.0f; *app = 1.0f; }
@@ -154,12 +154,13 @@ HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine22GetPointerToWorkBufferEv", "the ga
 static size_t font_skip(void) {
     static int skip = -1;
     if (skip < 0) {
-#ifdef DM_GAME_SHARED_FONT_TTF
-        skip = DM_GAME_SHARED_FONT_TTF ? 8 : 0; LOG("shared font: %s (game profile shared_font)", skip ? "the TTF itself" : "BFTTF header + TTF");
-#else
-        int m = dm_sdk_major(), dec = dm_game_imports("_ZN2nn6fontll24ScalableFontEngineHelper6Decode"); skip = DM_SDK_OLD(m) || !dec ? 8 : 0;
-        LOG("shared font: %s (SDK %d, main %s ScalableFontEngineHelper::Decode)", skip ? "the TTF itself" : "BFTTF header + TTF", m, dec ? "imports" : "does not import");
-#endif
+        int ttf = dm_profile()->shared_font_ttf;   // -1: the profile does not say, the SDK version decides
+        if (ttf >= 0) {
+            skip = ttf ? 8 : 0; LOG("shared font: %s (game profile shared_font)", skip ? "the TTF itself" : "BFTTF header + TTF");
+        } else {
+            int m = dm_sdk_major(), dec = dm_game_imports("_ZN2nn6fontll24ScalableFontEngineHelper6Decode"); skip = DM_SDK_OLD(m) || !dec ? 8 : 0;
+            LOG("shared font: %s (SDK %d, main %s ScalableFontEngineHelper::Decode)", skip ? "the TTF itself" : "BFTTF header + TTF", m, dec ? "imports" : "does not import");
+        }
     }
     return (size_t)skip;
 }
@@ -343,8 +344,8 @@ static void diag_abort(uint32_t res, void *lr) {
     dm_backtrace((uint64_t)__builtin_frame_address(1));
     die("game aborted");
 }
-HLE_FORCE("_ZN2nn4diag6detail9AbortImplEv", "game aborted", void, h_diag_Abort0, void) { diag_abort(0, __builtin_return_address(0)); }
-HLE_FORCE("_ZN2nn4diag6detail9AbortImplEPKNS_6ResultE", "game aborted (with Result)", void, h_diag_AbortR, const uint32_t *r) { diag_abort(r ? *r : 0, __builtin_return_address(0)); }
+HLE_FORCE("_ZN2nn4diag6detail9AbortImplEv", "game aborted", void, h_diag_Abort0, void) { diag_abort(0, dm_bigstack_caller(__builtin_return_address(0))); }
+HLE_FORCE("_ZN2nn4diag6detail9AbortImplEPKNS_6ResultE", "game aborted (with Result)", void, h_diag_AbortR, const uint32_t *r) { diag_abort(r ? *r : 0, dm_bigstack_caller(__builtin_return_address(0))); }
 HLE_FORCE("_ZN2nn4diag12GetBacktraceEPmi", "backtrace; the host provides none (0 frames)", int, h_diag_Bt, uint64_t *out, int n) { (void)out; (void)n; return 0; }
 // An assert, a C++ exception that nothing caught (std::terminate) or an SDK check reached VAbortImpl: print where it came from and the message's FORMAT, which
 // names the failure on its own ("libc++abi: terminating due to uncaught exception of type ...", Well Dweller's first boot). The arguments the format would fill
@@ -354,7 +355,7 @@ HLE_FORCE("_ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserE
           const char *fn, const char *expr, const char *file, int line, const void *res, const void *info, const char *fmt, void *ap) {
     (void)info; (void)ap;
     LOG("[diag] abort at %s: %s (%s:%d) message format %s", fn ? fn : "?", expr ? expr : "?", file ? file : "?", line, fmt ? fmt : "?");
-    diag_abort(res ? *(const uint32_t *)res : 0, __builtin_return_address(0));   // VAbortImpl never returns to its caller
+    diag_abort(res ? *(const uint32_t *)res : 0, dm_bigstack_caller(__builtin_return_address(0)));   // VAbortImpl never returns to its caller
 }
 HLE_FORCE("_ZN2nn4diag13GetSymbolNameEPcmm", "symbol name; the host provides none (empty string)", uint64_t, h_diag_SymName, char *buf, size_t n, uint64_t addr) { (void)addr; if (buf && n) buf[0] = 0; return 0; }
 

@@ -222,3 +222,62 @@
 "Plays Joy-Con 2 and Pro Controller 2 over Bluetooth: hold Sync on one during the game to pair it. macOS asks once for Bluetooth access." = "通过蓝牙连接 Joy-Con 2 和 Pro Controller 2。游戏中长按手柄的同步键即可配对，macOS 首次会询问蓝牙访问权限。";
 "Switch 2 controllers" = "Switch 2 手柄";
 "Touch feedback" = "触摸反馈";
+
+"Switch + button" = "Switch ＋（键盘 ＋/＝）";
+
+"Switch - button" = "Switch －（键盘 －）";
+
+"Numpad+" = "小键盘 ＋";
+
+"Numpad-" = "小键盘 －";
+
+"Hold to aim; release to throw" = "按住瞄准，松开投掷";
+
+"Hold to focus / lock on" = "按住注视／锁定目标";
+
+"Satchel / menu" = "腰包／菜单";
+
+"Switch items / Pokemon" = "切换道具／宝可梦";
+
+"Sprint / cancel" = "奔跑／取消";
+
+"Top move" = "上方招式";
+
+"Left move" = "左方招式";
+
+"Bottom move" = "下方招式";
+
+"Right move" = "右方招式";
+
+"Move forward" = "向前移动";
+
+"Move backward" = "向后移动";
+
+"Strafe left" = "向左移动";
+
+"Strafe right" = "向右移动";
+
+"Look up" = "镜头向上";
+
+"Look down" = "镜头向下";
+
+"Look left" = "镜头向左";
+
+"Look right" = "镜头向右";
+
+"D-pad left" = "十字键左";
+
+"D-pad right" = "十字键右";
+
+"D-pad up" = "十字键上";
+
+"D-pad down" = "十字键下";
+
+"Movement" = "人物移动（WASD）";
+"Camera directions" = "镜头方向（默认由鼠标控制，可另绑按键）";
+"Actions and menus" = "动作、菜单与十字键";
+
+"Reset camera" = "镜头回正";
+"Rotate focused camera" = "锁定时转动镜头（鼠标已自动处理）";
+"Crouch / rise" = "蹲下／起身";
+"Mega evolution" = "超级进化";

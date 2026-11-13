@@ -31,6 +31,8 @@ uint64_t guest_ns(void) { return guest_now; }
 // The answers' high-water marks (answer_tick) follow the real clock, which never goes back; the tests move the guest clock back and forth, so a test that sets it starts them again
 static void hwm_clear(void) { memset((void *)&g_hwm_states, 0, sizeof g_hwm_states); memset((void *)&g_hwm_imu, 0, sizeof g_hwm_imu); }
 uint64_t now_ns(void) { return motion_now; }
+static void step_clocks(uint64_t dt) { motion_now += dt; guest_now += dt; }
+static void align_clocks(void) { uint64_t t = ((guest_now > motion_now ? guest_now : motion_now) / SIX_PERIOD_NS + 1) * SIX_PERIOD_NS; motion_now = guest_now = t; hwm_clear(); }
 static _Atomic uint64_t g_test_lag;   // t_live_edges: the guest clock behind the host one (a freeze), as hle_os.c's g_glag
 static int g_test_pinned;   // t_live_pinned: a frozen or DM_DETCLOCK guest clock, every host time mapped to the guest's now
 uint64_t guest_ns_at_host_time(uint64_t host_ns) { return g_test_pinned ? guest_now : host_ns + guest_now - motion_now; }   // the two test clocks: host now is guest now
@@ -155,7 +157,7 @@ static void t_npads(void) {
     CHECK(h_hid_Strap() == RES_OK && h_hid_StrapArg(arg) == RES_OK, "both strap guide overloads answer as the player closing the guide");
     CHECK(applet_opens == 12 && applet_depth == 0, "every answer opened and closed its applet");
     arg[0] = 1;
-    CHECK(six_connected(0x0100 | 3) && !six_connected(0x0200 | 3), "player 2 has a six-axis sensor, No3 none");
+    CHECK(six_connected(0x20103) && !six_connected(0x20203), "player 2 has a six-axis sensor, No3 none");
     {   // GitHub issue #2237: more players than the game's maximum. The applet leaves the players past it out, so the game does not see them and open it again
         arg[0] = 1; arg[1] = 1; g_signals = 0;
         CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 1 && dm_players_reported() == 1, "two players, one wanted: the applet answers one and one is reported");
@@ -295,6 +297,19 @@ static void t_joycons(void) {
     // One Joy-Con alone on player 2: JoyRight on No2; leaving: full-key again
     dm_pad_players(3); dm_joy_attach(1, 2);
     CHECK(h_hid_GetStyle(&(uint32_t){1}) == STYLE_JOYRIGHT, "one right Joy-Con alone: JoyRight on its own npad");
+    h_hid_JoySingle(&(uint32_t){0});
+    uint32_t jleft = 0, jright = 0; SixAxisState six;
+    CHECK(h_hid_SixHandles(&jleft, 1, &(uint32_t){0}, STYLE_JOYLEFT) == 1 && h_hid_SixStates(&six, 1, &jleft) == 1 && six.acc[0] != 0.0f && six.acc[1] != 0.0f && six.acc[2] == -1.0f,
+          "Joy-Con six-axis acceleration never reports an exact 0.0f component");
+    CHECK(h_hid_SixHandles(&jright, 1, &(uint32_t){2}, STYLE_JOYRIGHT) == 1 && h_hid_SixRest(&jleft) && h_hid_SixRest(&jright),
+          "idle split Joy-Con six-axis sensors are at rest");
+    dm_motion_set_joy(0, 0, (const float[3]){0, 0, -1}, (const float[3]){0, 0, 0.5f}, motion_now);
+    dm_motion_set_joy(0, 1, (const float[3]){0, 0, -1}, (const float[3]){0, 0, 0.5f}, motion_now);
+    CHECK(!h_hid_SixRest(&jleft) && !h_hid_SixRest(&jright),
+          "turning split Joy-Con six-axis sensors are not at rest");
+    dm_motion_clear_joy(0, 0); dm_motion_clear_joy(0, 1);
+    dm_joy_attach(0, 1); dm_joy_attach(0, 3);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_JOYDUAL, "re-joining single Joy-Cons into a pair clears single assignment");
     dm_joy_attach(1, 0); dm_joy_attach(0, 0);
     CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_FULLKEY && h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY, "no Joy-Con reported any more: full-key controllers, as before");
     dm_haptics_route(0, 0); dm_pad_players(1); h_hid_SetStyles(0xffffffffu);
@@ -339,9 +354,14 @@ static void t_vibration(void) {
     dm_vibration v = {0.25, 160, 0.5, 320}, got;
     g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(3);
     CHECK(!h_hid_VibPermit() && !h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY), "no sink: no vibration devices");
+    h_hid_VibInfo(info, &(uint32_t){3});
+    CHECK(info[0] == 0 && info[1] == 0, "no sink: vibration device info is empty");
     dm_haptics_init(vibration_sink, 1);
     CHECK(!h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2,
           "startup handles do not wait for a routed haptics output");
+    h_hid_VibInfo(info, &h[0]); CHECK(info[0] == 1 && info[1] == 1, "startup left motor reports a left LRA before routing");
+    h_hid_VibInfo(info, &h[1]); CHECK(info[0] == 1 && info[1] == 2, "startup right motor reports a right LRA before routing");
+    h_hid_VibInfo(info, &(uint32_t){0x203}); CHECK(info[0] == 0 && info[1] == 0, "disconnected player reports no LRA before routing");
     CHECK(!h_hid_VibMounted(&h[0]), "no routed output: device not mounted");
     h_hid_SendVib(&h[0], &v);
     CHECK(dm_haptics_actual(0, 0).amplitude_low == 0, "a value before routing is not retained");
@@ -385,6 +405,10 @@ static void t_vibration(void) {
     CHECK(!h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD) == 2, "rumble disabled: not permitted, but the handles exist, as on a Switch");
     dm_haptics_set_enabled(1);
     CHECK(h_hid_VibPermit(), "rumble turned on while the game runs: the handles it took work");
+    h_hid_BeginForcedVib(); h_hid_EndForcedVib();
+    h_hid_SysBeginPermitVib(); h_hid_SysEndPermitVib(); h_hid_SysPermitVib(1);
+    CHECK(h_hid_DetailBeginPermitVib() == RES_OK && h_hid_DetailEndPermitVib() == RES_OK && h_hid_DetailPermitVib(1) == RES_OK,
+          "forced/permit vibration session hooks succeed without hid service");
 }
 
 static void *vibration_sender(void *arg) {
@@ -438,7 +462,7 @@ static void t_script_hold(void) {
     CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_A | DM_BTN_B | DM_BTN_X), "script, controller and keyboard buttons are combined");
     CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_A | DM_BTN_B | DM_BTN_X), "a scripted hold survives controller updates after the press latch is consumed");
     CHECK(lx_of(0) == -0x7000, "the scripted stick wins over controller drift");
-    CHECK(atomic_load(&g_shake_on), "controller updates do not stop a scripted shake");
+    CHECK(atomic_load(&g_shake_on[0]), "controller updates do not stop a scripted shake");
 }
 static void t_script(void) {
     g_mode = 1; dm_pad_players(1);
@@ -449,7 +473,7 @@ static void t_script(void) {
     script_hold = t_script_hold; keys_main(NULL); script_hold = NULL;
     CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_B | DM_BTN_X), "script release preserves the controller and keyboard buttons");
     CHECK(lx_of(0) == 120, "script release preserves the controller stick");
-    CHECK(!atomic_load(&g_shake_on), "script release ends its shake hold");
+    CHECK(!atomic_load(&g_shake_on[0]), "script release ends its shake hold");
     dm_input_set(0, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0); buttons_of(0, STYLE_FULLKEY);
     g_steps[0] = (key_step){.btn = DM_BTN_Y}; keys_main(NULL);
     CHECK(buttons_of(0, STYLE_FULLKEY) == DM_BTN_Y, "a short scripted press is latched until the game reads");
@@ -462,6 +486,7 @@ static void t_script(void) {
     script_set(0, 0, 0, 0, 0); buttons_of(NPAD_HANDHELD, STYLE_HANDHELD);
     g_mode = 1; dm_pad_players(1);
     g_nsteps = 0; g_steps = NULL;
+    step_clocks(1000000000ull);   // let the scripted Shake finish before the physical-motion tests
 }
 
 // DM_REC (GitHub issue #313): player 1's physical input written as DM_KEYS steps, read back by the DM_KEYS parser and played on the scripted path at the game's reads (keys_sync);
@@ -594,7 +619,7 @@ static void t_motion_threads(void) {
 }
 static void t_motion_live(void) {
     g_mode = 1; dm_pad_players(1);
-    atomic_store(&g_shake_t0, 0); atomic_store(&g_shake_end, 0);   // no shake: the clocks here stand at 1 s, so the cycle t_script's shake finishes would never end
+    for (int p = 0; p < DM_PLAYERS; p++) { atomic_store(&g_shake_t0[p], 0); atomic_store(&g_shake_end[p], 0); }   // no shake: the clocks here stand at 1 s, so the cycle t_script's shake finishes would never end
 
     uint32_t h; uint32_t id = 0;
     CHECK(h_hid_SixHandles(&h, 1, &id, STYLE_FULLKEY) == 1, "one six-axis handle for player 1");
@@ -729,7 +754,7 @@ static void *imu_reader(void *arg) {   // reads the newest 16 at a fixed guest t
 static void t_npad_imu_samples(void) {
     g_mode = 1; dm_pad_players(1); g_phone_mode = 0;
     setenv("DM_IMU_NOISE", "0", 1); unsetenv("DM_IMU_ACC_SIGN"); unsetenv("DM_IMU_GYRO_SIGN"); imu_env_read();   // exact values and the host's own signs here; t_imu_noise checks the noise
-    atomic_store(&g_shake_t0, 0); atomic_store(&g_shake_end, 0);
+    for (int p = 0; p < DM_PLAYERS; p++) { atomic_store(&g_shake_t0[p], 0); atomic_store(&g_shake_end[p], 0); }
     uint32_t h = 0x20003;   // the SDK's own handle (utility::GetSixAxisSensorHandle, sdk+0x6d8490): full key (style index 3) on No1, the whole controller (device 2)
     imu_handle = h;
     TestImuSample s[40], t[40]; memset(s, 0xAB, sizeof s);
@@ -848,7 +873,7 @@ static void t_imu_sdk_handles(void) {
 // with the intended spread, uncorrelated from one tick to the next; DM_IMU_NOISE=0 leaves it out
 static void t_imu_noise(void) {
     g_mode = 1; dm_pad_players(1); g_phone_mode = 0;
-    atomic_store(&g_shake_t0, 0); atomic_store(&g_shake_end, 0);
+    for (int p = 0; p < DM_PLAYERS; p++) { atomic_store(&g_shake_t0[p], 0); atomic_store(&g_shake_end[p], 0); }
     unsetenv("DM_IMU_NOISE"); imu_env_read();
     uint32_t h[2] = {0x20003, 0x10003};   // the SDK's handles of player 1's full-key controller, two device indexes
     uint8_t ring[64]; h_hid_ImuEnable(ring, sizeof ring);
@@ -1560,6 +1585,170 @@ static void t_unsupported_style(void) {
     CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_FULLKEY, "JoyLeft | JoyRight only: no style with a whole controller's buttons supported, full-key as before");
     h_hid_SetStyles(0xffffffffu); pthread_mutex_lock(&g_style_lock); g_style_ev[0] = NULL; pthread_mutex_unlock(&g_style_lock);
 }
+static void t_six_handles(void) {
+    // Independent SDK wire fixtures alongside host GetSixAxisSensorHandles rules (including two sensors for Handheld and paired styles).
+    static const struct { uint32_t style, id; int count; uint32_t first, second; } cases[] = {
+        {STYLE_FULLKEY, 1, 1, 0x00103, 0},
+        {STYLE_HANDHELD, NPAD_HANDHELD, 2, 0x02004, 0x12004},
+        {STYLE_JOYDUAL, 1, 2, 0x00105, 0x10105},
+        {STYLE_JOYLEFT, 1, 1, 0x00106, 0},
+        {STYLE_JOYRIGHT, 1, 1, 0x10107, 0},
+        {STYLE_FULLKEY | STYLE_JOYDUAL, 1, 2, 0x00103, 0x10103},
+    };
+    uint32_t h[3];
+    for (unsigned i=0; i<sizeof cases/sizeof *cases; i++) {
+        h[0]=h[1]=h[2]=0xdeadbeef;
+        CHECK(h_hid_SixHandles(h,2,&cases[i].id,cases[i].style) == cases[i].count, "SDK six-axis sensor count for each style");
+        CHECK(h[0] == cases[i].first && (cases[i].count == 1 ? h[1] == 0xdeadbeef : h[1] == cases[i].second) && h[2] == 0xdeadbeef,
+              "SDK six-axis handle bytes and output bounds");
+    }
+    uint32_t id=0;
+    h[0]=h[1]=0xdeadbeef;
+    CHECK(h_hid_SixHandles(h,1,&id,STYLE_JOYDUAL) == 1 && h[0] == 5 && h[1] == 0xdeadbeef, "one-slot output truncates the JoyDual handle list");
+    h[0]=0xdeadbeef;
+    CHECK(!h_hid_SixHandles(h,0,&id,STYLE_FULLKEY) && !h_hid_SixHandles(h,-1,&id,STYLE_FULLKEY) && h[0] == 0xdeadbeef, "nonpositive capacity leaves handles untouched");
+    CHECK(!h_hid_SixHandles(h,2,&id,0) && !h_hid_SixHandles(h,2,&id,1u<<15) && h[0] == 0xdeadbeef, "unsupported styles return no six-axis handles");
+
+    align_clocks();
+    g_mode=1; ids((uint32_t[]){0,1,NPAD_HANDHELD},3); dm_pad_players(3);
+    SixAxisState six[2]; uint32_t first=0x20003;
+    CHECK(h_hid_SixStates(six,2,&first) == 2 && six[0].attributes == 1 && six[1].attributes == 1, "FullKey SDK handle reads connected history");
+    dm_input_set(DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    uint32_t invalid[] = {0, 0x20000, 0x30003, 0x1020003, 0x20004, 0x20803};
+    for (unsigned i=0; i<sizeof invalid/sizeof *invalid; i++) {
+        memset(six,0xff,sizeof six);
+        CHECK(!h_hid_SixStates(six,2,&invalid[i]) && !six[0].attributes && !six[1].attributes, "invalid or disconnected six-axis handles do not read live motion");
+        CHECK(h_hid_SixRest(&invalid[i]), "invalid six-axis handle cannot inherit a player's Shake");
+    }
+    dm_input_set(0,0,0,0,0); step_clocks(200000000);
+    g_mode=0; uint32_t handheld=0x22004;
+    CHECK(h_hid_SixStates(six,2,&handheld) == 2 && six[0].attributes == 1, "Handheld combined sensor reads with its SDK handle");
+    CHECK(!h_hid_SixStates(six,2,&first), "FullKey handle disconnects after switching to handheld mode");
+    g_mode=1; hwm_clear(); guest_now = motion_now = 1000000000ull;
+}
+
+static void t_shake(void) {
+    SixAxisState six[6]; NpadState pad;
+    uint32_t first = 0x20003;
+    g_mode = 1; ids((uint32_t[]){0,1,2,3,4,5,6,7,NPAD_HANDHELD}, 9);
+    dm_input_set(0,0,0,0,0);
+    for (int p = 0; p < DM_PLAYERS; p++) { dm_pad_set_player(p,0,0,0,0,0); dm_pad_motion(p,NULL); }
+    dm_pad_players(0xff); align_clocks();
+    for (int p = 0; p < DM_PLAYERS; p++) fill(&pad,(uint32_t)p,STYLE_FULLKEY);   // consume older tests' press latches
+
+    for (int p = 1; p < DM_PLAYERS; p++) {
+        uint32_t h = 0x20003 | (uint32_t)p << 8;
+        dm_pad_set_player(p,DM_BTN_A | DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+        h_hid_SixState(six,&h);
+        CHECK(six[0].acc[0] > 0 && six[0].gyro[2] > 0 && !h_hid_SixRest(&h), "each secondary player receives its own mapped Shake");
+        h_hid_SixState(six,&first);
+        CHECK(six[0].acc[0] == 0 && h_hid_SixRest(&first), "secondary Shake does not leak into player 1 in multiplayer");
+        fill(&pad,(uint32_t)p,STYLE_FULLKEY);
+        CHECK(pad.buttons == DM_BTN_A, "Shake never reaches the game's Npad button bits");
+        dm_pad_set_player(p,0,0,0,0,0); step_clocks(20000000);
+        h_hid_SixState(six,&h);
+        CHECK(six[0].acc[0] > 0 && !h_hid_SixRest(&h), "releasing secondary Shake lets the current cycle finish");
+        step_clocks(200000000);
+        h_hid_SixState(six,&h);
+        CHECK(six[0].acc[0] == 0 && h_hid_SixRest(&h), "released secondary Shake returns to rest");
+    }
+
+    // DM_KBD_PLAYER=own puts the controller in slot 1. A one-player game
+    // merges it into player 1, including a tap released before any sensor read.
+    ids((uint32_t[]){0,NPAD_HANDHELD}, 2); dm_pad_players(7);
+    align_clocks();
+    dm_pad_set_player(1,DM_BTN_SHAKE,0,0,0,0); step_clocks(1000000);
+    dm_pad_set_player(1,0,0,0,0,0); step_clocks(19000000);
+    CHECK(h_hid_SixStates(six,6,&first) == 6 && six[0].acc[0] > 0 && six[5].acc[0] == 0,
+          "one-player merged Shake preserves a short tap and its sensor history");
+    CHECK(!h_hid_SixRest(&first), "one-player merged Shake is not reported at rest");
+    step_clocks(200000000);
+    CHECK(h_hid_SixRest(&first), "one-player merged tap finishes its cycle");
+
+    dm_pad_set_player(1,DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    ids((uint32_t[]){0,1}, 2);
+    uint32_t second = 0x20103;
+    h_hid_SixState(six,&second);
+    CHECK(six[0].acc[0] > 0 && h_hid_SixRest(&first), "held Shake follows the player's current Npad assignment");
+    dm_pad_set_player(2,DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    CHECK(h_hid_SixRest(&first), "unsupported multiplayer slots do not shake player 1");
+    ids((uint32_t[]){0}, 1);
+    dm_pad_set_player(1,0,0,0,0,0); step_clocks(200000000);
+    h_hid_SixState(six,&first);
+    CHECK(six[0].acc[0] != 0 && !h_hid_SixRest(&first), "releasing one merged controller leaves another controller's Shake held");
+    dm_pad_set_player(2,0,0,0,0,0); step_clocks(200000000);
+    CHECK(h_hid_SixRest(&first), "all merged Shake sources released returns to rest");
+
+    g_mode = 0; ids((uint32_t[]){NPAD_HANDHELD}, 1);
+    uint32_t handheld = 0x22004;
+    dm_pad_set_player(1,DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    h_hid_SixState(six,&handheld);
+    CHECK(six[0].acc[0] > 0 && !h_hid_SixRest(&handheld), "secondary Shake merges into the handheld sensor");
+    dm_pad_players(1);
+    h_hid_SixState(six,&handheld);
+    CHECK(six[0].acc[0] == 0 && h_hid_SixRest(&handheld), "disconnecting a merged Shake controller removes its motion");
+    dm_pad_players(3);
+    h_hid_SixStates(six,6,&handheld);
+    int cleared = 1; for (int i = 0; i < 6; i++) cleared &= six[i].acc[0] == 0;
+    CHECK(cleared && h_hid_SixRest(&handheld), "immediate slot reuse does not inherit the disconnected controller's Shake history");
+    step_clocks(200000000);
+
+    g_mode = 1; ids((uint32_t[]){0,1}, 2);
+    dm_motion physical = {.acc={0,0,-1}, .gyro={0,0,0.25f}, .dir={1,0,0,0,1,0,0,0,1}};
+    dm_pad_motion(1,&physical);
+    dm_pad_set_player(1,DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    h_hid_SixState(six,&second);
+    CHECK(six[0].acc[0] > 0 && six[0].gyro[2] > 0.5f, "secondary Shake overrides physical motion for its whole cycle");
+    dm_pad_set_player(1,0,0,0,0,0); step_clocks(200000000); dm_pad_motion(1,&physical);
+    h_hid_SixState(six,&second);
+    CHECK(six[0].acc[0] == 0 && six[0].gyro[2] == 0.25f, "physical motion resumes after secondary Shake finishes");
+    dm_pad_motion(1,NULL);
+
+    dm_input_set(DM_BTN_SHAKE,0,0,0,0); dm_pad_set(DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    dm_input_set(0,0,0,0,0); step_clocks(200000000);
+    CHECK(!h_hid_SixRest(&first) && h_hid_SixRest(&second), "keyboard release preserves player 1's controller Shake without affecting player 2");
+    dm_pad_set(0,0,0,0,0); step_clocks(200000000);
+    CHECK(h_hid_SixRest(&first), "keyboard and first-controller Shake still return to rest");
+
+    script_set(DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    h_hid_SixState(six,&first);
+    CHECK(six[0].acc[0] > 0 && !h_hid_SixRest(&first) && h_hid_SixRest(&second), "scripted Shake reaches only player 1's sensor");
+    dm_pad_set_player(1,DM_BTN_SHAKE,0,0,0,0); step_clocks(20000000);
+    CHECK(!h_hid_SixRest(&first) && !h_hid_SixRest(&second), "scripted and secondary-controller Shake can run together");
+    script_set(0,0,0,0,0); step_clocks(200000000);
+    CHECK(h_hid_SixRest(&first) && !h_hid_SixRest(&second), "script release preserves the secondary controller's Shake");
+    dm_pad_set_player(1,0,0,0,0,0); step_clocks(200000000);
+    CHECK(h_hid_SixRest(&second), "secondary Shake returns to rest after the overlapping script finishes");
+}
+
+// An offline applet sees every input route while guest reads remain quiet. Its edge latch is independent of each npad's consumed press latch.
+static void t_applet_input(void) {
+    g_mode = 1; ids((uint32_t[]){0, 1, 2, NPAD_HANDHELD}, 4); dm_pad_players(7);
+    dm_input_set(0, 0, 0, 0, 0); script_set(0, 0, 0, 0, 0);
+    for (int p = 0; p < DM_PLAYERS; p++) dm_pad_set_player(p, 0, 0, 0, 0, 0);
+    uint64_t b; int32_t a[4]; dm_input_peek(&b, a);
+    dm_input_hold(1);
+    dm_input_set(DM_BTN_A, 100, 0, 0, 0);
+    script_set(DM_BTN_X, 300, -400, 0, 0);
+    dm_pad_set_player(1, DM_BTN_B, -200, 0, 0, 500);
+    CHECK(buttons_of(0, STYLE_FULLKEY) == 0 && buttons_of(1, STYLE_FULLKEY) == 0, "applet hold hides keyboard, script and the other player's buttons from the game");
+    CHECK(lx_of(0) == 0 && lx_of(1) == 0, "applet hold centres every guest npad's sticks");
+    dm_input_peek(&b, a);
+    CHECK(b == (DM_BTN_A | DM_BTN_X | DM_BTN_B), "applet sees every route after guest reads consumed their press latches");
+    CHECK(a[0] == 300 && a[1] == -400 && a[2] == 0 && a[3] == 500, "applet combines the most deflected axes across routes and players");
+    dm_input_set(0, 0, 0, 0, 0); script_set(0, 0, 0, 0, 0); dm_pad_set_player(1, 0, 0, 0, 0, 0);
+    dm_pad_set_player(2, DM_BTN_Y, 0, 0, 0, 0); dm_pad_set_player(2, 0, 0, 0, 0, 0);
+    CHECK(buttons_of(2, STYLE_FULLKEY) == 0, "a tapped third-player button stays hidden from guest reads during the applet");
+    dm_input_peek(&b, a); CHECK(b == DM_BTN_Y, "applet retains a third-player tap between polls");
+    dm_input_peek(&b, a); CHECK(b == 0, "applet consumes that short press once");
+    dm_input_hold(0);
+    CHECK(buttons_of(0, STYLE_FULLKEY) == 0 && buttons_of(1, STYLE_FULLKEY) == 0 && buttons_of(2, STYLE_FULLKEY) == 0, "closing the applet does not replay its taps to the game");
+    dm_pad_set(DM_BTN_A, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0);
+    dm_input_peek(&b, a); CHECK(b == DM_BTN_A, "applet peek still sees a short controller press after the hold");
+    uint64_t first = buttons_of(0, STYLE_FULLKEY), second = buttons_of(0, STYLE_FULLKEY);
+    CHECK(first == DM_BTN_A && second == 0, "applet peek does not consume the game's independent short-press latch");
+    dm_pad_players(0);
+}
 
 static int t_pad_swap(void) {
     const char *ab = getenv("DM_PAD_SWAP_AB"), *xy = getenv("DM_PAD_SWAP_XY");
@@ -1618,6 +1807,7 @@ int main(int argc, char **argv) {
     t_slots();
     t_npads();
     t_script();
+    t_six_handles();
     t_vibration();
     t_opmode();
     t_joycons();
@@ -1644,6 +1834,70 @@ int main(int argc, char **argv) {
     t_pair_half_pause();
     t_six_ic_info();
     t_touch_sampling();
+    g_mode = 1; ids((uint32_t[]){0,1}, 2); dm_pad_players(3);
+    align_clocks();
+    dm_motion motion = {.acc={0,0,-1}, .gyro={0.1f,0.2f,0.3f}, .dir={1,0,0,0,1,0,0,0,1}};
+    dm_pad_motion(1, &motion);
+    SixAxisState six[3]; uint32_t h = 0x20103;
+    CHECK(six_states(six, 3, h) == 3 && six[0].gyro[2] == 0.3f, "physical gyro reaches its player's six-axis state");
+    CHECK(!h_hid_SixRest(&h), "physical gyro is not reported at rest");
+    step_clocks(SIX_PERIOD_NS); motion.gyro[2] = 0.6f; dm_pad_motion(1, &motion);
+    six_states(six, 3, h);
+    CHECK(six[0].gyro[2] == 0.6f && six[1].gyro[2] == 0.3f, "six-axis history preserves distinct samples");
+    ids((uint32_t[]){0},1); six_states(six,1,0x20003);
+    CHECK(six[0].gyro[2] == 0.6f, "one-player title receives merged controller motion");
+    step_clocks(1000000000ull); six_states(six,1,0x20003);
+    CHECK(six[0].gyro[2] == 0 && six[0].acc[2] == -1, "stale physical motion returns to rest");
+    step_clocks(1000000); memset(motion.gyro,0,sizeof motion.gyro); dm_pad_motion(1,&motion);
+    six_states(six,3,0x20003);
+    CHECK(six[0].gyro[2]==0 && six[1].gyro[2]==0 && six[2].gyro[2]==0, "fresh motion never revives history from before a stale gap");
+    dm_pad_motion(1, NULL); six_states(six, 1, 0x20003); CHECK(six[0].gyro[2] == 0, "disconnect clears sensor history");
+    // The direct Steam history participates in the same source policy as GC, Pro and phone motion.
+    align_clocks();
+    motion.acc[0] = .25f; dm_pad_motion(0, &motion);
+    dm_motion_set_switch(0, (float[]){0, -1, 0}, (float[]){0, 0, 0});
+    six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[0] == .25f, "auto phone does not replace direct controller history");
+    g_phone_mode = 1; six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[1] == -1, "forced phone overrides direct controller history");
+    g_phone_mode = -1;
+    dm_motion_set(0, (float[]){.5f, 0, -.8660254f}, (float[]){0, 0, 0});
+    six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[0] == .5f, "fresh GC motion has priority over direct HID history");
+    dm_motion_clear(0); six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[0] == .25f, "clearing GC reveals the preserved direct HID history");
+    dm_pad_motion(0, NULL); six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[1] == -1, "disconnecting direct HID allows auto phone fallback");
+    g_motion_off = 1; dm_pad_motion(0, &motion); six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[2] == -1, "DM_MOTION disables direct history and all fallback sources");
+    g_motion_off = 0; g_phone_motion.last_ns = 0;
+    dm_pad_motion(1, NULL); six_states(six,1,0x20003); CHECK(six[0].gyro[2] == 0, "disconnect clears sensor history");
+    // A newly arriving merged controller cannot erase the previous source's history.
+    align_clocks();
+    dm_pad_motion(0, &motion);
+    step_clocks(SIX_PERIOD_NS + 2000000);
+    dm_motion later = motion; later.acc[0] = .75f; dm_pad_motion(1, &later);
+    six_states(six, 2, 0x20003);
+    CHECK(six[0].acc[0] == .25f && six[1].acc[0] == .25f, "new direct source with no matching history preserves the older source");
+    step_clocks(SIX_PERIOD_NS); six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[0] == .75f, "new direct source takes over once its sample reaches the sensor clock");
+    dm_pad_motion(0, NULL); dm_pad_motion(1, NULL);
+    // Steam's integrated history and passive Pro integration never clear or mix each other.
+    align_clocks();
+    dm_motion_set_hid(0, (float[]){.5f, 0, -.8660254f}, (float[]){0, 0, 0}, motion_now);
+    dm_pad_motion(0, &motion); dm_pad_motion(0, NULL); six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[0] == .5f, "direct disconnect leaves passive Pro motion intact");
+    dm_pad_motion(0, &motion); dm_motion_clear_hid(0); six_states(six, 1, 0x20003);
+    CHECK(six[0].acc[0] == .25f, "passive Pro removal leaves direct Steam history intact");
+    dm_pad_motion(0, NULL);
+    // Upstream native motion keeps its orientation during a synthetic Shake.
+    dm_motion_set(0, (float[]){.5f, 0, -.8660254f}, (float[]){0, 0, (float)M_PI});
+    dm_pad_set(DM_BTN_SHAKE, 0, 0, 0, 0); step_clocks(20000000);
+    six_states(six, 1, 0x20003);
+    CHECK(fabsf(six[0].gyro[2] - .5f) < 1e-6f && fabsf(six[0].dir[2] + .5f) < .01f && six[0].acc[0] > .5f,
+          "native motion retains its gyro and orientation while Shake adds acceleration");
+    dm_pad_set(0, 0, 0, 0, 0); step_clocks(200000000); dm_motion_clear(0);
+    t_shake();
     t_rec();
     {   // Nmouse with no device (SDK 21's forms): the pointer range is kept, the merged handle 0 takes settings, the standard mouse and the handle queries report nothing
         int w = 0, h = 0; uint64_t std = 7; uint32_t npad = 9;
@@ -1669,6 +1923,7 @@ int main(int argc, char **argv) {
         CHECK(pad_slot_take_lowest(&f, &o[DM_PLAYERS], "pad") == -1, "press: none left when every player is held");
         CHECK(pad_slot_take_lowest(&f, NULL, "pad") == -1, "press: no owner, no slot");
     }
+    t_applet_input();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

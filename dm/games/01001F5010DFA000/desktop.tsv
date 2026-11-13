@@ -1,17 +1,25 @@
 # Desktop keyboard and mouse profile. Key names are Mac physical key positions; legacy J/K/U/I remain available.
 # Mouse / trackpad motion drives the original right stick. RUN selects the full left-stick range.
 mouse_look	1
+mouse_gain	3
+mouse_deadzone	0.32
 movement	stick
 walk_scale	1
 Enter	A	Confirm
 Escape	UP	Menu
 E	A	Interact / confirm
-Tab	MINUS	Map
+Tab	UP	Satchel / menu
 Space	Y	Dodge
 Shift	LS	Sprint
-MouseLeft	ZR	Throw
-MouseRight	ZL	Aim
+MouseLeft	ZR	Hold to aim; release to throw
+MouseRight	ZL	Hold to focus / lock on
 Q	L	L button
-R	X	X button
+X	X	Switch items / Pokemon
+R	R	R button
 Ctrl	B	Crouch
 C	RS	Right stick click
+Numpad+	PLUS	Switch + button
+Numpad-	MINUS	Switch - button
+M	MINUS	Map
++	PLUS	Switch + button
+-	MINUS	Switch - button

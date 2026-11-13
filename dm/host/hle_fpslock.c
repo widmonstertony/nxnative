@@ -257,7 +257,7 @@ void dm_fps_lock_tick(void) {
     if (state == -2) {
         state = -1; pthread_once(&g_found, lock_find);
         if (!nrow && !nier && !fb.n && !uq.base && !ue_missing) return;
-        const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET; src = e ? "DM_FPS_TARGET" : "game profile fps_target";
+        const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : dm_profile()->fps_target; src = e ? "DM_FPS_TARGET" : "game profile fps_target";
         if (t != 0 && t != 30 && t != 60 && t != 120) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30, 60 or 120; leaving the game's frame limit", e); t = 0; }
         if (t == 120 && DM_GAME_FPS_MAX < 120) { LOG("[RED] DM_FPS_TARGET=120: this game's speed at 120 fps is not checked (profile fps_max); running at 60"); t = 60; }
         high = t == 120;

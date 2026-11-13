@@ -2,6 +2,13 @@
 
 ## Game packages
 
+### An iOS build stops when the profile has no prewarm seed list
+
+- **Symptom:** after the shader build, `build_ipa.sh` stops at `copy shader tables` because `pso_manifest.tsv` does not exist. This also stops the shell's game-framework build.
+- **Cause:** a profile may have no recorded pipeline prewarm seeds yet. The host supports that state and still reads the device's own list, but the iOS packager required the optional seed file alongside the required shader tables.
+- **Fix:** copy a recorded seed list when present and report its absence otherwise. Required shader tables and a failed copy of an existing seed list still stop the build. No seed records are invented, and shader cache inputs are unchanged. This does not change shader rebuild or resume decisions.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md), [NX2Apple issue #922](https://github.com/LNPANDY/NX2Apple/issues/922). The separate report of repeated shader compilation remains open.
+
 ### PFS0 file-name table missing its final NUL
 
 - **Symptom:** package identification stops with `ValueError: subsection not found` in `pfs0_names`, or LibHac reports `ResultFsPathNotFound` opening the last file of an NSP.
@@ -30,6 +37,14 @@
 - **Cause:** the game files themselves. An NSP's files are checked against the NCA's hashes at extraction, so a damaged one stops the build ([`--allow-damaged`](../development.md#the-packing-script-in-detail)). A NUP or a dump folder carries no such hashes: whatever bytes it holds are packed. On one NUP of Ocarina of Time three `.zs` textures began with 12,288 zero bytes, so no zstd frame: the game could not decompress them, and its loader asked for them again on every pass ([PR #1530](https://github.com/seedds/nxnative/pull/1530)). The container's own SHA-256 of each file matched, so the bytes were like this when the NUP was packed. Another NUP of the same version holds all three as zstd streams, and none of its 102,185 `.zs` files fails the check.
 - **Fix:** the NSP script reads the first bytes of every file whose name promises a format (`romfs_image.FORMAT_HEADS`: `.zs` starts with a zstd frame or a skippable frame) once per extracted image (`check_formats`, after extraction; the result is kept in `RomFS.img.formats` beside the image until the image changes: Ocarina of Time 16 s from a USB SSD) and stops naming the damaged files: pack again from a good copy of the game. `--allow-damaged` lists them and packs them as they are. The host serves a game's files as they are: substituting other files for damaged ones would hide the damage and change what the game draws.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), a contributor's NUP of v131072.
+
+### A NUP whose folder contains itself
+
+- **Symptom:** `pack_nup.py`, or the NSP script on a NUP, ends in a Python traceback (`RecursionError` in `tree_bytes`) instead of a `[RED]` line.
+- **Cause:** `Nup` checked each folder's child range and each child index against the table sizes, but not that the folders form a tree. A table of contents whose hash matches can still name a folder, or one of its ancestors, as its own child; `scan` sums the base package's size by recursion and never ends, and `entries` (the RomFS image's walk) would loop.
+- **Fix:** `Nup` walks the folder graph once, depth first without recursion, and refuses a folder that contains itself, naming it (`contains itself (damaged file)`), before any other walk sees the container.
+- **Check:** `test_nsp_nup` Read.test_folder_cycle_refused: a folder made its own parent, then a cycle of two folders, each with the TOC hash fixed up, are refused, and the script exits 1 with no traceback. Without the check the container opens.
+- **Found on:** a code audit; no damaged NUP of this kind is known.
 
 ### A provisional profile of a Switch 2 game shows no SDK and a Switch 1 memory pool
 
@@ -75,6 +90,13 @@
 - **Cause:** the arm64 slice committed with the [native tools](#building-needed-net-and-finding-its-runtime-kept-failing) imported `pipe2` weakly: its minimum macOS is 12.0, and `pipe2` is declared from the macOS 27 SDK on. The .NET runtime's `SystemNative_Pipe`, which opens the signal pipe at start, was compiled to call it without a check, so on a Mac without it the import binds to 0 and the call jumps there. Microsoft's NativeAOT runtime pack (10.0.14, built against the macOS 15.5 SDK) has no such call: a build with it on the same sources has no `pipe2` import. So that slice was linked with another `libSystem.Native.a`, one configured against the 27.2 SDK; which .NET gave it is open (a source-built one, such as Homebrew's formula, builds its host architecture's pack against the installed SDK, which would also explain the clean x86_64 slice).
 - **Fix:** the translator is rebuilt with Microsoft's .NET SDK. `native_tools.sh` refuses a slice with a weak import before it joins the slices, and `test_native_tools.py` (`test_no_weak_imports`) reads the symbol tables of both committed tools, so a function newer than the minimum macOS cannot be committed again from any Mac. `nx_extract` had none. Measured: over the translator jobs of a full Cuphead shader build, the new arm64 slice wrote the same files as the old one, byte for byte. Not run on macOS 26 here.
 - **Found on:** every game's build on macOS 26 ([GitHub issue #2190](https://github.com/seedds/nxnative/issues/2190), [#2239](https://github.com/seedds/nxnative/issues/2239), [#2227](https://github.com/seedds/nxnative/issues/2227)).
+
+### The Mac host build starts an older Python than the pipeline
+
+- **Symptom:** the Mac host step fails in `host_msl.py` with `TypeError: __init__() got an unexpected keyword argument 'capture_output'`, although the launcher reports a recent bundled Python.
+- **Cause:** the pipeline runs under the selected interpreter, but the host Makefile started `python3` by name. The pipeline's tool folders could put an older installation before the bundled interpreter on `PATH`.
+- **Fix:** `build_mac_host` passes its exact `sys.executable` to both Make invocations as `PYTHON`. The host Makefile quotes that setting for its shader and profile generators, including parse-time profile lookup. Direct Make builds default to `python3` and can set `PYTHON` explicitly. `PATH` is unchanged. Synthetic tests execute the real shader-header target with an unusable `python3` on `PATH` and an explicitly selected versioned interpreter in a path with spaces.
+- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md), version 3.0.0, reported with bundled Python 3.13 and a child Python 3.6 in [NX2Apple issue #711](https://github.com/LNPANDY/NX2Apple/issues/711). The interpreter failure was reproduced synthetically, without game files or a gameplay check.
 
 ### Homebrew .NET is on PATH but apphosts cannot find the runtime
 
@@ -237,6 +259,13 @@
 - **Fix:** `dm/gfx/tools/dmsh_build.py`. A finished shader's files go into the compile cache (`cas.db`, under `stage/<output folder>/`) and leave the disk (`commit`); reads of another shader's outputs (a vertex shader's paired pixel MSL for `vs_pad`, the mesh step) take them from there (`output`). At the end the image is written from the staged outputs (`publish_library`, through `shader_lib.write`), with a partial build's image under it less the keys it built, and the folder and the staged entries go; when the image cannot be written, the staged outputs go back into the folder. Cache hits are restored when their shader is finished, not at the look. The shaders are translated and finished in batches of 4 × `J` (the next batch is translated while this one is finished), each in a folder of its own, and a shader's working files go as soon as it is finished. Each build's working folder holds its process ID; a later build removes a `dmsh_*` folder whose process is gone (one without the ID after a day). The NSP script's progress comes from a small file the build rewrites (`DMSH_PROGRESS`), no longer from counting its files. The outputs are the same: chain `cfcc3a82c78b` against the new one, Minecraft Dungeons II's 61,655 library files and Octopath Traveler 0's 41,880 are byte for byte the same (reflection without its `chain` field), apart from `_b_cas.txt`, which lists the new chain's cache digests.
 - **Measured** on an M4 Pro, every shader translated again (the chain changed), the Metal libraries from the cache: Octopath Traveler 0, 10,324 shaders, at most 405 files under `shader/` and `tmp/` (12 outside a build), 2:48 for the step (2:55 with batches of 4 × 128); Minecraft Dungeons II, 15,826 shaders, at most 3,279 with batches of 256 removed whole. Stopped with SIGKILL near the end of a compile: 40 files in `b-<chain>/` and 7 in `tmp/dmsh_*`; the next run cleared them and wrote the same library from the cache in 59 s. A partial build of 42 shaders for the Mac and the iPhone leaves one image each, also when run again over them.
 - **Found on:** [Minecraft Dungeons II](../../dm/games/0100A7C01B792000/README.md#found-on-this-game) and [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md#found-on-this-game) builds, reported by the user.
+
+### A full drive during a shader build drops finished outputs from the library
+
+- **Symptom:** after a shader build on a nearly full drive (one `[RED] the shader compile cache … cannot be written` line), the library image lacks some outputs of a shader that built: the host finds no reflection or library for it.
+- **Cause:** `commit` in `dmsh_build.py` removed each file from the disk as soon as its write into the stage had been made, inside the batch that held the shader's other files. SQLite answers a write that does not fit with `SQLITE_FULL` and may roll the whole transaction back, the writes before it too; `Store.put` turned the error into its `full` flag, and the files of those earlier writes were neither on disk nor staged, so `publish_library` left them out. A later write in the same batch ran outside any transaction and stayed, and a failed commit raised after every file was gone.
+- **Fix:** `dm/tools/shader_cache.py`: a write or a commit that fails fails its whole batch, which is rolled back with `full` set, and no write is tried after that (one inside the ended transaction would land on its own). The outermost batch is tracked by the store, not by SQLite's transaction flag, which the failed write cleared. `commit` removes its files only once the batch has committed and `full` is still clear; otherwise every file stays on disk, where `publish_library` takes it. A forked worker's store (`Remote`) has `full` from the end of its batch. `dm/tools/tests/test_shader_cache.py` fills a store with a page limit inside a batch and fails a commit; `test_shader_toolchain_cache.py` stages a shader into a full store and publishes it.
+- **Found on:** a code audit's reproduction with a page-limited SQLite file (2026-11-13); no build has been seen to lose an output.
 
 ### A work folder holds millions of small files
 

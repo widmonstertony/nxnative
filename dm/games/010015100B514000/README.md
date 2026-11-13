@@ -101,6 +101,7 @@ Game-specific findings; the general host changes they led to are listed under [F
 ## Found on this game
 
 - **Joy-Cons as dual or single npads:** [Joy-Cons as dual or single npads](../../../docs/reference/services.md#joy-cons-as-dual-or-single-npads): choosing two players splits a Joy-Con 2 pair through the controller applet, one sideways Joy-Con each.
+- [CPU-decoded BC uploads and format views](../../../docs/reference/rendering.md#cpu-decoded-bc-uploads-and-format-views): A15 corruption and invalid format views with the compatibility option enabled.
 - [Offline pipeline archive missing for the device GPU](../../../docs/reference/shaders.md#offline-pipeline-archive-missing-for-the-device-gpu): archive targets can follow profile metadata while iOS Metal 4 remains opt-in; [the probe above](#offline-pipeline-archive-probe) records the build evidence and open device checks.
 General host changes first needed here; each applies to every game:
 
@@ -124,3 +125,7 @@ General host changes first needed here; each applies to every game:
 - dm/games/README.md says the heap check turns "Wonder's 1.44 GB" request into a 0xc0000000 alias region; 03 says it asks for 1.47 GB, and the profile's alias region is 0xB8000000.
 - Several addresses in 02 and 03 (`main+0x1070910`, `main+0x107dbc0`, `main+0x4da5c`, `main+0xb8dec`, `main+0xcfd24`, `main+0x36ceff0`) do not name their build; the present-interval ones are from 1.2.1.
 - 2 agl post-effect compute shaders do not translate.
+
+## A15 CPU BC compatibility investigation
+
+With the fork's CPU BC option enabled, an iPhone 13 Pro Max on iOS 27.0.1 showed striped rectangles in version 1.0.0 character selection, followed by an invalid decoded-texture view abort. The equivalent upload and view fix restored that screen in a historical local build. See [CPU-decoded BC uploads and format views](../../../docs/reference/rendering.md#cpu-decoded-bc-uploads-and-format-views) for the mechanism, regression coverage and limits. Current-pin verification is through synthetic GPU tests, not a new full-game phone run.

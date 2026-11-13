@@ -214,3 +214,14 @@ Synthetic Metal GPU checks cover corrected pixels and replacing the sampler
 while a submission retains its twin. The atomic-companion reflection validator
 still rejects this unproven combination. This host support alone neither
 completes the companion integration nor establishes A10X gameplay support.
+
+
+## TonTon Mac Legends controls (2026-11-13)
+
+The desktop input update calibrates fine mouse motion and exposes physical
+keyboard Plus/Minus keys. Z-A maps the move diamond to I/J/K/L in top/left/bottom/right
+order and applies the original R+right-stick camera chord during mouse focus.
+See [the input contract](../../../docs/desktop-controls-upstream.md#legends-desktop-response-and-physical-keys).
+The per-title host preserves its installed shader chain and game resources.
+Input regressions and packaging passed; player gameplay acceptance is pending.
+No save data is modified by the update.

@@ -90,7 +90,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 2 | 0 | 0 | `game` ×2 |
-| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | `game` |
+| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 18 | 0 | 0 | `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | `build` → `game` |
 
 ## Games
@@ -640,6 +640,17 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **`game`**, frame rate, at goal, checked: 1.4.3 main: one function of each fingerprint; the rule rewrites it byte-identical to its former build entry (2026-11-09): 60 fps frame step and render scale. The game's own timing object, found by its six functions' fingerprints on any build that keeps them; no engine sibling shares the code (BotW, SMO, MK8D, ACNH, Splatoon 2 / 3, Kirby, Mario Party, Ocarina, Smash, Metroid Dread, Origami King: no exact match, 2026-11-09)
 
+- **1.4.2 `main`** `5cb42b1c…` ([patches.py:151](../../dm/games/0100F2C0115B6000/patches.py#L151))
+  - frame step `+0x10250c`: view render size x the host render scale (1.0 = original)
+  - frame step `+0x1025cc`: dynamic resolution only at render scale 1.0
+  - frame step `+0x2d4730`: game step reads the float fps (original integer fps and scvtf when off)
+  - frame step `+0x2d4748`: scvtf moved into the stub at the load
+  - frame step `+0x2d4e68`: frame step from the host in whole vsyncs, by elapsed time until it has decided one (state page target fps; 0 = original interval logic)
+  - frame step `+0x37ea5c`: game step reads the float fps (original integer fps and scvtf when off)
+  - frame step `+0x37ea68`: scvtf moved into the stub at the load
+  - frame step `+0x387390`: D-pad menu fade starts at full rate under fractional steps (FPSLocker)
+  - frame step `+0xbbf258`: swapchain argument 1 when on (FPSLocker)
+  - render scale stub (the launcher offers DM_RENDER_SCALE)
 - **function-matched frame step** (`main` of builds without FRAME_STEP): 60 fps frame step and render scale: a function of 0x298 bytes, `+0x18` in it; game step reader 1, a function of 0x358 bytes, `+0x34`, `+0x4c` in it; game step reader 2, a function of 0x81c bytes, `+0x4c`, `+0x58` in it; menu fade, a function of 0x3bc bytes, `+0x130` in it; swapchain argument, a function of 0x8bc bytes, `+0x1a4` in it; view render size, a function of 0x1f8 bytes, `+0x9c`, `+0x15c` in it
 
 ### Xenoblade Chronicles 3

@@ -10,12 +10,13 @@ struct DesktopControlsView: View {
     @ObservedObject var model: LauncherModel
     let rows: [[String]]
     let movement: String
+    @State private var expanded = false
     // Physical macOS positions, matching input_map.h; Escape, F1 and F8 remain recovery shortcuts.
     static let keys: [(String, Int)] = [
         ("A",0),("S",1),("D",2),("F",3),("H",4),("G",5),("Z",6),("X",7),("C",8),("V",9),
         ("Q",12),("W",13),("E",14),("R",15),("Y",16),("T",17),("1",18),("2",19),("3",20),("4",21),
         ("6",22),("5",23),("9",25),("7",26),("8",28),("0",29),("O",31),("U",32),("I",34),("P",35),
-        ("Enter",36),("L",37),("J",38),("K",40),("N",45),("M",46),("Tab",48),("Space",49),("Escape",53),
+        ("+",24),("-",27),("Numpad+",69),("Numpad-",78),("Enter",36),("L",37),("J",38),("K",40),("N",45),("M",46),("Tab",48),("Space",49),("Escape",53),
         ("Shift",56),("Alt",58),("Ctrl",59),("Left",123),("Right",124),("Down",125),("Up",126),
         ("MouseLeft",128),("MouseRight",129),("MouseMiddle",130)
     ]
@@ -42,7 +43,11 @@ struct DesktopControlsView: View {
     private var effective: [String: Int] { ControllerMap.keys(model.values["DM_KEYMAP"], base: base) }
     private func label(_ function: String) -> String {
         let note = rows.last(where: { $0[1].caseInsensitiveCompare(function) == .orderedSame })?.last
-        return note.map(ct) ?? ct(function)
+        if let note { return ct(note) }
+        let labels = ["LUp":"Move forward", "LDown":"Move backward", "LLeft":"Strafe left", "LRight":"Strafe right",
+                      "RUp":"Look up", "RDown":"Look down", "RLeft":"Look left", "RRight":"Look right",
+                      "Left":"D-pad left", "Right":"D-pad right", "Up":"D-pad up", "Down":"D-pad down"]
+        return ct(labels[function] ?? function)
     }
     private func bind(_ function: String, _ code: Int) {
         var keys = effective
@@ -57,10 +62,19 @@ struct DesktopControlsView: View {
         }.joined(separator: ",")
     }
     var body: some View {
-        DisclosureGroup(ct("Customize keyboard and mouse")) {
+        VStack(alignment: .leading, spacing: 10) {
+            Button { expanded.toggle() } label: {
+                Label(ct("Customize keyboard and mouse"), systemImage: expanded ? "chevron.down" : "chevron.right")
+            }
+            .buttonStyle(.plain)
+            if expanded {
             Text(ct("Each game keeps its own bindings. Assigning a key moves its previous action. Changes apply on the next launch."))
                 .font(.footnote).foregroundStyle(.secondary)
-            ForEach(ControllerMap.functions, id: \.self) { name in
+            ForEach([("Movement", ["LUp","LDown","LLeft","LRight"]),
+                     ("Camera directions", ["RUp","RDown","RLeft","RRight"]),
+                     ("Actions and menus", ControllerMap.buttons + ["Shake","Run"])], id: \.0) { group in
+                Text(ct(group.0)).font(.headline).padding(.top, 8)
+                ForEach(group.1, id: \.self) { name in
                 Picker(selection: Binding(get: { effective[name] ?? -1 }, set: { bind(name, $0) })) {
                     Text(ct("Unassigned")).tag(-1)
                     ForEach(Self.keys, id: \.1) { key in Text(desktopKeyLabel(key.0)).tag(key.1) }
@@ -69,8 +83,10 @@ struct DesktopControlsView: View {
                 }
                 .disabled(model.fixed.contains("DM_KEYMAP"))
             }
+            }
             Button(ct("Restore this game's keyboard defaults")) { model.values["DM_KEYMAP"] = "" }
                 .disabled(model.fixed.contains("DM_KEYMAP"))
+            }
         }
     }
 }

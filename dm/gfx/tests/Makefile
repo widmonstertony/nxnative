@@ -127,6 +127,12 @@ t_cpu_tex: t_cpu_tex.m $(MTL_T_DEP)
 .PHONY: check_t_cpu_tex
 check_t_cpu_tex: t_cpu_tex
 	MTL_DEBUG_LAYER=1 ./t_cpu_tex --metal
+t_vc_ghost: t_vc_ghost.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_vc_ghost.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
+.PHONY: check_t_vc_ghost
+check_t_vc_ghost: t_vc_ghost
+	MTL_DEBUG_LAYER=1 ./t_vc_ghost
+	MTL_DEBUG_LAYER=1 ./t_vc_ghost --off
 t_read_owner: t_read_owner.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_read_owner.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 check_t_read_owner: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -141,6 +147,8 @@ check_t_capture: t_capture
 # On the GPU: two synthetic frames through the capture hooks, the second one captured, then replayed by nvn_replay (same digest, twice)
 t_large_mdi: t_large_mdi.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_large_mdi.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
+t_mdx_prescan: t_mdx_prescan.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_mdx_prescan.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 t_capture_live: t_capture_live.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_capture_live.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 .PHONY: check_t_capture_live
@@ -184,6 +192,9 @@ check_t_gmem_words: t_gmem_words
 t_pool_notes: t_pool_notes.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_notes.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 check_t_pool_notes: RUN_ENV = MTL_DEBUG_LAYER=1
+t_htab_update: t_htab_update.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_htab_update.m $(MTL_T_SRC) $(FW)
+check_t_htab_update: RUN_ENV = MTL_DEBUG_LAYER=1
 t_sparse_tiles: t_sparse_tiles.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_sparse_tiles.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 t_readback: t_readback.m $(MTL_T_DEP)
@@ -375,6 +386,9 @@ check_t_pull: RUN_ENV = MTL_DEBUG_LAYER=1
 t_pull_inv: t_pull_inv.m ../tools/dmsh_pull.py ../tools/dmsh_pull.metal
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_pull_inv.m -framework Metal -framework Foundation
 check_t_pull_inv: RUN_ENV = MTL_DEBUG_LAYER=1
+t_wline: t_wline.m ../tools/dmsh_pull.py ../tools/dmsh_pull.metal
+	clang -O1 -g -Wall -fobjc-arc -o $@ t_wline.m -framework Metal -framework Foundation
+check_t_wline: RUN_ENV = MTL_DEBUG_LAYER=1
 t_pso_archive: t_pso_archive.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_archive.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_pso_archive
@@ -706,3 +720,12 @@ check_t_pool_typebridge: t_pool_typebridge
 t_sparse_pool_cache: t_sparse_pool_cache.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_sparse_pool_cache.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 check_t_sparse_pool_cache: RUN_ENV = MTL_DEBUG_LAYER=1
+t_bc_cpu: t_bc_cpu.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_bc_cpu.m $(MTL_T_SRC) $(FW)
+check_t_bc_cpu: RUN_ENV = MTL_DEBUG_LAYER=1
+
+t_vpool_alias: t_vpool_alias.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_vpool_alias.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+.PHONY: check_t_vpool_alias
+check_t_vpool_alias: t_vpool_alias
+	MTL_DEBUG_LAYER=1 ./t_vpool_alias
