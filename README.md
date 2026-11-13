@@ -8,7 +8,7 @@ It is not an emulator: the game's own code runs directly on the Apple chip, with
 
 ## TonTon Gamebox build tracks
 
-- **New builds:** this `main` integrates [nxnative upstream `3c4de03c`](https://github.com/seedds/nxnative/commit/3c4de03c71e45651d1f3440e149cb4c47811ec3d). Use a separate checkout at the selected commit and a new per-title job directory. See [the Rust build workflow](docs/tonton-new-builds.md).
+- **New builds:** this `main` integrates [nxnative upstream `a780d2cd`](https://github.com/seedds/nxnative/commit/a780d2cd6ce5317940e4ff78125ca7a4a4874420). Use a separate checkout at the selected commit and a new per-title job directory. See [the Rust build workflow](docs/tonton-new-builds.md).
 - **Installed and in-progress titles:** keep the exact engine, shader chain and artifact set already recorded by each job. The [pre-sync compatibility source](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5) and [iPadOS 16.1/17 maintenance branch](https://github.com/widmonstertony/nxnative/tree/ios16-ios17-compat) retain the legacy renderer and TonTon device work. This merge does not port those changes into the new engine, change a device install, or reuse an old shader cache.
 
 ## TonTon Gamebox: game fixes and verification
