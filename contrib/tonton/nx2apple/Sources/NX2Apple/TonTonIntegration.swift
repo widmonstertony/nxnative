@@ -41,13 +41,13 @@ enum TonTonBootstrap {
                 games[index]["appPath"] = app.path
             } else {
                 games.append(["id": UUID().uuidString, "titleID": info.titleID, "name": names[info.titleID] ?? info.name,
-                              "appPath": app.path, "lastTarget": "mac", "defaultsApplied": true])
+                              "appPath": app.path, "lastTarget": BuildTarget.mac, "defaultsApplied": true])
             }
         }
         let hiddenTitles = Set(UserDefaults.standard.stringArray(forKey: "TonTon.hiddenCatalogTitles") ?? [])
         for entry in catalog where !hiddenTitles.contains(entry["id"] ?? "") {
             guard let title = entry["id"], let name = entry["name"], !games.contains(where: { $0["titleID"] as? String == title }) else { continue }
-            games.append(["id": UUID().uuidString, "titleID": title, "name": name, "lastTarget": "mac", "defaultsApplied": true])
+            games.append(["id": UUID().uuidString, "titleID": title, "name": name, "lastTarget": BuildTarget.mac, "defaultsApplied": true])
         }
         if let path = Bundle.main.object(forInfoDictionaryKey: "TonTonBuildConfig") as? String,
            let data = fm.contents(atPath: path),
@@ -59,7 +59,7 @@ enum TonTonBootstrap {
                 if inputs.isEmpty { inputs["folder"] = [source]; games[index]["inputs"] = inputs }
                 if (games[index]["sourceFolder"] as? String ?? "").isEmpty { games[index]["sourceFolder"] = source }
                 if (games[index]["outputDirectory"] as? String ?? "").isEmpty { games[index]["outputDirectory"] = build["outputDirectory"] }
-                games[index]["lastTarget"] = "mac"
+                games[index]["lastTarget"] = BuildTarget.mac
             }
         }
         // Earlier imports decoded untouched catalog placeholders with an iOS
@@ -68,7 +68,7 @@ enum TonTonBootstrap {
             guard let title = games[index]["titleID"] as? String, names[title] != nil,
                   (games[index]["inputs"] as? [String: [String]] ?? [:]).isEmpty,
                   ["appPath", "iosAppPath", "ipaPath", "archivePath"].allSatisfy({ (games[index][$0] as? String ?? "").isEmpty }) else { continue }
-            games[index]["lastTarget"] = "mac"
+            games[index]["lastTarget"] = BuildTarget.mac
         }
         snapshot["games"] = games
         if snapshot["folder"] == nil { snapshot["folder"] = "" }

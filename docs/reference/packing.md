@@ -2,6 +2,13 @@
 
 ## Game packages
 
+### An imported TonTon Mac game selects iPhone when configuring a build
+
+- **Symptom:** configuring an imported Mac game selects the iPhone target and asks for device setup.
+- **Cause:** TonTon's catalog importer wrote `mac`, but `LibraryGame` normalizes only the frontend's `mac-app` token as a Mac target. Other tokens decode as iOS.
+- **Fix:** use `BuildTarget.mac` for imported installed games, catalog placeholders and verified local Mac configurations. The current build form remains the user's choice.
+- **Found on:** [Hyrule Warriors: Age of Imprisonment](../../dm/games/04003F40232DE000/README.md), during setup of an unbuilt Mac game.
+
 ### TonTon rejects a complete NUP reached through a symbolic link
 
 - **Symptom:** a managed source link is reported as a partial NUP and its game is absent from the build selection.
