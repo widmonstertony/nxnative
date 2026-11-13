@@ -66,11 +66,11 @@ import Foundation
         let mm = LauncherModel(mac.settings, defaults: d)
         expect(mm.sections(basic: true) == ["Game", "Controls"] && mm.sections(basic: false) == ["Game", "Controls", "Performance"], "Basic and Advanced keep the list's sections")
         expect(mm.rows(in: "Game", basic: true).map(\.env) == ["DM_FPS_TARGET", "DM_RENDER_SCALE", "DM_OPMODE", "DM_LANG", "DM_FULLSCREEN"], "Basic rows in the list's order")
-        expect(!file.settings.contains { $0.env == "DM_FULLSCREEN" } && mm.values["DM_FULLSCREEN"] == "0", "Display mode is the Mac's, Window by default")
-        mm.values["DM_FULLSCREEN"] = "1"; mm.apply()
-        expect(String(cString: getenv("DM_FULLSCREEN")) == "1" && d.string(forKey: "launcher.DM_FULLSCREEN") == "1", "Fullscreen goes into the environment and is saved")
+        expect(!file.settings.contains { $0.env == "DM_FULLSCREEN" } && mm.values["DM_FULLSCREEN"] == "1", "Display mode is the Mac's, Fullscreen by default")
         mm.values["DM_FULLSCREEN"] = "0"; mm.apply()
-        expect(String(cString: getenv("DM_FULLSCREEN")) == "0" && d.string(forKey: "launcher.DM_FULLSCREEN") == nil, "Window is the default: set to 0, not saved")
+        expect(String(cString: getenv("DM_FULLSCREEN")) == "0" && d.string(forKey: "launcher.DM_FULLSCREEN") == "0", "Window goes into the environment and is saved")
+        mm.values["DM_FULLSCREEN"] = "1"; mm.apply()
+        expect(String(cString: getenv("DM_FULLSCREEN")) == "1" && d.string(forKey: "launcher.DM_FULLSCREEN") == nil, "Fullscreen is the default: set to 1, not saved")
         let macScale = mac.settings.first { $0.env == "DM_RENDER_SCALE" }!
         mm.values["DM_OPMODE"] = "1"
         expect(mm.rangeLabel(macScale, 1) == "1600 × 900 (100 %)" && mm.rangeLabel(macScale, 0.5) == "800 × 450 (50 %)", "docked size in pixels at 1.0 and 0.5")
@@ -87,6 +87,21 @@ import Foundation
         expect(launched.values["DM_OPMODE"] == "0" && d.string(forKey: "launcher.DM_OPMODE") == "1", "Reset then Play keeps the saved choice of a setting fixed at launch")
         unsetenv("DM_OPMODE"); setenv("DM_ENV_LAUNCH_KEYS", "", 1); d.removeObject(forKey: "launcher.DM_OPMODE")
         failed += checkLauncherLayout(LauncherModel(mac.settings, defaults: d), defaults: d)
+        let keymap = try! JSONDecoder().decode(Setting.self, from: Data(#"{"env":"DM_KEYMAP","kind":"keymap","label":"Keys","note":"","default":""}"#.utf8))
+        let padmap = try! JSONDecoder().decode(Setting.self, from: Data(#"{"env":"DM_PAD_MAP","kind":"padmap","label":"Pad","note":"","default":""}"#.utf8))
+        expect(keymap.accepts("A=128,Run=56,LUp=14") && keymap.accepts("") && !keymap.accepts("A=131") && !keymap.accepts("A= 49"), "keyboard mapping agrees with host codes and rejects malformed values")
+        expect(padmap.accepts("A=B,B=A,Minus=none") && !padmap.accepts("A=Shake") && !padmap.accepts("A=LUp"), "physical mappings only accept controller buttons")
+        let maps = LauncherModel([keymap,padmap], defaults: d, environment: [:])
+        maps.values["DM_KEYMAP"] = "A=128,Run=56,LUp=14"
+        maps.values["DM_PAD_MAP"] = "A=B,B=A"
+        maps.saveChoices()
+        let replay = LauncherModel([keymap,padmap], defaults: d, environment: [:])
+        expect(replay.values == maps.values, "TonTon's saved keyboard and pad mappings replay in the standalone model")
+        let ignoredMaps = LauncherModel([keymap,padmap], defaults: d, environment: ["DM_SAVED_CHOICES":"0"])
+        ignoredMaps.values["DM_KEYMAP"] = "A=49"; ignoredMaps.saveChoices()
+        expect(d.string(forKey: "launcher.DM_KEYMAP") == "A=128,Run=56,LUp=14", "disabled saving never overwrites an existing map")
+        replay.reset(); replay.saveChoices()
+        expect(d.object(forKey: "launcher.DM_KEYMAP") == nil && d.object(forKey: "launcher.DM_PAD_MAP") == nil, "reset removes custom maps and restores each game's defaults")
         print("launcher storage: \(failed) failed")
         exit(failed == 0 ? 0 : 1)
     }

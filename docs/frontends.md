@@ -40,7 +40,7 @@ A built app carries the settings its game supports, as the iPhone app's settings
 ]}
 ```
 
-- `env`: the environment switch the setting sets. `kind`: `choice` (one of `options`, each `[value, label]`), `range` (a number from `min` to `max` in `step`s) or `toggle` (`on` or `off`, the values the switch takes).
+- `env`: the environment switch the setting sets. `kind`: `choice` (one of `options`, each `[value, label]`), `range` (a number from `min` to `max` in `step`s) or `toggle` (`on` or `off`, the values the switch takes). Schema 2 adds `keymap` and `padmap` strings for the Mac mapping editor.
 - `section`: the heading the row goes under, today `Game`, `Controls` or `Performance`. Sections come in the order of their first rows, and rows in the order to show them. A new section may appear in schema 1: a reader draws a section it does not know like the others, under its name, as the iPhone app does.
 - `default`: the value for this app's platform ([Tested defaults](settings.md#tested-defaults)), with profile defaults resolved for its game. A front end that keeps only the choices that differ from it lets a newer build's tested defaults reach the player, as the iPhone app does.
 - `base` (optional, render scale only): `{"docked": [w, h], "handheld": [w, h]}`, the 3D views' size that the scale multiplies, so a front end can show 0.75 as 1200×675 docked. It comes from the game's profile (`render_base`), and only some games have it.
@@ -48,7 +48,7 @@ A built app carries the settings its game supports, as the iPhone app's settings
 - `needs` (optional): `<VAR>=<value>` makes the row a sub-setting of the row that sets `<VAR>`, drawn only while that row has that value (Rumble strength only while rumble is on). A row naming a variable the list does not have stays drawn.
 - An app without the file has no settings to offer: start it as it is.
 
-**Compatibility.** [launcher.schema.json](launcher.schema.json) describes the file as a JSON Schema, so a front end can check it and generate its types from it. `schema` is 1, and schema 1 grows only by optional fields: a reader ignores fields it does not know, draws sections it does not know, and a field never changes its meaning. A new `kind` would be schema 2, since a reader cannot draw a kind it does not know. A list written before the field existed has no `schema` and is 1. In `settings.tsv`, the optional fields come from the last column, `meta` (`key=value` pairs separated by `;`); a new key is added in `settings.py`'s `META`, here and in the schema together, and `test_launcher_settings.py` fails when the three disagree.
+**Compatibility.** [launcher.schema.json](launcher.schema.json) describes the file as a JSON Schema, so a front end can check it and generate its types from it. `schema` is 1, and schema 1 grows only by optional fields: a reader ignores fields it does not know, draws sections it does not know, and a field never changes its meaning. Mac lists with `keymap` or `padmap` use schema 2, since a reader cannot draw a kind it does not know; lists without mapping rows remain schema 1. A list written before the field existed has no `schema` and is 1. In `settings.tsv`, the optional fields come from the last column, `meta` (`key=value` pairs separated by `;`); a new key is added in `settings.py`'s `META`, here and in the schema together, and `test_launcher_settings.py` fails when the three disagree.
 
 ## Starting a game
 
@@ -83,6 +83,8 @@ Each app keeps the player's choices in its own preferences domain, its bundle ID
 The native save host uses a private CloudKit database when the signed app's Info.plist contains `DMCloudSaveContainer`. All participating app IDs must authorize the same container and CloudKit environment. Share the container across those IDs in the Apple developer account. In the Development environment, create the `TonTonSaveV1` record type with `digest` (String) and `bundle` (Asset), then deploy the schema before using the Production environment. One record stores the verified archive for a base title ID; uploads use the current CloudKit record revision. No public database or folder bookmark is used. `DM_SAVE_SYNC=0` still disables sync.
 
 Use `dm/tools/cloudkit_signing.py` on staged metadata, supplying the Apple provisioning profile, resolved app Info.plist, existing app identifier and entitlements, and the chosen container and environment. It only outputs to a new directory and rejects profiles for a different identity or without the required grants. Use those outputs when signing the staged app and verify the final effective entitlements against the profile before installation. An ad-hoc signature cannot authorize CloudKit. The Mac packer includes the transport in both the launcher and host; a capability-enabled Mac package must grant the required entitlement to the CloudKit clients, including the host helper.
+
+The signed standalone Mac Gamebox can also sync the default save folder of a game it launches, without requiring that game to be individually signed for CloudKit. Its per-title worker compares saves before launch and sends committed progress after exit. First sync with different saves and simultaneous changes leave both copies intact. Games already running and games that redirect their save folder are not managed by this worker. Launching a game directly uses that game's own sync configuration.
 
 For an in-place update, compare the installed application identifier with the staged profile and package first. Keep existing device data and local backups. Validate with two signed devices on the same iCloud account: commit a disposable save on one, launch the same title on the other, then repeat in reverse. Verify an offline/conflict run before enabling this for existing saves. This does not cover third-party engines that bypass the native save mounts.
 
@@ -145,3 +147,7 @@ Most commits have none, and commits from before this section have none either. A
 ## What a front end cannot see yet
 
 While a game runs, the host says what happens only in its log, as text meant for people: a controller that connects or goes away, the preparing of shaders before the first frame, a red line. A front end that reads the log to show these would break when a line's wording changes. Events a program can read (one JSON object per line, as the NSP script's) would be the next piece of this interface; until then, treat log lines as diagnostics, not as an interface.
+
+## TonTon desktop controls
+
+Front-ends: Mac schema 2 adds per-game `DM_KEYMAP` and `DM_PAD_MAP` editors, using the NX2Apple mapping protocol and the same launcher preference domain for TonTon and standalone launch. `DM_DESKTOP_CONTROLS=0` keeps the classic keyboard. See [the upstream components and integration](desktop-controls-upstream.md). No game save is part of these settings.

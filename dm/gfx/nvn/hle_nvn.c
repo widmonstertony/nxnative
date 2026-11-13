@@ -3040,7 +3040,7 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
         }
     return 0;
 }
-// A copy's region into linear storage (a LINEAR texture the host uploads from its storage, nvn_mtl.m linear_cpu_only): one 2D level, rows of its stride, as pkg_upload_ reads them
+// A region in linear storage: one 2D level, rows of its stride, as pkg_upload_ reads them.
 static int write_region_linear(const tex_t *t, unsigned level, unsigned layer, const NVNcopyRegion *r, const uint8_t *src, size_t row, int bw, int bh, int bpb) {
     if (t->d.target != NVN_TEXTURE_TARGET_2D || level || layer || bw != 1 || bh != 1 || r->xoffset < 0 || r->yoffset < 0) return -1;
     size_t srow = t->L.layer_size / (t->d.height ? t->d.height : 1), x0 = (size_t)r->xoffset * (size_t)bpb, wb = (size_t)r->width * (size_t)bpb, y0 = (size_t)r->yoffset, hb = (size_t)r->height;
@@ -3048,8 +3048,9 @@ static int write_region_linear(const tex_t *t, unsigned level, unsigned layer, c
     for (size_t y = 0; y < hb; y++) memcpy(t->mem + (y0 + y) * srow + x0, src + y * row, wb);
     return 0;
 }
-static int write_region_mirror(const tex_t *t, unsigned level, unsigned layer, const NVNcopyRegion *r, const uint8_t *src, size_t row, int bw, int bh, int bpb) {
-    return (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR ? write_region_linear : write_region_bl)(t, level, layer, r, src, row, bw, bh, bpb);
+static int write_region_storage(const tex_t *t, unsigned level, unsigned layer, const NVNcopyRegion *r, const uint8_t *src, size_t row, int bw, int bh, int bpb) {
+    int linear = t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);
+    return (linear ? write_region_linear : write_region_bl)(t, level, layer, r, src, row, bw, bh, bpb);
 }
 static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
     if (!t->mem) { LOG("[RED] WriteTexels: texture has no storage"); return; }
@@ -3061,8 +3062,14 @@ static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r
         size_t wb0 = (size_t)((r->width + bw - 1) / bw) * bpb, row0 = row ? row : wb0, img0 = img ? img : row0 * (size_t)((r->height + bh - 1) / bh);
         dm_guest_write_prepare(t->mem, t->L.size);
         int ok = 1;
-        for (int z = 0; z < nz && ok; z++) ok = !write_region_bl(t, level, layer0 + (unsigned)(r->zoffset + z), r, src + (size_t)z * img0, row0, bw, bh, bpb);
+        // The native movie decoder can supply a LINEAR texture (Tsukihime). The tiled helpers reject it,
+        // so even the whole-level swizzle fallback previously left the decoder's frame unwritten.
+        for (int z = 0; z < nz && ok; z++) ok = !write_region_storage(t, level, layer0 + (unsigned)(r->zoffset + z), r, src + (size_t)z * img0, row0, bw, bh, bpb);
         if (ok) { mtl_tex_cpu_written(t); return; }
+    }
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) {
+        ONCE_LOG("[RED] WriteTexels: unsupported linear texture region (format %#x target %d)", t->d.format, t->d.target);
+        return;
     }
     uint32_t lw = t->d.width >> level ? t->d.width >> level : 1, lh = t->d.height >> level ? t->d.height >> level : 1, lz = is3d ? (t->d.depth >> level ? t->d.depth >> level : 1) : 1;
     size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
@@ -3106,7 +3113,7 @@ int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NV
     int nz = r->depth ? r->depth : 1;
     for (int z = 0; z < nz; z++) {
         unsigned layer = layer0 + (unsigned)(r->zoffset + z);
-        if (mirror_prepare(t, level, layer) || write_region_mirror(t, level, layer, r, src + (size_t)z * img, row, bw, bh, bpb)) return -1;
+        if (mirror_prepare(t, level, layer) || write_region_storage(t, level, layer, r, src + (size_t)z * img, row, bw, bh, bpb)) return -1;
     }
     return 0;
 }
@@ -3121,7 +3128,7 @@ int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRe
     int nz = sr->depth ? sr->depth : 1, ok = 1;
     for (int z = 0; z < nz && ok; z++) {
         unsigned layer = ds + (unsigned)(dr->zoffset + z);
-        ok = !nvn_deswizzle(&s->d, sl, ss + (unsigned)(sr->zoffset + z), s->mem, lin, lp) && !mirror_prepare(d, dl, layer) && !write_region_mirror(d, dl, layer, dr, lin + y0 * lp + x0, lp, bw, bh, bpb);
+        ok = !nvn_deswizzle(&s->d, sl, ss + (unsigned)(sr->zoffset + z), s->mem, lin, lp) && !mirror_prepare(d, dl, layer) && !write_region_storage(d, dl, layer, dr, lin + y0 * lp + x0, lp, bw, bh, bpb);
     }
     free(lin);
     return ok ? 0 : -1;

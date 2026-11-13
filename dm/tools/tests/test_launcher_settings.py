@@ -77,9 +77,18 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN'})   # the Mac window's Display mode (front_mac.m reads 1 or 0)
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
+        for key in ('DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY'):
+            self.assertEqual((mac[key]['kind'], mac[key]['default'], mac[key]['level']), ('toggle', '0', 'basic'))
         s = mac['DM_FULLSCREEN']
-        self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '0', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
+        self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '1', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
+
+    def test_desktop_rows_require_a_mac_keyboard_profile(self):
+        keys = {'DM_DESKTOP_CONTROLS', 'DM_MOUSE_LOOK', 'DM_MOUSE_SENSITIVITY', 'DM_MOUSE_INVERT_Y'}
+        gid = '0400486024DEC000'
+        self.assertTrue(keys.issubset(build(gid, 'nvn', 'mac')))
+        self.assertTrue(keys.isdisjoint(build(gid, 'nvn', 'ios')))
+        self.assertTrue(keys.isdisjoint(build(WONDER, 'nvn', 'mac')))
 
     def test_defaults_follow_each_platform_host(self):
         # nvn_mtl.m pso4_on: Mac defaults on, iOS follows the profile. nvn_rec.h rec_on: iOS on, Mac off.
@@ -131,7 +140,7 @@ class LauncherSettingsTests(unittest.TestCase):
                 self.assertIn(key, fields)
                 self.assertNotIn(key, schema['$defs']['setting']['required'], 'a meta field is optional')
                 self.assertRegex(docs, rf'- `{key}` \(optional\)')
-        self.assertEqual(schema['properties']['schema']['const'], settings.SCHEMA)
+        self.assertIn(settings.SCHEMA, schema['properties']['schema']['enum'])
 
     def test_written_lists_follow_the_schema(self):
         schema = json.loads((ROOT / 'docs/launcher.schema.json').read_text(encoding='utf-8'))

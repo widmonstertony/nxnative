@@ -105,6 +105,10 @@ The game's vibration, on the phone or on a connected controller.
 
 How strong the game's vibration is, from 0 to 300 %.
 
+### Swap A / B and Swap X / Y
+
+On the Mac, these independent switches exchange the physical controller's A and B buttons, or X and Y buttons, for this game. Both are off by default. They apply after the host maps the controller to Switch button positions and before it records press edges, for every player and for GameController and raw HID controllers. Keyboard and scripted controls keep their bindings. The settings are saved with the game's other launcher choices and take effect at the next launch. In an environment file, use `DM_PAD_SWAP_AB=1` and `DM_PAD_SWAP_XY=1`.
+
 ### Rumble cutoff
 
 A controller's vibration weaker than this stays off, and the rest is spread over the full range. Off (0 %) by default. A controller with rotating motors can rumble all the time in a game that sends a quiet texture: Mario Kart 8 Deluxe needs about 45 % to rumble only on crashes and drifts. The phone's own vibration is not affected.

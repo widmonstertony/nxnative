@@ -855,6 +855,36 @@ int main(void) {
         P(nvnMemoryPoolFinalize)(&wtp);
     }
 
+    // A decoded movie's native 2D texture can be linear. Keep both the source and destination row strides and the destination padding.
+    {
+        enum { W = 5, H = 4, SRC_ROW = 32, DST_ROW = 128 };
+        static uint8_t storage[16384] __attribute__((aligned(16384)));
+        uint8_t pixels[H * SRC_ROW], expected[H * DST_ROW];
+        NVNmemoryPoolBuilder pb; NVNmemoryPool pool;
+        P(nvnMemoryPoolBuilderSetDevice)(&pb, &dev); P(nvnMemoryPoolBuilderSetDefaults)(&pb);
+        P(nvnMemoryPoolBuilderSetStorage)(&pb, storage, sizeof storage); P(nvnMemoryPoolBuilderSetFlags)(&pb, 0x24);
+        P(nvnMemoryPoolInitialize)(&pool, &pb);
+        memset(pixels, 0x5c, sizeof pixels);
+        memset(expected, 0xad, sizeof expected);
+        for (int y = 0; y < H; y++) for (int x = 0; x < W * 4; x++)
+            expected[y * DST_ROW + x] = pixels[y * SRC_ROW + x] = (uint8_t)(19 * y + x + 1);
+        const int flags[] = { NVN_TEXTURE_FLAGS_LINEAR, NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET };
+        for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
+            NVNtextureBuilder tb; NVNtexture texture;
+            P(nvnTextureBuilderSetDevice)(&tb, &dev); P(nvnTextureBuilderSetDefaults)(&tb);
+            P(nvnTextureBuilderSetTarget)(&tb, NVN_TEXTURE_TARGET_2D); P(nvnTextureBuilderSetSize3D)(&tb, W, H, 1);
+            P(nvnTextureBuilderSetFormat)(&tb, NVN_FORMAT_RGBA8); P(nvnTextureBuilderSetFlags)(&tb, flags[i]);
+            P(nvnTextureBuilderSetStride)(&tb, DST_ROW); P(nvnTextureBuilderSetStorage)(&tb, &pool, 0);
+            P(nvnTextureInitialize)(&texture, &tb);
+            dm_guest_write_prepare(storage, sizeof expected);
+            memset(storage, 0xad, sizeof expected);
+            EXPECT("native movie output reports RGBA8", NVN_FORMAT_RGBA8, nvn_host_write_texture(&texture, pixels, W, H, SRC_ROW, NULL, NULL));
+            EXPECT("native movie output writes linear rows without altering padding", 0, memcmp(storage, expected, sizeof expected));
+            P(nvnTextureFinalize)(&texture);
+        }
+        P(nvnMemoryPoolFinalize)(&pool);
+    }
+
     // 6c3. GPU copies mirrored into the destination's storage (nvn_tex_mirror_t2t / nvn_tex_mirror_b2t, the streamer's level copies): a region of a level copied from a texture of other
     //      dimensions (another block height) and a whole level, byte-identical to "decode the source level → patch the destination level → re-encode", with the rest of the pool untouched;
     //      RGBA8 and BC1; the same regions from a linear buffer with a padded row stride

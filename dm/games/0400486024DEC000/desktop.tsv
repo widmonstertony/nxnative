@@ -1,0 +1,24 @@
+# Desktop profile. Mappings follow the game's Switch 2 Basic Controls; no third-party runtime code is used.
+mouse_look	1
+movement	stick
+walk_scale	1
+Enter	A	Confirm
+Escape	PLUS	Pause / menu
+E	A	Interact / confirm
+Tab	PLUS	Inventory
+Space	X	Jump
+Shift	A	Action / dash
+MouseLeft	Y	Sword
+MouseRight	ZL	Target
+Q	L	Previous tab
+R	R	Next tab
+Ctrl	B	Back
+C	RS	Right stick click
+F	ZR	Use item
+V	LS	Left stick click
+MouseMiddle	RS	Right stick click
+M	MINUS	Map / minus
+1	LEFT	Left
+2	UP	Up
+3	RIGHT	Right
+4	DOWN	Down

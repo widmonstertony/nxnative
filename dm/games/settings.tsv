@@ -21,11 +21,20 @@ DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		le
 DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game	Upscaling	Uses more GPU time and can increase heat.
 DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	game	DM_GAME_UPSCALER_N!=0	Game	Game's upscaler
 DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=basic
-DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Game	Display mode		level=basic
+DM_FULLSCREEN	choice	0=Window,1=Fullscreen	1	platform:mac	Game	Display mode		level=basic
 DM_PICTURE_FIT	choice	fit=Fit,fill=Fill	fit	platform:ios	Game	Picture	Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off. A full-screen picture without cropping needs a patch for each game.
 DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	platform:ios	Game	Frame-rate counter
 DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback
 DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic
+DM_PAD_SWAP_AB	toggle	-	0	platform:mac	Controls	Swap A / B	Exchanges the physical controller's A and B buttons for this game.	level=basic
+DM_PAD_SWAP_XY	toggle	-	0	platform:mac	Controls	Swap X / Y	Exchanges the physical controller's X and Y buttons for this game.	level=basic
+DM_DESKTOP_CONTROLS	toggle	-	1	platform:mac&table:desktop.tsv	Controls	PC keyboard controls	Uses this game's keyboard profile. Escape or F8 releases the mouse; clicking the game captures it again.	level=basic
+DM_MOUSE_CAPTURE	toggle	-	1	platform:mac	Controls	Keep mouse in game	Captures the pointer while playing so it cannot cross onto another display.	level=basic
+DM_MOUSE_LOOK	choice	auto=Game default,on=On,off=Off	auto	platform:mac&table:desktop.tsv	Controls	Mouse / trackpad camera	Mouse motion drives the game's right stick. The game's own camera limits still apply.	level=basic;needs=DM_DESKTOP_CONTROLS=1
+DM_MOUSE_SENSITIVITY	range	0.1:3:0.1	1.0	platform:mac&table:desktop.tsv	Controls	Mouse sensitivity		needs=DM_DESKTOP_CONTROLS=1
+DM_MOUSE_INVERT_Y	toggle	-	0	platform:mac&table:desktop.tsv	Controls	Invert mouse Y		needs=DM_DESKTOP_CONTROLS=1
+DM_KEYMAP	keymap	-		platform:mac&table:desktop.tsv	Controls	Customize keyboard and mouse		level=basic
+DM_PAD_MAP	padmap	-		platform:mac	Controls	Customize controller buttons		level=basic
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1
 DM_RUMBLE_MIN	range	0:0.9:0.05	0	always	Controls	Rumble cutoff
 DM_PAD_PRESS_TO_JOIN	toggle	-	0	always	Controls	Press a button to join

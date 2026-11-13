@@ -73,11 +73,13 @@ def build(gid, patched, control):
         return macros[name].strip('"')
 
     def shown(cond, n):
+        if '&' in cond: return all(shown(part, n) for part in cond.split('&'))
         if cond == 'always': return True
         if cond == 'languages>1': return len(langs) > 1
         if cond.startswith('fixups:'): return cond[7:] in keys
         if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
         if cond.startswith('platform:'): return platform == cond[9:]
+        if cond.startswith('table:'): return g.table(cond[6:]).is_file()
         m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
         if m: return (macro(m[1], n) == m[3]) == (m[2] == '==')
         sys.exit(f'settings.tsv:{n}: unknown condition {cond}')
@@ -127,9 +129,11 @@ def build(gid, patched, control):
             on_off = ['1', '0'] if values == '-' else values.split('/')
             if len(on_off) != 2 or not all(on_off) or on_off[0] == on_off[1]: sys.exit(f'settings.tsv:{n}: toggle values are - or <on>/<off>: {values}')
             s.update(on=on_off[0], off=on_off[1], default=on_off[0] if s['default'] == '1' else on_off[1])   # the default as the value the variable takes
+        elif kind in ('keymap', 'padmap'):
+            if s['default']: sys.exit(f'settings.tsv:{n}: mappings default to an empty override')
         else: sys.exit(f'settings.tsv:{n}: unknown kind {kind}')
         out.append(s)
-    return {'schema': SCHEMA, 'game': g.id, 'settings': out}
+    return {'schema': 2 if any(s['kind'] in ('keymap', 'padmap') for s in out) else SCHEMA, 'game': g.id, 'settings': out}
 
 
 if __name__ == '__main__':

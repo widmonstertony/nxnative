@@ -1,0 +1,17 @@
+# Desktop keyboard and mouse profile. Key names are Mac physical key positions; legacy J/K/U/I remain available.
+# Mouse / trackpad motion drives the original right stick. RUN selects the full left-stick range.
+mouse_look	1
+movement	stick
+walk_scale	1
+Enter	A	Confirm
+Escape	UP	Menu
+E	A	Interact / confirm
+Tab	MINUS	Map
+Space	Y	Dodge
+Shift	LS	Sprint
+MouseLeft	ZR	Throw
+MouseRight	ZL	Aim
+Q	L	L button
+R	X	X button
+Ctrl	B	Crouch
+C	RS	Right stick click

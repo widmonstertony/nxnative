@@ -451,6 +451,14 @@ Games read this count as a position in their own command memory and size their h
 - **Found on:** [Metroid Dread](../../dm/games/010093801237C000/README.md).
 - **Check:** `t_nvn` checks 15 regions in RGBA8, BC1 and a two-layer RGBA16F array, from 1×1 to the whole level, byte for byte against the old whole-level path.
 
+### Native movie output writes linear texture rows
+
+- **Symptom:** Tsukihime decodes and plays the audio of its opening movie, but the picture stays black. The movie texture and its copy target contain no color.
+- **Cause:** the native decoder supplies an RGBA8 texture with linear storage. The CPU writer tried the tiled region writer and then the tiled whole-level fallback. Both reject linear layouts, so no pixels were written.
+- **Fix:** `WriteTexels` uses the linear row stride for linear textures, preserving row padding, and marks the written storage for upload just as it does for a tiled texture.
+- **Found on:** Tsukihime 1.0.2 (010057A01E4D4000), whose 1920×1080 native movie texture uses a 7680-byte row stride.
+- **Check:** `t_nvn` drives native movie output into padded linear RGBA8 textures and checks both the pixels and untouched padding.
+
 ### Packaged texture data copied at `TextureInitialize`
 
 - **Cause:** a texture created with `TextureBuilderSetPackagedTextureData` gets that data copied into its storage by NVN at `TextureInitialize` (a compressible pool cannot be written by the CPU).

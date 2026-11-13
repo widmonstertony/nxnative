@@ -601,7 +601,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`game`**, frame rate, at goal, checked: v131072 main: one function with this fingerprint, the site and its free registers read by disassembly (2026-11-08): frame ratio from the host's step. The game's own frame-ratio division, found by its function's fingerprint on any build that keeps the function
 - **`game`**, rendering, at goal, checked: v131072 main: one function with this fingerprint (a leaf, x16 / x17 free), its callers and the controller read by disassembly (2026-11-08): dynamic resolution held at full size. The game's own dynamic-resolution level function, found by its function's fingerprint on any build that keeps the function; switchable (DM_DYNAMIC_RESOLUTION)
 
-- **function-matched frame step** (`main` of builds without FRAME_STEP): frame ratio from the host's step: a function of 0x9b4 bytes, `+0xe4` in it; dynamic resolution, a function of 0x294 bytes, `+0x0` in it; launcher capabilities: DYNAMIC_RESOLUTION
+- **function-matched frame step** (`main` of builds without FRAME_STEP): frame ratio from the host's step: a function of 0x9b4 bytes, `+0xe4` in it; dynamic resolution, a function of 0x294 bytes, `+0x0` in it; launcher capabilities: DYNAMIC_RESOLUTION, FPS_REALTIME
 
 ### The Legend of Zelda: Tears of the Kingdom
 

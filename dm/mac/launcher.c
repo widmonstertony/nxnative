@@ -27,6 +27,7 @@
 #include "romfs_image.h"
 #include "romfs_identity.h"
 #include "save_sync.h"
+#include "input_map.h"
 
 extern char **environ;
 int dm_mac_launcher(void);   // Launcher.swift: 1 = Play (the settings are in the environment), 0 = the player quit, 2 = no window (apply the saved choices here)
@@ -89,6 +90,13 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # starts a commen
 }
 
 static int saved_accepted(CFDictionaryRef rule, CFStringRef v, const char *s) {   // a saved choice this build still offers: one of its values, or a number in its range
+    CFTypeRef mapping = CFDictionaryGetValue(rule, CFSTR("mapping"));
+    if (mapping && CFGetTypeID(mapping) == CFStringGetTypeID()) {
+        if (strlen(s) > 1023) return 0;
+        if (CFEqual(mapping, CFSTR("keymap"))) { key_map map; key_map_default(&map); return !key_map_parse(&map, s); }
+        if (CFEqual(mapping, CFSTR("padmap"))) { pad_map map; pad_map_default(&map); return !pad_map_parse(&map, s); }
+        return 0;
+    }
     CFTypeRef values = CFDictionaryGetValue(rule, CFSTR("values"));
     if (values && CFGetTypeID(values) == CFArrayGetTypeID()) {
         for (CFIndex i = 0; i < CFArrayGetCount(values); i++) {
@@ -122,7 +130,7 @@ static void saved_choices(void) {   // after the env files, before the bundle's 
     const char *off = getenv("DM_SAVED_CHOICES");
     if (off && !strcmp(off, "0")) { fprintf(stderr, "launcher: saved choices ignored (DM_SAVED_CHOICES=0)\n"); return; }
     for (CFIndex i = 0; i < CFArrayGetCount(rules); i++) {
-        CFTypeRef rule = CFArrayGetValueAtIndex(rules, i); char env[128], s[256];
+        CFTypeRef rule = CFArrayGetValueAtIndex(rules, i); char env[128], s[1024];
         if (!rule_env(rule, env, sizeof env)) continue;
         CFStringRef key = CFStringCreateWithFormat(NULL, NULL, CFSTR("launcher.%s"), env);
         CFPropertyListRef v = CFPreferencesCopyAppValue(key, domain); CFRelease(key);
@@ -251,7 +259,7 @@ int main(int argc, char **argv) {
     snprintf(p, sizeof p, "%s/aoc", res); if (!stat(p, &st)) setenv("DM_AOC_DIR", p, 0);
     snprintf(p, sizeof p, "%s/pso", res); if (!stat(p, &st)) setenv("DM_PSO_BUNDLE", p, 0);   // the bases of every shader pair: the first start builds none
     if (*lang) setenv("DM_LANG", lang, 0);
-    setenv("DM_WINDOW", "1", 0); setenv("DM_AUDIO", "1", 0);
+    setenv("DM_WINDOW", "1", 0); setenv("DM_AUDIO", "1", 0); setenv("DM_FULLSCREEN", "1", 0);
     programs_table(contents, res, sup);
     if (chdir(sup)) { fprintf(stderr, "[RED] launcher: cannot enter %s\n", sup); return 1; }
     struct sigaction sa = {.sa_handler = forward};   // no SA_RESTART: waitpid below sees EINTR and waits again

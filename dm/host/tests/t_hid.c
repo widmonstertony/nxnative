@@ -510,7 +510,53 @@ static void t_motion_hid(void) {
     dm_pad_players(1); g_phone_mode = -1;
 }
 
-int main(void) {
+static int t_pad_swap(void) {
+    const char *ab = getenv("DM_PAD_SWAP_AB"), *xy = getenv("DM_PAD_SWAP_XY");
+    int swap_ab = ab && atoi(ab), swap_xy = xy && atoi(xy);
+    const uint64_t other = DM_BTN_L | DM_BTN_ZR | DM_BTN_PLUS | DM_BTN_LEFT;
+    for (int player = 0; player < DM_PLAYERS; player++) {
+        for (uint64_t face = 0; face < 16; face++) {
+            uint64_t expected = face;
+            if (swap_ab) expected = (expected & ~3ull) | ((face & DM_BTN_A) << 1) | ((face & DM_BTN_B) >> 1);
+            if (swap_xy) expected = (expected & ~12ull) | ((face & DM_BTN_X) << 1) | ((face & DM_BTN_Y) >> 1);
+            dm_pad_set_player(player, 0, 0, 0, 0, 0);
+            atomic_store(&g_pad_latch[player], 0);
+            dm_pad_set_player(player, face | other, 100, -200, 300, -400);
+            CHECK(atomic_load(&g_pad_btn[player]) == (expected | other), "controller button combinations map once");
+            CHECK(atomic_load(&g_pad_latch[player]) == (expected | other), "press edges use the mapped buttons");
+            CHECK(atomic_load(&g_pad_axes[player]) == pack(100, -200, 300, -400), "swapping preserves every stick axis");
+            dm_pad_set_player(player, 0, 0, 0, 0, 0);
+            CHECK(atomic_load(&g_pad_btn[player]) == 0, "releasing a swapped button releases it");
+        }
+    }
+    dm_input_set(DM_BTN_A | DM_BTN_X, 0, 0, 0, 0);
+    CHECK(atomic_load(&g_btn) == (DM_BTN_A | DM_BTN_X), "physical controller swaps preserve keyboard buttons");
+    printf("controller swaps: A/B=%d X/Y=%d, %d checks, %d failed\n", swap_ab, swap_xy, checks, fails);
+    return fails != 0;
+}
+
+static int t_pad_mapping(void) {
+    dm_pad_set_player(0, 0, 0, 0, 0, 0); // initialize the production one-time mapping
+    pad_map_default(&g_button_map);
+    CHECK(!pad_map_parse(&g_button_map, "A=B,B=A,X=none,ZL=L"), "custom physical mapping parses");
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        atomic_store(&g_pad_latch[p], 0);
+        dm_pad_set_player(p, DM_BTN_A | DM_BTN_X | DM_BTN_ZL, 100, -200, 300, -400);
+        CHECK(atomic_load(&g_pad_btn[p]) == (DM_BTN_B | DM_BTN_L), "all physical controller publishers use the map");
+        CHECK(atomic_load(&g_pad_latch[p]) == (DM_BTN_B | DM_BTN_L), "custom press edges are latched after mapping");
+        CHECK(atomic_load(&g_pad_axes[p]) == pack(100, -200, 300, -400), "custom mapping preserves axes");
+        dm_pad_set_player(p, 0, 0, 0, 0, 0);
+        CHECK(!atomic_load(&g_pad_btn[p]), "custom mapping releases all held buttons");
+    }
+    dm_input_set(DM_BTN_A | DM_BTN_X, 0, 0, 0, 0);
+    CHECK(atomic_load(&g_btn) == (DM_BTN_A | DM_BTN_X), "physical mapping leaves the keyboard untouched");
+    printf("custom controller mapping: %d checks, %d failed\n", checks, fails);
+    return fails != 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--pad-map")) return t_pad_mapping();
+    if (argc == 2 && !strcmp(argv[1], "--pad-swap")) return t_pad_swap();
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
     t_npads();

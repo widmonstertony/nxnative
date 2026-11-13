@@ -27,6 +27,19 @@ struct Setting: Decodable, Identifiable {
             guard !v.contains(where: { $0 == "x" || $0 == "X" }), let n = Double(v), n.isFinite, let lo = min, let hi = max else { return false }   // no hex: launcher.c's check agrees
             return n >= lo && n <= hi
         case "toggle": return v == onValue || v == offValue
+        case "keymap", "padmap":
+            if v.isEmpty { return true }
+            guard v.utf8.count <= 1023 else { return false }
+            let buttons = ["a","b","x","y","ls","rs","l","r","zl","zr","plus","minus","left","up","right","down"]
+            let functions = buttons + ["lup","ldown","lleft","lright","rup","rdown","rleft","rright","shake","run"]
+            return v.split(separator: ",", omittingEmptySubsequences: false).enumerated().allSatisfy { index, item in
+                if item.isEmpty { return index == v.split(separator: ",", omittingEmptySubsequences: false).count - 1 }
+                let pair = item.split(separator: "=", omittingEmptySubsequences: false)
+                guard pair.count == 2, (kind == "padmap" ? buttons : functions).contains(pair[0].lowercased()) else { return false }
+                if pair[1].lowercased() == "none" { return true }
+                if kind == "padmap" { return buttons.contains(pair[1].lowercased()) }
+                return pair[1].utf8.count < 8 && !pair[1].isEmpty && pair[1].utf8.allSatisfy { (48...57).contains($0) } && (Int(pair[1]) ?? 131) < 131
+            }
         default: return true
         }
     }

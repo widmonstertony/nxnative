@@ -122,6 +122,8 @@ class PackReuse(unittest.TestCase):
             'host/save_cloudkit.m': b'cloud transport',
             'tools/romfs.py': b'reader', 'tools/romfs_image.py': b'identity writer',
             'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
+            'source/ControllerMap.swift': b'mapping parser', 'source/DesktopControls.swift': b'mapping editor',
+            'source/DesktopControlsNotices.txt': b'MIT notices', 'host/input_map.h': b'input mapping', 'host/dm_input.h': b'input API',
         }
         for n in pack_app.TABLES: files['profile/' + n] = n.encode()
         for n, content in files.items(): (t / n).write_bytes(content)
@@ -271,7 +273,7 @@ class PackReuse(unittest.TestCase):
         self.assertIn('-fobjc-arc', cloud)
         self.assertIn(cloud[cloud.index('-o') + 1], s)
         self.assertIn('CloudKit', s)
-        self.assertEqual([Path(x).name for x in s if x.endswith('.swift')], ['Launcher.swift', 'LauncherSettings.swift', 'LauncherRow.swift'])
+        self.assertEqual([Path(x).name for x in s if x.endswith('.swift')], ['Launcher.swift', 'ControllerMap.swift', 'DesktopControls.swift', 'LauncherSettings.swift', 'LauncherRow.swift'])
 
     def test_selected_file_modes_and_file_additions_and_removals_invalidate(self):
         self.pack()
@@ -530,10 +532,14 @@ class App(unittest.TestCase):
         """launcher.<VAR> in the app's preferences domain, as a front end or a settings window saves it: used from Finder or the Dock, checked against this build's settings,
         after the launch environment, the player's env.txt and the bundle's, and ignored with DM_SAVED_CHOICES=0"""
         domain = f'org.nxnative.test.{uuid.uuid4().hex}'   # never a real game's domain
-        listed = {'schema': 1, 'game': TID, 'settings': [
+        listed = {'schema': 2, 'game': TID, 'settings': [
             {'env': 'DM_FPS_TARGET', 'kind': 'choice', 'section': 'Game', 'label': 'Frame rate', 'note': '', 'default': '60', 'options': [['30', '30 fps'], ['60', '60 fps']]},
             {'env': 'DM_RENDER_SCALE', 'kind': 'range', 'section': 'Game', 'label': 'Render scale', 'note': '', 'default': '1.0', 'min': 0.5, 'max': 1.0, 'step': 0.05},
             {'env': 'DM_FPS_HOLD', 'kind': 'toggle', 'section': 'Performance', 'label': 'Hold', 'note': '', 'default': 'on', 'on': 'on', 'off': 'off'},
+            {'env': 'DM_PAD_SWAP_AB', 'kind': 'toggle', 'section': 'Controls', 'label': 'Swap A / B', 'note': '', 'default': '0'},
+            {'env': 'DM_PAD_SWAP_XY', 'kind': 'toggle', 'section': 'Controls', 'label': 'Swap X / Y', 'note': '', 'default': '0'},
+            {'env': 'DM_KEYMAP', 'kind': 'keymap', 'section': 'Controls', 'label': 'Keys', 'note': '', 'default': ''},
+            {'env': 'DM_PAD_MAP', 'kind': 'padmap', 'section': 'Controls', 'label': 'Pad', 'note': '', 'default': ''},
             {'env': 'DM_LANG', 'kind': 'choice', 'section': 'Game', 'label': 'Language', 'note': '', 'default': 'fr', 'options': [['fr', 'French'], ['ja', 'Japanese']]},
             {'env': 'DM_BOTH', 'kind': 'choice', 'section': 'Game', 'label': 'Both', 'note': '', 'default': 'bundle', 'options': [['bundle', 'b'], ['player', 'p'], ['saved', 's']]},
             {'env': 'DM_BAKED', 'kind': 'toggle', 'section': 'Game', 'label': 'Baked', 'note': '', 'default': '1', 'on': '1', 'off': '0'}]}
@@ -542,7 +548,8 @@ class App(unittest.TestCase):
         def pack(name, settings):
             (self.tmp / f'{name}.json').write_text(json.dumps(settings))
             a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / f'{name}.app'); a.icon = None; a.bundle_id = domain; a.settings = str(self.tmp / f'{name}.json')
-            with mock.patch.object(pack_app, 'sign', lambda *x: None), mock.patch('sys.stdout'): pack_app.pack(a)
+            # Changing the bundle identifier and settings requires a new signature before macOS can launch it.
+            with mock.patch('sys.stdout'): pack_app.pack(a)
             return self.tmp / f'{name}.app'
 
         def run(app, args=(), **env):
@@ -556,9 +563,19 @@ class App(unittest.TestCase):
             self.assertEqual(plistlib.loads((app / 'Contents/Info.plist').read_bytes())['DMSettings'][:3],
                              [{'env': 'DM_FPS_TARGET', 'values': ['30', '60']}, {'env': 'DM_RENDER_SCALE', 'min': 0.5, 'max': 1.0}, {'env': 'DM_FPS_HOLD', 'values': ['on', 'off']}])
             for key, value in [('DM_FPS_TARGET', '30'), ('DM_RENDER_SCALE', '0.75'), ('DM_FPS_HOLD', 'maybe'), ('DM_LANG', 'ja'), ('DM_BOTH', 'saved'), ('DM_BAKED', '0')]: save(key, '-string', value)
+            save('DM_PAD_SWAP_AB', '-string', '1')
+            save('DM_PAD_SWAP_XY', '-string', '0')
+            keymap = ','.join(['A=49'] * 100)   # valid map longer than the old 255-byte saved-choice buffer
+            save('DM_KEYMAP', '-string', keymap)
+            save('DM_PAD_MAP', '-string', 'A=B,B=A')
             save('DM_OPMODE', '-string', '0')   # not one of this build's settings
             r = run(app)   # from Finder or the Dock: no environment of its own
             self.assertEqual((r['DM_FPS_TARGET'], r['DM_RENDER_SCALE'], r.get('DM_FPS_HOLD')), ('30', '0.75', None))   # a value the toggle never takes is ignored
+            self.assertEqual((r['DM_PAD_SWAP_AB'], r['DM_PAD_SWAP_XY']), ('1', '0'))
+            self.assertEqual((r['DM_KEYMAP'], r['DM_PAD_MAP']), (keymap, 'A=B,B=A'))
+            save('DM_KEYMAP', '-string', 'A=131')
+            self.assertNotIn('DM_KEYMAP', run(app))
+            save('DM_KEYMAP', '-string', keymap)
             self.assertEqual(r['DM_LANG'], 'ja')   # a saved choice before the packed language
             self.assertEqual((r['DM_BOTH'], r['DM_BAKED']), ('player', '1'))   # the player's env.txt and the bundle's win over a saved choice
             self.assertNotIn('DM_OPMODE', r)
@@ -568,6 +585,7 @@ class App(unittest.TestCase):
             self.assertEqual(r['DM_ENV_LAUNCH_KEYS'], 'DM_FPS_TARGET DM_RENDER_SCALE')   # the window shows them fixed ("Set at launch")
             r = run(app, args=['--no-launcher'], DM_LAUNCHER='1')   # open <app> --args --no-launcher: no window, the saved choices
             self.assertEqual(r['DM_FPS_TARGET'], '30')
+            self.assertEqual((r['DM_PAD_SWAP_AB'], r['DM_PAD_SWAP_XY']), ('1', '0'))
             self.assertEqual(subprocess.run(['defaults', 'read', domain, 'launcher.DM_FPS_TARGET'], capture_output=True, text=True).stdout.strip(), '30')
             r = run(app, DM_SAVED_CHOICES='0')
             self.assertEqual((r.get('DM_FPS_TARGET'), r.get('DM_RENDER_SCALE'), r['DM_LANG']), (None, None, 'fr'))

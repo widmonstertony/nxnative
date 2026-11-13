@@ -43,6 +43,16 @@ private func gameLibrary() -> [Game] {
     return planned + installed.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 }
 
+private func gameIcon(_ app: URL) -> NSImage {
+    if let bundle = Bundle(url: app),
+       let name = bundle.object(forInfoDictionaryKey: "CFBundleIconFile") as? String,
+       let url = bundle.url(forResource: name, withExtension: nil) ?? bundle.url(forResource: name, withExtension: "icns"),
+       let icon = NSImage(contentsOf: url) {
+        return icon
+    }
+    return NSWorkspace.shared.icon(forFile: app.path)
+}
+
 private struct GameSettings: Identifiable {
     let game: Game
     let app: URL
@@ -93,7 +103,6 @@ private struct GameSettings: Identifiable {
     }
 }
 
-@main
 struct TonTonGamebox: App {
     var body: some Scene {
         Window("TonTon游戏匣", id: "library") {
@@ -157,8 +166,11 @@ private struct GameboxLibrary: View {
         .onChange(of: scenePhase) { _, phase in if phase == .active { games = gameLibrary() } }
         .sheet(item: $settings) { state in
             LauncherView(m: state.model, name: state.game.name, version: state.version,
-                         icon: NSWorkspace.shared.icon(forFile: state.app.path), cancelTitle: "取消",
-                         environment: state.environment, cloudKitContainer: state.cloudKitContainer, done: { play in
+                         icon: gameIcon(state.app), cancelTitle: "Cancel",
+                         environment: state.environment, cloudKitContainer: state.cloudKitContainer,
+                         managedCloudSync: GameboxCloud.enabled && state.environment["DM_SAVE"] == nil && state.environment["DM_ROOT"] == nil,
+                         desktopProfile: state.app.appendingPathComponent("Contents/Resources/dm/desktop.tsv"),
+                         done: { play in
                 settings = nil
                 if play {
                     state.model.saveChoices()
@@ -181,7 +193,7 @@ private struct GameboxLibrary: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 174), spacing: 16)], alignment: .leading, spacing: 22) {
                 ForEach(games) { game in
                     VStack(alignment: .leading, spacing: 6) {
-                        Button { open(game) } label: { GameCard(game: game) }
+                        Button { play(game) } label: { GameCard(game: game) }
                             .buttonStyle(.plain)
                             .disabled(game.app == nil)
                             .help(game.app == nil ? "待构建" : "启动 \(game.name)")
@@ -192,6 +204,9 @@ private struct GameboxLibrary: View {
                                 Menu {
                                     Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([app]) }
                                     Button("查看运行日志") { showLog(game) }
+                                    if GameboxCloud.enabled {
+                                        Button("查看 iCloud 同步日志") { showLog(game, cloud: true) }
+                                    }
                                 } label: {
                                     Image(systemName: "ellipsis.circle")
                                 }
@@ -210,15 +225,33 @@ private struct GameboxLibrary: View {
         else { launchError = "这款游戏的应用没有可读取的启动设置。你仍可直接启动游戏。" }
     }
 
-    private func showLog(_ game: Game) {
+    private func play(_ game: Game) {
+        if let state = GameSettings(game),
+           (state.defaults.object(forKey: "window.show") as? Bool) != false || NSEvent.modifierFlags.contains(.option) {
+            settings = state
+        } else {
+            open(game, skipSettings: true)
+        }
+    }
+
+    private func showLog(_ game: Game, cloud: Bool = false) {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/nxnative")
-            .appendingPathComponent(game.id + ".log")
+            .appendingPathComponent(game.id + (cloud ? ".icloud.log" : ".log"))
         if !NSWorkspace.shared.open(url) { launchError = "还没有可打开的运行日志。" }
     }
 
     private func open(_ game: Game, skipSettings: Bool = false) {
         guard let app = game.app else { return }
+        if GameboxCloud.enabled {
+            do {
+                try GameboxCloud.start(title: game.id, app: app, skipSettings: skipSettings)
+                return
+            } catch {
+                launchError = error.localizedDescription
+                return
+            }
+        }
         let configuration = NSWorkspace.OpenConfiguration()
         if skipSettings { configuration.arguments = ["--no-launcher"] }
         NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, error in
@@ -240,7 +273,7 @@ private struct GameCard: View {
                     .background(Color(red: 0.80, green: 0.15, blue: 0.19))
                 Group {
                     if let app = game.app {
-                        Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
+                        Image(nsImage: gameIcon(app))
                             .resizable().scaledToFit().frame(width: 75, height: 75)
                     } else {
                         Image(systemName: "gamecontroller")

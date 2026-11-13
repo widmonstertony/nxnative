@@ -6,10 +6,14 @@
   "type": "object",
   "required": ["game", "settings"],
   "properties": {
-    "schema": {"description": "The list's version; a list without it is schema 1 written before the field existed.", "type": "integer", "const": 1},
+    "schema": {"description": "The list's version; a list without it is schema 1 written before the field existed.", "type": "integer", "enum": [1, 2]},
     "game": {"description": "The base game's title ID.", "type": "string", "pattern": "^[0-9A-F]{16}$"},
     "settings": {"type": "array", "items": {"$ref": "#/$defs/setting"}}
   },
+  "allOf": [
+    {"if": {"properties": {"schema": {"const": 1}}},
+     "then": {"properties": {"settings": {"items": {"properties": {"kind": {"enum": ["choice", "range", "toggle"]}}}}}}}
+  ],
   "$defs": {
     "size": {"description": "[width, height] in pixels.", "type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
     "setting": {
@@ -17,7 +21,7 @@
       "required": ["env", "kind", "section", "label", "note", "default"],
       "properties": {
         "env": {"description": "The environment switch the setting sets.", "type": "string", "pattern": "^DM_[A-Z0-9_]+$"},
-        "kind": {"enum": ["choice", "range", "toggle"]},
+        "kind": {"enum": ["choice", "range", "toggle", "keymap", "padmap"]},
         "section": {"description": "The heading it goes under (Game, Controls and Performance today); sections and rows come in the order to show them. A reader draws a section it does not know like the others, under its name.", "type": "string"},
         "label": {"type": "string"},
         "note": {"description": "The line under the label; empty for most settings.", "type": "string"},

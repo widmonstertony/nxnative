@@ -7,6 +7,7 @@
 #include "hle.h"
 #include "hle_haptics.h"
 #include "dm_input.h"
+#include "input_map.h"
 #include "front.h"
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -35,6 +36,17 @@ static _Atomic uint64_t g_btn, g_axes, g_latch, g_sc_btn, g_sc_axes, g_sc_latch,
 static _Atomic uint64_t g_peek_latch;   // presses since the last dm_input_peek (the applet's reader)
 static _Atomic int g_hold;              // an applet holds the input (dm_input_hold)
 static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history entries below the newest keep positive sampling numbers
+static pthread_once_t g_pad_swap_once = PTHREAD_ONCE_INIT;
+static pad_map g_button_map;
+static uint64_t g_pad_swap_mask;
+static void pad_swap_init(void) {
+    pad_map_default(&g_button_map);
+    pad_map_parse(&g_button_map, getenv("DM_PAD_MAP"));
+    const char *ab = getenv("DM_PAD_SWAP_AB"), *xy = getenv("DM_PAD_SWAP_XY");
+    if (ab && atoi(ab)) g_pad_swap_mask |= DM_BTN_A | DM_BTN_B;
+    if (xy && atoi(xy)) g_pad_swap_mask |= DM_BTN_X | DM_BTN_Y;
+    if (g_pad_swap_mask) LOG("controllers: swap A/B=%d, X/Y=%d", !!(g_pad_swap_mask & DM_BTN_A), !!(g_pad_swap_mask & DM_BTN_X));
+}
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
@@ -57,6 +69,12 @@ void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
 }
 void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     if (p < 0 || p >= DM_PLAYERS) return;
+    pthread_once(&g_pad_swap_once, pad_swap_init);
+    buttons = pad_map_apply(&g_button_map, buttons);
+    // All physical controller paths publish Switch button positions here. Swap before latching presses,
+    // keeping simultaneous buttons, other controls, keyboard input and scripted input intact.
+    uint64_t face = buttons & g_pad_swap_mask;
+    buttons = (buttons & ~g_pad_swap_mask) | ((face & (DM_BTN_A | DM_BTN_X)) << 1) | ((face & (DM_BTN_B | DM_BTN_Y)) >> 1);
     uint64_t old = atomic_exchange(&g_pad_btn[p], buttons); atomic_fetch_or(&g_pad_latch[p], buttons & ~old); atomic_fetch_or(&g_peek_latch, buttons & ~old); atomic_store(&g_pad_axes[p], pack(lx, ly, rx, ry));
     if (!p) shake_note();
 }

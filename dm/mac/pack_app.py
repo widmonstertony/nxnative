@@ -24,7 +24,7 @@ MODULE_FILES = ('*.patched.bin', '*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*
 MSL_FILES = ('*.metallib', '*.json', '*.tsv')   # what the host reads from msl/ (not the Mac build's .metal sources or _b_build.json); an NVN game's b-<chain> goes in as one file of them (shader_lib.py)
 # read beside DM_NVN_SHMAP; any of them may be absent (a Vulkan or GL game has no c1_full.tsv). The shader pairs are the pipeline prebuild's (nvn_mtl.m pso_prebuild): without them the
 # app makes no pulling bases, a hybrid draw has no stand-in and a new pipeline compiles on the submit thread (build_ipa.sh copies them into the IPA the same way)
-TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv')
+TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv', 'desktop.tsv')
 PSO_FILES = ('*.mtl4a', 'prebuilt.tsv', 'rest_pairs.tsv', 'archive.tsv')   # what the app takes of pso_offline.py's output folder
 EXE = 'nxnative'   # the launcher's file name (Contents/MacOS/nxnative)
 ICON_SIZES = (16, 32, 128, 256, 512)
@@ -89,7 +89,20 @@ def min_os(host):   # the host's deployment target (LC_BUILD_VERSION minos): the
 
 
 def swift_sources():   # the settings window, with the iOS launcher's model and rows
-    return [HERE / 'Launcher.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift']
+    return [HERE / 'Launcher.swift', HERE / 'ControllerMap.swift', HERE / 'DesktopControls.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift']
+
+
+def launcher_localizations():
+    return sorted((HERE / 'Localizations').glob('*.lproj/Launcher.strings'))
+
+
+def copy_launcher_localizations(resources):
+    for source in launcher_localizations():
+        destination = resources / source.parent.name / source.name
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copyfile(source, destination)
+    notices = HERE / 'DesktopControlsNotices.txt'
+    if notices.is_file(): shutil.copyfile(notices, resources / notices.name)
 
 
 def build_launcher(out, minos, clang, swiftc, sdk):   # launcher.c's main and the host's cloud-save code (its send after the host exits), linked by swiftc with the settings window (no Swift main: -parse-as-library)
@@ -118,6 +131,7 @@ def settings_rules(listed):   # DMSettings: what the launcher accepts as each se
         if s['kind'] == 'range': rules.append({'env': s['env'], 'min': float(s['min']), 'max': float(s['max'])})
         elif s['kind'] == 'choice': rules.append({'env': s['env'], 'values': [o[0] for o in s['options']]})
         elif s['kind'] == 'toggle': rules.append({'env': s['env'], 'values': [s.get('on', '1'), s.get('off', '0')]})
+        elif s['kind'] in ('keymap', 'padmap'): rules.append({'env': s['env'], 'mapping': s['kind']})
     return rules
 
 
@@ -125,7 +139,7 @@ def info_plist(a, minos, icon):
     # LSSupportsGameMode off: macOS's Game Mode holds the GPU at its lowest clock while it is busy (docs/reference/frame-rate.md, macOS Game Mode holds the GPU at its lowest clock)
     p = {'CFBundleName': a.name, 'CFBundleDisplayName': a.name, 'CFBundleIdentifier': a.bundle_id or f'org.nxnative.{a.title_id.lower()}',
          'CFBundleVersion': a.version or '1.0', 'CFBundleShortVersionString': a.version or '1.0', 'CFBundlePackageType': 'APPL', 'CFBundleExecutable': EXE,
-         'CFBundleInfoDictionaryVersion': '6.0', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
+         'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleDevelopmentRegion': 'en', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
          'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1}
     if icon: p['CFBundleIconFile'] = 'AppIcon'
     if a.settings:
@@ -296,7 +310,8 @@ def pack(a):
         codesign = Path(codesign).resolve()
         minos = min_os(a.host)
         sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/romfs_identity.h',
-                   HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources()
+                   HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources() + launcher_localizations()
+        if (HERE / 'DesktopControlsNotices.txt').is_file(): sources.append(HERE / 'DesktopControlsNotices.txt')
         inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + sources],
                   'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
@@ -326,6 +341,7 @@ def pack(a):
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
     step('launcher and host (external game image)' if a.external_romfs else f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
     build_launcher(mac / EXE, minos, clang, swiftc, sdk)
+    copy_launcher_localizations(res)
     shutil.copy(a.host, mac / 'dmhost')   # data and mode, not the build's extended attributes (copy2 would carry them into the app)
     copy(mods, dm, clone['mods'])
     if tables: copy(tables, dm, False)
