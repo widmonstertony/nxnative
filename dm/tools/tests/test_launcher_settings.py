@@ -31,6 +31,20 @@ def rows_with_languages(listed):   # the settings rows, by variable, of a game w
 
 
 class LauncherSettingsTests(unittest.TestCase):
+    def test_derived_profile_reuses_builtin_desktop_controls(self):
+        import game
+        gid = '0400486024DEC000'
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / gid
+            directory.mkdir()
+            (directory / 'game.tsv').write_text('title_id\t' + gid + '\n')
+            profile = game.Game(directory)
+            self.assertEqual(profile.table('desktop.tsv'), ROOT / 'dm/games' / gid / 'desktop.tsv')
+            own = directory / 'desktop.tsv'
+            own.write_text('# custom controls\n')
+            self.assertEqual(profile.table('desktop.tsv'), own.resolve())
+            self.assertEqual(profile.table('shader_map.tsv'), directory.resolve() / 'shader_map.tsv')
+
     def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
         self.assertNotIn('DM_LANG', rows_with_languages(['ja']))   # one language: nothing to pick
         s = rows_with_languages(['en-US', 'ja'])['DM_LANG']
@@ -77,7 +91,7 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SW2', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
         for key in ('DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY'):
             self.assertEqual((mac[key]['kind'], mac[key]['default'], mac[key]['level']), ('toggle', '0', 'basic'))
         s = mac['DM_FULLSCREEN']
@@ -169,6 +183,15 @@ class LauncherSettingsTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 profile = type('Profile', (), {'id': BOTW, 'get': lambda self, key, default='', bad=bad: bad})()
                 with self.assertRaises(SystemExit): settings.render_base(profile)
+
+    def test_render_scale_reaches_the_stubs_largest_scale(self):
+        """The rewriter writes a render-scale stub's largest scale as RENDER_SCALE: 1 keeps the table's range (a stub that only lowers the size), 3 raises its top (Hades II)"""
+        for value, top in (('1', 1.0), ('3', 3.0)):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(settings.nacp, 'languages', return_value=['en-US']), patch.dict(os.environ, {'GFXAPI': 'nvn'}):
+                (Path(tmp) / 'main.fixups.tsv').write_text(f'# RENDER_SCALE\t{value}\n')
+                row = {s['env']: s for s in settings.build(BOTW, tmp, Path(tmp) / 'control.nacp')['settings']}['DM_RENDER_SCALE']
+            self.assertEqual((row['min'], row['max']), (0.5, top))
 
     def test_table_format_is_strict(self):
         good = 'DM_X\ttoggle\t-\t0\talways\tGame\tX\n'

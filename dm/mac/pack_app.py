@@ -25,7 +25,7 @@ MSL_FILES = ('*.metallib', '*.json', '*.tsv')   # what the host reads from msl/ 
 # read beside DM_NVN_SHMAP; any of them may be absent (a Vulkan or GL game has no c1_full.tsv). The shader pairs are the pipeline prebuild's (nvn_mtl.m pso_prebuild): without them the
 # app makes no pulling bases, a hybrid draw has no stand-in and a new pipeline compiles on the submit thread (build_ipa.sh copies them into the IPA the same way)
 TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv', 'desktop.tsv')
-PSO_FILES = ('*.mtl4a', 'prebuilt.tsv', 'rest_pairs.tsv', 'archive.tsv')   # what the app takes of pso_offline.py's output folder
+PSO_FILES = ('*.mtl4a', '*-prewarm-*.keys', 'prebuilt.tsv', 'rest_pairs.tsv', 'archive.tsv', 'prewarm.tsv')   # what the app takes of pso_offline.py's output folder
 EXE = 'nxnative'   # the launcher's file name (Contents/MacOS/nxnative)
 ICON_SIZES = (16, 32, 128, 256, 512)
 DETRITUS = ('.DS_Store',)   # Finder leftovers beside the AppleDouble "._name" files, see detritus() and strip_detritus()
@@ -89,11 +89,11 @@ def min_os(host):   # the host's deployment target (LC_BUILD_VERSION minos): the
 
 
 def swift_sources():   # the settings window, with the iOS launcher's model and rows
-    return [HERE / 'Launcher.swift', HERE / 'ControllerMap.swift', HERE / 'DesktopControls.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift']
+    return [HERE / 'Launcher.swift', HERE / 'ControllerMap.swift', HERE / 'DesktopControls.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift', HERE.parent / 'ios/Sources/SaveSyncReport.swift']
 
 
 def launcher_localizations():
-    return sorted((HERE / 'Localizations').glob('*.lproj/Launcher.strings'))
+    return sorted((HERE / 'Localizations').glob('*.lproj/*.strings'))
 
 
 def copy_launcher_localizations(resources):
@@ -140,6 +140,7 @@ def info_plist(a, minos, icon):
     p = {'CFBundleName': a.name, 'CFBundleDisplayName': a.name, 'CFBundleIdentifier': a.bundle_id or f'org.nxnative.{a.title_id.lower()}',
          'CFBundleVersion': a.version or '1.0', 'CFBundleShortVersionString': a.version or '1.0', 'CFBundlePackageType': 'APPL', 'CFBundleExecutable': EXE,
          'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleDevelopmentRegion': 'en', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
+         'NSBluetoothAlwaysUsageDescription': 'Connect Switch 2 Joy-Con and Pro Controllers over Bluetooth.',
          'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1}
     if icon: p['CFBundleIconFile'] = 'AppIcon'
     if a.settings:
@@ -234,6 +235,8 @@ def selected_inputs(a):
     if a.pso and (not any(p.suffix == '.mtl4a' for p in pso) or not (Path(a.pso) / 'prebuilt.tsv').is_file()):
         raise SystemExit(f'no pipeline archive with its prebuilt.tsv in {a.pso}')
     tables = [Path(a.tables) / n for n in TABLES if (Path(a.tables) / n).is_file()]
+    desktop = HERE.parent / 'games' / a.title_id.upper() / 'desktop.tsv'
+    if not any(p.name == 'desktop.tsv' for p in tables) and desktop.is_file(): tables.append(desktop)
     pairs = Path(a.pso_pairs) if a.pso_pairs and not any(p.name == 'pso_pairs.tsv' for p in tables) else None
     fonts = sorted(p for p in Path(a.font).glob('*.ttf') if not detritus(p.name))
     files = [Path(a.host)] + mods + msls + pso + tables + fonts + ([pairs] if pairs else [])

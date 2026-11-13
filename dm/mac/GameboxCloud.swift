@@ -4,7 +4,7 @@ import CryptoKit
 import Darwin
 
 @_silgen_name("save_sync_mount")
-private func syncMount(_ save: UnsafePointer<CChar>, _ title: UnsafePointer<CChar>)
+private func syncMount(_ save: UnsafePointer<CChar>, _ title: UnsafePointer<CChar>) -> Int32
 @_silgen_name("save_sync_flush")
 private func syncFlush(_ timeout: Int32) -> Int32
 @_silgen_name("save_sync_after_exit")
@@ -128,7 +128,10 @@ enum GameboxCloud {
             if useCloud {
                 unsetenv("DM_SAVE_SYNC")
                 setenv("DM_SAVE_SYNC_CHOICE", "ask", 1)
-                syncMount(save, title)
+                guard syncMount(save, title) == 0 else {
+                    fputs("TonTon: interrupted save recovery is incomplete; game launch stopped to keep the save intact\n", stderr)
+                    return
+                }
                 compared = syncFlush(18_000) != 0
             }
             let configuration = NSWorkspace.OpenConfiguration()

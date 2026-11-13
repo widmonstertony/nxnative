@@ -49,7 +49,14 @@ int main(int argc, char **argv) {
     assert(s.rx == 0 && s.ry == 0);   // stopping the mouse stops the camera
     desktop_release(&s);
     assert(desktop_sample(&s,axes) == 0 && !axes[0] && !axes[1] && !axes[2] && !axes[3]);
-    puts("desktop input: keyboard aliases, walk/run, diagonal speed, camera direction, stop and focus release passed");
+    assert(!desktop_mouse_bound(&s, DESKTOP_MOUSE_LEFT));
+    assert(desktop_remap(&s, "LUp=128") == 0);
+    assert(desktop_mouse_bound(&s, DESKTOP_MOUSE_LEFT));
+    s.down[DESKTOP_MOUSE_LEFT] = 1;
+    assert(desktop_sample(&s, axes) == 0 && axes[1] > 0);
+    desktop_release(&s);
+    assert(desktop_sample(&s, axes) == 0 && axes[1] == 0);
+    puts("desktop input: keyboard aliases, walk/run, diagonal speed, remapped mouse axes, camera direction, stop and focus release passed");
     printf("validated %d profiles\n",profiles);
     return 0;
 }

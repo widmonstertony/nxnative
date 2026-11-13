@@ -37,3 +37,19 @@ and shader chain together. Use the reference stage if Rust returns unsupported;
 validate both before activating any device resource. The Rust iOS packaging
 path has not been verified as an Air Metal 4 substitute, and a Mac build is
 not evidence of iPadOS 16.1 support.
+
+## Main integration verified on 2026-11-12
+
+The main integration includes nxnative upstream
+[`3c4de03c`](https://github.com/seedds/nxnative/commit/3c4de03c71e45651d1f3440e149cb4c47811ec3d),
+with TonTon private CloudKit transport, Chinese Mac settings, per-game desktop
+controls and the legacy elapsed-time frame-step path retained. Derived profiles
+can reuse the built-in keyboard preset while keeping their own shader tables.
+
+Validation compiled the complete arm64 Mac host with the Ocarina profile and
+the standalone TonTon app. Synthetic checks passed for NVN (315), save sync
+including private transport and interrupted-pull recovery (115), save metadata
+(204), keyboard mapping (22) and physical controller mapping (34). All 23 desktop
+profiles parsed; settings persistence and the Mac packaging tests passed. No
+installed game was rebuilt onto the new shader chain during this integration,
+and gameplay acceptance remains with the player.

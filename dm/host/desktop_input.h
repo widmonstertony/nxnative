@@ -15,7 +15,7 @@
 #define DESKTOP_RUN (1ull << 62)
 
 typedef struct {
-    int enabled, look, movement;   // movement: 0 stick, 1 steering, 2 D-pad, 3 none
+    int enabled, look, movement, touch;   // movement: 0 stick, 1 steering, 2 D-pad, 3 none
     unsigned char down[DESKTOP_KEYS];
     uint64_t binding[DESKTOP_KEYS];
     int8_t axis[DESKTOP_KEYS];   // NX2Apple function ids for the remappable stick directions
@@ -81,6 +81,7 @@ static int desktop_load(desktop_input *s, const char *path) {
             int code = desktop_key(line); uint64_t mask;
             if (code < 0 || !desktop_button(value,&mask)) { valid = 0; break; }
             next.binding[code] = mask; bindings++;
+            if (code == DESKTOP_MOUSE_LEFT) next.touch = !strcmp(value, "TOUCH");
         }
     }
     if (ferror(f)) valid = 0;
@@ -112,6 +113,9 @@ static int desktop_remap(desktop_input *s, const char *spec) {
         s->axis[c] = f >= IM_LUP && f <= IM_RRIGHT ? (int8_t)f : -1;
     }
     return bad;
+}
+static int desktop_mouse_bound(const desktop_input *s, int code) {
+    return s->binding[code] || (s->axis[code] >= IM_LUP && s->axis[code] <= IM_RRIGHT);
 }
 static void desktop_camera_tick(desktop_input *s, double dt) {
     if (dt <= 0 || !isfinite(dt)) return;
