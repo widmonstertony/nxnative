@@ -2241,6 +2241,7 @@
   "target.macDone": "Mac App 已生成，可在访达里双击运行",
   "target.missingApp": "构建结束但没有找到 .app 文件——看日志末尾",
   "target.tip": "点一下切换（Mac App 可直接双击运行，不需要 iPhone）",
+  "tonton.arm32BaseInput": "本体 %1$@ 是 32 位 ARM，当前 Mac 原生引擎仅支持 64 位，不能直接构建。需要完好的、已验证支持的 64 位版本更新。",
   "tonton.buildAlreadyUpdating": "这款游戏已在更新队列中。请在「构建」页查看进度，完成后可直接在 App 中重新构建。",
   "tonton.damagedUpdateInput": "现有 %1$@ 更新包未通过校验（硬盘备份也存在相同问题）。请关联同版本的完好更新包，才能正常构建。",
   "tonton.desktopControls": "键盘与鼠标",

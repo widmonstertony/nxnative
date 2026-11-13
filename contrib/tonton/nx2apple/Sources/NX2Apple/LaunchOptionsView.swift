@@ -137,8 +137,12 @@ struct LaunchOptionsView: View {
                 Text(loc.t("launch.missingBuildFiles")).font(.manrope(13)).foregroundStyle(LauncherPalette.secondaryText).fixedSize(horizontal: false, vertical: true)
             }
             if !GameBuildSetup.hasInputs(game.inputs), let issue = TonTonInputStatus.read(titleID: game.titleID) {
-                Text(String(format: loc.t("tonton.damagedUpdateInput"), issue.version))
+                Text(String(format: loc.t(issue.messageKey), issue.version))
                     .font(.manrope(13)).foregroundStyle(LauncherPalette.notice).fixedSize(horizontal: false, vertical: true)
+                if let update = issue.damagedUpdateVersion {
+                    Text(String(format: loc.t("tonton.damagedUpdateInput"), update))
+                        .font(.manrope(13)).foregroundStyle(LauncherPalette.notice).fixedSize(horizontal: false, vertical: true)
+                }
             }
             Button(loc.t(action.buttonKey)) { dismiss(); onBuild(game) }
                 .buttonStyle(LauncherSecondaryButtonStyle()).launcherRowControls()

@@ -2240,6 +2240,7 @@
   "target.macDone": "Mac app ready — double-click it in the Finder",
   "target.missingApp": "Build finished but no .app was produced — see the end of the log",
   "target.tip": "Click to switch (a Mac app runs on this Mac, no iPhone needed)",
+  "tonton.arm32BaseInput": "Base version %1$@ is 32-bit ARM. The native Mac engine requires 64-bit ARM and cannot build this base directly. An intact, supported 64-bit update is required.",
   "tonton.buildAlreadyUpdating": "This game is already in the update queue. See Builds for progress; after it finishes you can rebuild directly in the app.",
   "tonton.damagedUpdateInput": "The existing %1$@ update failed integrity checks, including the drive backup. Associate an intact update of the same version before building normally.",
   "tonton.desktopControls": "Keyboard and mouse",
