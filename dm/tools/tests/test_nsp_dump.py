@@ -108,6 +108,37 @@ class Scan(Base):
 class Pack(Base):
     def out(self): return self.dump / 'out'
 
+    def test_external_prepacked_update_keeps_a_read_only_reference(self):
+        src = self.dump / f'updates/{VER}'
+        target = src / 'romfs.img'
+        romfs_image.pack(src / 'romfs', target)
+        shutil.rmtree(src / 'romfs')
+        target.chmod(0o444)
+        for _ in range(2):
+            pack_dump.pack_version(src, TID, self.out(), say=lambda s: None, reference_image=True)
+        image = self.out() / 'RomFS.img'
+        self.assertTrue(image.is_symlink())
+        self.assertEqual(image.resolve(), target)
+        self.assertIn('dir/new', romfs_image.read_index(image))
+
+    def test_prepacked_update_and_dlc_are_imported_without_repacking(self):
+        src = self.dump / f'updates/{VER}'
+        _, _, dlc = pack_dump.scan(self.dump)
+        for folder in [src / 'romfs', *dlc.values()]:
+            romfs_image.pack(folder, folder.with_suffix('.img'))
+            shutil.rmtree(folder)
+        (src / 'control.nacp').write_bytes(b'extracted control data')
+        _, _, dlc = pack_dump.scan(self.dump)
+        pack_dump.pack_version(src, TID, self.out(), say=lambda s: None)
+        pack_dump.pack_dlc(TID, dlc, self.out() / 'aoc', say=lambda s: None)
+        image = self.out() / 'RomFS.img'
+        self.assertEqual(image.read_bytes(), (src / 'romfs.img').read_bytes())
+        self.assertIn('dlcfile', romfs_image.read_index(self.out() / 'aoc/1.img'))
+        self.assertEqual((self.out() / 'control.nacp').read_bytes(), b'extracted control data')
+        inode = image.stat().st_ino
+        pack_dump.pack_version(src, TID, self.out(), say=lambda s: None)
+        self.assertEqual(image.stat().st_ino, inode)
+
     def test_update_packed_on_its_own(self):
         pack_dump.pack_version(self.dump / f'updates/{VER}', TID, self.out(), say=lambda s: None)
         self.assertEqual((self.out() / 'ExeFS/main').read_bytes(), b'new code')

@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)
+#include "hle_misc_legacy.inc"
+#else
 // Miscellaneous service layer: add-on content / shop / error applet / profanity filter / server name resolution / parental controls / software keyboard.
 // On the real device each goes through IPC or a system applet; the host gives results as single-player offline. Pure-computation SDK parts (hash, util, software Opus) are not taken over, the original implementation is used directly.
 #include "hle.h"
@@ -42,23 +46,6 @@ HLE_FORCE_BIG("_ZN2nn3aoc16ListAddOnContentEPiii", "add-on content list: the own
 }
 // The event object is created on demand by the nn::os side table (not signaled), the game waiting on it only times out / gets not-signaled
 HLE_FORCE("_ZN2nn3aoc31GetAddOnContentListChangedEventEPNS_2os11SystemEventE", "add-on content change event, out of scope; bound to a kernel event, never signalled (the game polls it with TryWait and aborts if it is uninitialized)", void, h_aoc_GetEv, void *ev) { hle_bind_system_event(ev, 0); }
-// The purchase notification is asynchronous on Switch. Emiya's Unity
-// integration registers at boot even when there are no purchases or DLC.
-// The unhandled SDK function dereferences the absent aoc service object.
-// Bind a real, idle kernel event; no purchase is reported in offline mode.
-static _Alignas(16) uint8_t g_purchase_event[0x80];
-static pthread_mutex_t g_purchase_event_lock = PTHREAD_MUTEX_INITIALIZER;
-HLE_FORCE("_ZN2nn2ec24InitializePurchasedEventEv", "offline purchase notification; no pending purchases", Result, h_ec_InitPurchase, void) {
-    pthread_mutex_lock(&g_purchase_event_lock);
-    hle_bind_system_event(g_purchase_event, 1);
-    pthread_mutex_unlock(&g_purchase_event_lock);
-    return RES_OK;
-}
-HLE_FORCE("_ZN2nn2ec17GetPurchasedEventEv", "bound idle purchase event", void *, h_ec_GetPurchase, void) {
-    h_ec_InitPurchase();
-    return g_purchase_event;
-}
-HLE_FORCE("_ZN2nn2ec22FinalizePurchasedEventEv", "offline purchase event stays idle until process exit", void, h_ec_FiniPurchase, void) {}
 HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ShowShop, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut)"); }
 // Super Kirby Clash waits on the purchased-item notification after account selection. The guest SDK's initializer
 // uses an AOC service session which the offline host does not open. There are no purchases to enqueue: give every
@@ -337,3 +324,5 @@ HLE_FORCE("_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEP
           Result, h_chat_RemoteNext, void *sync, void *type, int i, void *sync2, const void *id) { (void)sync; (void)type; (void)i; (void)sync2; (void)id; return RES_FAIL; }
 HLE_FORCE("_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", "GameChat full-screen section begun: no chat to tell", Result, h_chat_FullBegin, unsigned on) { (void)on; return RES_OK; }
 HLE_FORCE("_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", "GameChat full-screen section ended", void, h_chat_FullEnd, void) {}
+
+#endif
