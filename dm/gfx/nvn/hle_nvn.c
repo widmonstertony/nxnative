@@ -2705,6 +2705,9 @@ enum { VLOG_N = 4096 };
 static struct vpool **g_vp; static int g_nvp, g_cvp;   // the pools with a range of their own, under g_vp_mu
 static pthread_mutex_t g_vp_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_vp_gen;   // bumped per mapping request
+// Every mapping request's host range [lo, hi), by its generation: the replay turns the requests since its last look into notes for the textures they overlap (nvn_sparse_notes)
+enum { VNOTE_N = 8192 };
+static struct { uint64_t gen, lo, hi; } g_vnote[VNOTE_N];   // under g_vp_mu
 static struct vpool *vpool_of(const pool_t *o) { return o->vp; }
 // An address in the pool's own range has left the host before its first mapping: an object keeps it (a texture's or event's storage, command memory) or the game was given it (a buffer
 // or texture address, a map). The range then stays, so the first mapping makes the pool sparse rather than giving the range back for an alias (MapVirtual)
@@ -2789,6 +2792,7 @@ void nvn_vpool_note(uint64_t a, char *note, size_t n) {
 }
 static void vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t *phys) {
     uint64_t gen = atomic_fetch_add(&g_vp_gen, 1) + 1;
+    g_vnote[gen % VNOTE_N].gen = gen; g_vnote[gen % VNOTE_N].lo = (uint64_t)(uintptr_t)v->base + voff; g_vnote[gen % VNOTE_N].hi = (uint64_t)(uintptr_t)v->base + voff + size;
     if (v->log) { v->log[atomic_load_explicit(&v->nlog, memory_order_relaxed) % VLOG_N] = (struct vlog_ent){voff, size}; atomic_fetch_add_explicit(&v->nlog, 1, memory_order_release); }
     for (uint64_t o = 0; o < size; o += 0x1000) {
         vpte **l = &v->pt[(voff + o) >> 21];
@@ -3192,15 +3196,22 @@ NVN_NOPROTO(nvnDlssNetworkBuilderSetMaxEvaluationEntries, void, dlss_builder_t *
 NVN_NOPROTO(nvnDlssNetworkBuilderSetTextureIDs, void, dlss_builder_t *b, const void *pool, const int *ids, int n) { (void)b; (void)pool; (void)ids; (void)n; }
 NVN_NOPROTO(nvnDlssNetworkBuilderSetStorage, void, dlss_builder_t *b, void *mem, size_t n) { (void)b; (void)mem; (void)n; }
 NVN_NOPROTO(nvnDlssNetworkBuilderGetStorageSize, size_t, const dlss_builder_t *b) { (void)b; return 0x1000; }   // the scaler keeps its memory on the Mac's side; a page, for a game that allocates what it is told
-// The argument order is NGX's NGX_DLSS_GET_OPTIMAL_SETTINGS: optimal, largest and smallest input, sharpness (the game stores them so at main+0x1913cfc). One input size per method: no dynamic range
-NVN_NOPROTO(nvnDlssNetworkBuilderGetOptimalSettings, NVNboolean, const dlss_builder_t *b, int *ow, int *oh, int *maxw, int *maxh, int *minw, int *minh, float *sharp) {
-    int f = dlss_factor(b->method), w = dlss_ceil_div(b->w, f), h = dlss_ceil_div(b->h, f);
-    if (ow) *ow = w;
-    if (oh) *oh = h;
-    if (maxw) *maxw = w;
-    if (maxh) *maxh = h;
-    if (minw) *minw = w;
-    if (minh) *minh = h;
+// The arguments: the optimal input size, then the smallest and the largest input the network takes, then the sharpness (not NGX's NGX_DLSS_GET_OPTIMAL_SETTINGS order, which has the largest
+// first). Xenoblade Chronicles 2's Switch 2 program shows it: it stores the fourth and fifth arguments as the lower bound and the sixth and seventh as the upper one, and its evaluation
+// (main+0x8ee0e0) returns before nvnCommandBufferEvaluateDlss unless lower <= input <= upper in both axes. It renders 1024x576 into its 1536x864 network (method 0); when this answered one
+// size per method (768x432 for all three), it never evaluated DLSS, its upscaler read an output nothing wrote, and the title and every 3D frame reached the window black. The order
+// rests on that game alone: Fire Emblem Fortune's Weave stores the values (main+0x1913cfc) but checks no bound.
+// The range is this host's choice from DLSS's modes, not NVIDIA's driver's: down to a third of the output (ultra performance), up to the output itself (DLAA). MetalFX's temporal
+// scaler stands in at any scale in it, and an input that changes size in the same textures keeps its scaler (nvn_mtl.m dlss_scaler_for); the optimal size stays the method's
+// (0: 2x, 1: 3x, 2: 1x)
+NVN_NOPROTO(nvnDlssNetworkBuilderGetOptimalSettings, NVNboolean, const dlss_builder_t *b, int *ow, int *oh, int *minw, int *minh, int *maxw, int *maxh, float *sharp) {
+    int f = dlss_factor(b->method);
+    if (ow) *ow = dlss_ceil_div(b->w, f);
+    if (oh) *oh = dlss_ceil_div(b->h, f);
+    if (minw) *minw = dlss_ceil_div(b->w, 3);
+    if (minh) *minh = dlss_ceil_div(b->h, 3);
+    if (maxw) *maxw = b->w;
+    if (maxh) *maxh = b->h;
     if (sharp) *sharp = 0;
     return 1;
 }
@@ -3360,6 +3371,18 @@ static struct vpool *vpool_at(const void *pool, uint64_t a) {   // caller holds 
 }
 int nvn_sparse_pool(const void *pool) { return pool && ((const pool_t *)pool)->vp; }   // no lock: set at Initialize, cleared at the first mapping (an aliased pool) or Finalize; called per texture lookup
 uint64_t nvn_sparse_gen(void) { return atomic_load(&g_vp_gen); }
+// The host ranges of the mapping requests after generation *seen, up to the current one, which *seen moves on to: → their count, or -1 when there are more than max or the record
+// no longer holds them all (the caller then takes every sparse texture as changed). Under g_vp_mu, as a request's generation and range are written together
+int nvn_sparse_notes(uint64_t *seen, uint64_t (*out)[2], int max) {
+    pthread_mutex_lock(&g_vp_mu);
+    uint64_t now = atomic_load(&g_vp_gen); int n = 0;
+    if (now - *seen > (uint64_t)max || now - *seen > VNOTE_N) n = -1;
+    else for (uint64_t g = *seen + 1; g <= now; g++) {
+        if (g_vnote[g % VNOTE_N].gen != g) { n = -1; break; }
+        out[n][0] = g_vnote[g % VNOTE_N].lo; out[n][1] = g_vnote[g % VNOTE_N].hi; n++;
+    }
+    *seen = now; pthread_mutex_unlock(&g_vp_mu); return n;
+}
 uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n) {
     pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_at(pool, a); uint64_t miss = 0;
     if (!v) { pthread_mutex_unlock(&g_vp_mu); memset(dst, 0, n); return n; }
