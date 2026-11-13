@@ -206,3 +206,14 @@ the shelf was reopened with temporary save/diagnostic overrides removed. The pro
 settings, so the individual contribution of priority mapping is not isolated. Air's separate buffered-present
 configuration also still needs a fresh user gameplay log; this iPad result is
 not an Air race pass.
+
+### M2 60.99 scene-only 540p candidate
+
+This candidate changes only the computed renderer-scale stores for main build
+`9e244438c3d8ef1c703a6a85ef99c4f0`, retaining the original layout/default and
+maximum extents. Pass dump F32060 in a Mario Bros. Circuit 50cc race shows
+960×540 color/depth scene attachments, full scene viewport and intact scene/HUD.
+The classic MetalFX path is active. A late race sample is 48 FPS at thermal
+level 2, so this is **not a 60 FPS performance pass**. Original saves were
+SHA-256 unchanged after the isolated test; no original body or shader-chain
+inputs changed. The candidate is installed only on M2, not Air.
