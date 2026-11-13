@@ -93,6 +93,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(!TonTonReadIndependentHost(h, own.dli_fbase, @"b-fedcba987654", &host));
     assert(!host.start);
     assert(TonTonReadIndependentHost(h, own.dli_fbase, @"b-0123456789ab", &host));
+    assert(!host.setReturn); // Existing v1 engines do not acquire a new exit path.
     assert(!host.start((const char *const *)argv, argc, own.dli_fbase));
 } }
 ''')
@@ -102,6 +103,50 @@ int main(int argc, char **argv) { @autoreleasepool {
                             '-I', str(ROOT / 'dm/ios/LibraryApp/Sources'),
                             str(p / 'test.m'), '-o', str(p / 'test')], check=True)
             subprocess.run([str(p / 'test'), str(p / 'engine.dylib')], check=True)
+
+    def test_return_capability_is_explicit_and_owned_by_the_selected_image(self):
+        engine = r'''
+const int dm_glue_version = 1;
+const char *dm_glue_shader_chain(void) { return "b-0123456789ab"; }
+const char *dm_glue_start_game(const char *const *a, int n, const void *i) { return 0; }
+void dm_glue_present_game(void *w) {}
+void dm_glue_focus_event(int e) {}
+void dm_glue_set_catalog(void *(*c)(void *)) {}
+#ifdef CAPABILITY
+const int dm_glue_shell_lifecycle = CAPABILITY;
+#endif
+#ifndef OMIT_SETTER
+void dm_glue_set_return(void (*returned)(void *), void *context) { returned(context); }
+#endif
+'''
+        harness = r'''
+#import "IndependentGameHost.h"
+#include <assert.h>
+static void returned(void *context) { *(int *)context = 17; }
+int main(int argc, char **argv) { @autoreleasepool {
+    void *h = dlopen(argv[1], RTLD_LOCAL | RTLD_NOW | RTLD_FIRST);
+    assert(h);
+    Dl_info own; assert(dladdr(dlsym(h, "dm_glue_version"), &own));
+    TonTonGameHost host = {0};
+    assert(TonTonReadIndependentHost(h, own.dli_fbase, @"b-0123456789ab", &host));
+    assert(!!host.setReturn == atoi(argv[2]));
+    if (host.setReturn) { int called = 0; host.setReturn(returned, &called); assert(called == 17); }
+} }
+'''
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            (p / 'engine.c').write_text(engine)
+            (p / 'test.m').write_text(harness)
+            subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-framework', 'Foundation',
+                            '-I', str(ROOT / 'dm/ios/LibraryApp/Sources'),
+                            str(p / 'test.m'), '-o', str(p / 'test')], check=True)
+            for flags, expected in [([], 0), (['-DCAPABILITY=0'], 0),
+                                    (['-DCAPABILITY=2'], 0), (['-DCAPABILITY=1'], 1),
+                                    (['-DCAPABILITY=1', '-DOMIT_SETTER'], 0)]:
+                with self.subTest(flags=flags):
+                    subprocess.run(['xcrun', 'clang', '-dynamiclib', *flags,
+                                    str(p / 'engine.c'), '-o', str(p / 'engine.dylib')], check=True)
+                    subprocess.run([str(p / 'test'), str(p / 'engine.dylib'), str(expected)], check=True)
 
 
 if __name__ == '__main__':

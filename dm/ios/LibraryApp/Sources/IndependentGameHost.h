@@ -15,6 +15,8 @@ typedef struct {
     void (*present)(void *window);
     void (*focus)(int event);
     void (*setCatalog)(void *(*catalog)(void *returnBlock));
+    // Optional: only hosts with complete guest/GPU/audio teardown advertise this.
+    void (*setReturn)(void (*returned)(void *), void *context);
 } TonTonGameHost;
 
 static BOOL TonTonIndependentManifest(NSDictionary *manifest) {
@@ -58,6 +60,9 @@ static BOOL TonTonReadIndependentHost(void *handle, const void *image, NSString 
         !host.start || !host.present || !host.focus || !host.setCatalog) return NO;
     const char *builtChain = ownChain();
     if (!builtChain || !TonTonIndependentChain(chain) || strcmp(builtChain, chain.UTF8String)) return NO;
+    const int *lifecycle = TonTonImageSymbol(handle, "dm_glue_shell_lifecycle", image);
+    if (lifecycle && *lifecycle == 1)
+        host.setReturn = TonTonImageSymbol(handle, "dm_glue_set_return", image);
     *out = host;
     return YES;
 }

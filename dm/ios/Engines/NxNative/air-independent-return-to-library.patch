@@ -1,0 +1,52 @@
+--- a/dm/ios/Sources/main.m
++++ b/dm/ios/Sources/main.m
+@@ -21,6 +21,7 @@
+ #ifdef DM_LIBRARY_HOST
+ #import "LibraryRoot.h"
+ #import "LibraryFramework.h"
++#import "IndependentGameLifecycle.h"
+ #ifdef DM_WEB_RUNTIME
+ #import "TonTonWebRuntime.h"
+ #endif
+@@ -433,6 +434,7 @@
+             return;
+         }
+ #endif
++        NSDictionary *libraryEnvironment = TonTonGameEnvironment();
+         setenv("DM_LIBRARY_GAME_ID",titleID.UTF8String,1);
+         if(!boot_env()){
+             UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"卡带暂时无法启动" message:@"请检查该游戏的资源是否已完整移入游戏匣。" preferredStyle:UIAlertControllerStyleAlert];
+@@ -446,6 +448,22 @@
+         fprintf(stderr, "boot: effective frame pacing %s, present Hz %s\n",
+                 getenv("DM_FRAME_LIMIT"), getenv("DM_PRESENT_HZ") ?: "engine default");
+         if (g_independent_host.start) {
++            if (!TonTonPrepareIndependentReturn(g_independent_host, g_independent_image, owner.window, ^{
++                extern int dm_profile_release_selection(const dm_game_profile *);
++                dm_profile_release_selection(dm_profile_find(titleID.UTF8String));
++                g_boot_ok = 0;
++                g_independent_host = (TonTonGameHost){0};
++                g_independent_image = NULL;
++                for (int i = 0; i < g_argc; i++) { free(g_argv[i]); g_argv[i] = NULL; }
++                g_argc = 0;
++                TonTonRestoreGameEnvironment(libraryEnvironment);
++            })) {
++                fprintf(stderr, "[RED] boot: cannot capture independent engine restart state\n");
++                TonTonRestoreGameEnvironment(libraryEnvironment);
++                return;
++            }
++            if (g_independent_host.setReturn && !getenv("DM_HOME_QUIT_TEXT"))
++                setenv("DM_HOME_QUIT_TEXT", "\xe8\xaf\xb7\xe7\xbb\xa7\xe7\xbb\xad\xe6\x8c\x89\xe4\xbd\x8f\n\xe9\x80\x80\xe5\x87\xba\xe5\xbd\x93\xe5\x89\x8d\xe6\xb8\xb8\xe6\x88\x8f\xef\xbc\x9f\n\xe8\xbf\x94\xe5\x9b\x9e\xe6\xb8\xb8\xe6\x88\x8f\xe5\xba\x93\xef\xbc\x8c\xe6\x9c\xaa\xe4\xbf\x9d\xe5\xad\x98\xe7\x9a\x84\xe8\xbf\x9b\xe5\xba\xa6\xe5\xb0\x86\xe4\xb8\xa2\xe5\xa4\xb1\xe3\x80\x82\n\xe9\x80\x80\xe5\x87\xba\xe6\xb8\xb8\xe6\x88\x8f\n\xe5\x8f\x96\xe6\xb6\x88", 1);
+             g_independent_host.setCatalog(independent_catalog);
+             const char *error = g_independent_host.start((const char *const *)g_argv, g_argc, g_independent_image);
+             if (error) {
+@@ -454,7 +472,10 @@
+                     message:@"游戏自带引擎未能启动。" preferredStyle:UIAlertControllerStyleAlert];
+                 [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+                 [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];
++                TonTonAbandonIndependentReturn();
++                TonTonRestoreGameEnvironment(libraryEnvironment);
+                 g_independent_host = (TonTonGameHost){0};
++                g_independent_image = NULL;
+                 return;
+             }
+             g_boot_ok=1;

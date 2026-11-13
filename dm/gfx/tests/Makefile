@@ -441,6 +441,14 @@ check_t_copy_alias: t_copy_alias
 .PHONY: check_t_linear_readback
 check_t_linear_readback: t_linear_readback
 	MTL_DEBUG_LAYER=1 ./t_linear_readback
+t_linear_depth: t_linear_depth.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_linear_depth.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+t_linear_depth_legacy: t_linear_depth.m $(MTL_T_DEP) $(wildcard ../nvn/legacy/*)
+	clang $(CFLAGS) -DDM_NVN_LEGACY_RENDERER_TEST=1 -fobjc-arc -o $@ t_linear_depth.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+.PHONY: check_t_linear_depth
+check_t_linear_depth: t_linear_depth t_linear_depth_legacy
+	MTL_DEBUG_LAYER=1 ./t_linear_depth
+	MTL_DEBUG_LAYER=1 ./t_linear_depth_legacy
 t_pfv: t_pfv.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m $(MTL_T_SRC) $(FW)
 t_dlss_scaler: t_dlss_scaler.m $(MTL_T_DEP)

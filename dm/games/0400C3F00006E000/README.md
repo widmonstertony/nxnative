@@ -225,3 +225,15 @@ clock-ramp recovery logic, and the classic caller passes the loaded stub's
 `STEP_MAX`. Modern and classic selections each pass 86 simulated timing checks.
 No shader ABI, chain or texture ownership layout changes. This is not part of
 the earlier 60.99 race result; a new device performance test is still required.
+
+### M2 60.101 warm-manifest control (November 13)
+
+An isolated-save run reached Mario Bros. Circuit with the full scene and HUD,
+960x540 scene attachments and active MetalFX. With the learned warm manifest
+disabled only for this diagnostic session, race windows measured 48–49 FPS,
+GPU median about 17.3 ms, frame p50 about 20.2 ms, thermal state 0 and no audio
+underrun. The prior warm-enabled run faulted near frame 176 / fence 813 in a
+128x128 pass using mesh `58d9378494e1def4` and fragment `3cc3501255bb2d74`.
+This is a useful negative control, not a root-cause fix or a 60 FPS pass. The
+persistent environment was restored and original save hashes were unchanged.
+No Air deployment or race pass is inferred from this M2 result.

@@ -104,6 +104,10 @@ def generate(out, profiles):
                '    const dm_game_profile *p = dm_profile_find(id);',
                '    if (!p || (selected && selected != p)) return 0;',
                '    selected = p; return 1;', '}',
+               '// Shell-only: the independent engine must have completed teardown first.',
+               'int dm_profile_release_selection(const dm_game_profile *expected) {',
+               '    if (!expected || selected != expected) return 0;',
+               '    selected = NULL; return 1;', '}',
                'const dm_game_profile *dm_profile_current(void) {',
                '    if (!selected) { fputs("game profile not selected before host start\\n", stderr); abort(); }',
                '    return selected;', '}', '']

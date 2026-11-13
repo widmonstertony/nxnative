@@ -119,3 +119,34 @@ any. This does not unlock a game's simulation rate or promise 60 fps.
 The two changed shell objects compiled and linked against the Air 60.60
 base without rebuilding any cartridge or shader. Installation and gameplay
 validation of the revised shell are pending.
+
+## Independent engine: return to the library (Air 60.78)
+
+`air-independent-return-to-library.patch` is the library-entry adapter for the
+pinned Air host entry `dm/ios/Sources/main.m` whose pre-adaptation SHA-256 is
+`d641dfaa91ba8381a8d8205284f3e41b1361523dddc99f28cf19ff27708148d7`.
+Normalize that frozen entry's relative includes of the library headers to
+`LibraryRoot.h` and `LibraryFramework.h` before applying the adapter. Add
+`IndependentGameLifecycle.h` and `FrameworkSegments.h` to the shell's include
+path and regenerate the profile registry with `runtime_profiles.py`.
+
+Compile `IndependentGameShellGlue.m` into the selected modern engine, with
+`DM_INDEPENDENT_GAME_TITLE` set to its title ID and all Objective-C classes
+namespaced for that framework. It requires NX2Apple's complete teardown patch
+`0041` at engine base `0c078130` plus its dependent patch queue, not a classic
+host with a no-op shutdown stub. Adapt that engine's `front_ios.m` to obtain
+its callback from `dm_tonton_shell_return_handler()` instead of looking up a
+process-global `dm_shell_return_to_library`. Export the stable v1 symbols plus
+`dm_glue_shell_lifecycle` and `dm_glue_set_return`; retain the exact shader chain.
+
+The shell accepts the optional return callback only when both symbols belong
+to the selected signed image and capability equals one. It snapshots writable
+static sections before starting the guest. The engine flushes saves, stops
+threads/audio/GPU users and removes observers before the callback restores
+static state, releases only the expected profile, restores environment and
+shows the retained library controller. Allocation failure rejects the new
+start rather than retaining an incomplete snapshot. No framework is unloaded.
+
+The Air 60.78 installation preserves all existing frameworks and 27 game
+directories; the new Fate card is ready. The new quit/relaunch path has not
+been player-tested. Classic M2 hosts do not advertise this capability yet.

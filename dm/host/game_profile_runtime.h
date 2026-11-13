@@ -36,3 +36,6 @@ const dm_game_profile *dm_profile_list(size_t *count);
 const dm_game_profile *dm_profile_find(const char *title_id);
 int dm_profile_select(const char *title_id); // only before host initialization
 const dm_game_profile *dm_profile_current(void);
+
+// Only the shell, after independent-engine teardown; never reset a running shared host.
+int dm_profile_release_selection(const dm_game_profile *expected);
