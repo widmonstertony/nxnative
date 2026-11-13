@@ -1,0 +1,63 @@
+--- a/GameSettings.h
++++ b/GameSettings.h
+@@ -40,11 +40,30 @@
+     NSString *framework=[NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:name];
+     return [NSFileManager.defaultManager fileExistsAtPath:[framework stringByAppendingPathComponent:@"DmGame"]]?framework:nil;
+ }
++// Show a real scene cap only with a contract for this exact signed build.
++static NSString *TTResolutionContract(NSString *title){
++    NSString *framework=TTNativeSwitchFramework(title);
++    if(!framework)return nil;
++    NSString *fixups=[NSString stringWithContentsOfFile:[framework stringByAppendingPathComponent:@"dm/main.fixups.tsv"] encoding:NSUTF8StringEncoding error:nil];
++    NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
++    NSString *relative=[NSString stringWithFormat:@"Games/%@/Resources/dm/resolution_levels.tsv",title.lowercaseString];
++    NSString *bundled=[NSString stringWithFormat:@"GameResources/%@/Resources/dm/resolution_levels.tsv",title.lowercaseString];
++    for(NSString *path in @[[doc stringByAppendingPathComponent:relative],[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:bundled]]){
++        NSString *text=[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
++        for(NSString *line in [text componentsSeparatedByString:@"\n"]){
++            NSArray *parts=[line componentsSeparatedByString:@"\t"];
++            if(parts.count==2&&[parts[0] isEqual:@"build"]&&[parts[1] length]==32&&[fixups containsString:parts[1]])return path;
++        }
++    }
++    return nil;
++}
+ static NSDictionary *TTNativeGraphicsSetting(NSString *title,NSString *key){
+     NSString *framework=TTNativeSwitchFramework(title);
+     if(!framework)return nil;
+     if([key isEqual:@"DM_OPMODE"])return TTChoice(key,@"运行模式",@"0",@[@[@"0",@"掌机"],@[@"1",@"底座"]]);
+     if([key isEqual:@"DM_PRESENT_UPSCALE"])return TTChoice(key,@"画面超分",@"metalfx",@[@[@"off",@"关闭"],@[@"metalfx",@"MetalFX"]]);
++    if([key isEqual:@"DM_WINDOW_SIZE"] && TTResolutionContract(title))
++        return TTChoice(key,@"\u5185\u90e8 3D \u5206\u8fa8\u7387\u4e0a\u9650",@"1280x720",@[@[@"1280x720",@"720p"],@[@"960x540",@"540p"],@[@"original",@"\u6e38\u620f\u539f\u59cb\u8bbe\u7f6e"]]);
+     if(![@[@"DM_RENDER_SCALE",@"DM_DYNAMIC_RESOLUTION"] containsObject:key])return nil;
+     NSString *fixups=[NSString stringWithContentsOfFile:[framework stringByAppendingPathComponent:@"dm/main.fixups.tsv"]
+                                                encoding:NSUTF8StringEncoding error:nil];
+@@ -88,7 +107,7 @@
+             if(![@[@"DM_PRESENT_ASPECT",@"DM_TOUCH_SIZE",@"DM_TOUCH_STICK"] containsObject:row[@"env"]])[out addObject:row];
+         }break;
+     }
+-    for(NSString *key in @[@"DM_OPMODE",@"DM_PRESENT_UPSCALE",@"DM_RENDER_SCALE",@"DM_DYNAMIC_RESOLUTION"]){
++    for(NSString *key in @[@"DM_OPMODE",@"DM_PRESENT_UPSCALE",@"DM_RENDER_SCALE",@"DM_DYNAMIC_RESOLUTION",@"DM_WINDOW_SIZE"]){
+         NSDictionary *native=TTNativeGraphicsSetting(title,key);
+         if(!native)continue;
+         BOOL hasSetting=NO;
+@@ -110,6 +129,9 @@
+     return value?:@"游戏默认";
+ }
+ static void TTApplyGameOverrides(NSString *title){
++    NSString *contract=TTResolutionContract(title);
++    if(contract)setenv("DM_RESOLUTION_LEVELS_PATH",contract.UTF8String,1);
++    else unsetenv("DM_RESOLUTION_LEVELS_PATH");
+     for(NSDictionary *spec in TTGameSettingSpecs(title)){
+         NSString *env=spec[@"env"],*value=TTGameOverride(NSUserDefaults.standardUserDefaults,title,spec);
+         if(value&&[env hasPrefix:@"DM_"])setenv(env.UTF8String,value.UTF8String,1);
+--- a/LibraryMain.m
++++ b/LibraryMain.m
+@@ -38,7 +38,7 @@
+     return @[
+         @{@"key":@"DM_FRAME_LIMIT",@"title":@"帧率限制",@"default":@"game",@"choices":@[@[@"unlimited",@"不限制"],@[@"game",@"游戏原始设置"]]},
+         @{@"key":@"DM_LANG",@"title":@"游戏语言",@"choices":@[@[@"auto",@"游戏默认"],@[@"chinese",@"优先中文"],@[@"english",@"英语"]]},
+-        @{@"key":@"DM_OPMODE",@"title":@"运行模式",@"default":@"0",@"choices":@[@[@"auto",@"游戏默认"],@[@"0",@"掌机（通常为 720p 档）"],@[@"1",@"底座"]]},
++        @{@"key":@"DM_OPMODE",@"title":@"运行模式",@"default":@"0",@"choices":@[@[@"auto",@"游戏默认"],@[@"0",@"掌机"],@[@"1",@"底座"]]},
+         @{@"key":@"DM_PRESENT_ASPECT",@"title":@"画面适配",@"choices":@[@[@"auto",@"游戏默认"],@[@"fit",@"保持原比例"],@[@"fill",@"铺满屏幕"]]},
+         @{@"key":@"DM_TOUCH_SIZE",@"title":@"虚拟按键大小",@"choices":@[@[@"auto",@"游戏默认"],@[@"small",@"小"],@[@"medium",@"中"],@[@"large",@"大"]]},
+         @{@"key":@"DM_TOUCH_STICK",@"title":@"虚拟左摇杆位置",@"choices":@[@[@"auto",@"游戏默认"],@[@"corner",@"左下"],@[@"higher",@"靠上"],@[@"inward",@"靠内"]]},

@@ -20,7 +20,13 @@ enum { AU_IDLE, AU_STARTING, AU_CANCELED, AU_WAIT_CALLBACK };
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // The first 24 bytes written into the guest AudioOutBuffer
 #define QMAX 64
 #define RELMAX QMAX                    // Released max = number of in-flight buffers (the game must take a buffer back before it can append again), same limit as pending
-typedef struct { uint64_t calls, count, qsum, underruns, zero_bytes; uint32_t fmin, fmax; } audio_stats;
+typedef struct {
+    uint64_t calls, count, qsum, underruns, zero_bytes;
+    uint32_t fmin, fmax;
+    uint64_t requested_frames, capacity_bytes, notify_begin, notify_end;
+    uint32_t submitted, released, reclaimed, notify_pending, notify_armed;
+    int health;
+} audio_stats;
 typedef struct {
     pthread_mutex_t m;
     void *event;                       // Guest SystemEvent: signaled whenever a buffer is released
@@ -39,6 +45,9 @@ typedef struct {
     dispatch_semaphore_t notify_sem;
     pthread_t notify_th; _Atomic int notify_run, notify_pending, notify_armed;
     dispatch_semaphore_t rel_sem;      // Host outputs only (dm_pcmout_open): signaled for each release, so the in-process audio renderer blocks instead of polling (dm_pcmout_wait)
+    int health;                        // optional DM_AUDIO_HEALTH; no PCM is recorded
+    _Atomic uint64_t notify_begin, notify_end;
+    uint64_t requested_frames, capacity_bytes; // callback-owned totals; compare actual AU capacity with its request
     int id;                            // open sequence number (#N in the log; tells simultaneous outputs apart, e.g. Engage's Wwise and Unity's built-in FMOD)
     int nlog;                          // Start / Stop / Close lines logged so far (at most 32 per output)
     _Atomic uint64_t under_n, under_b; // underruns: times the pending queue was empty when the callback needed data / zero-filled bytes
@@ -80,8 +89,11 @@ static void *event_notify(void *p) {
     aout *a = p; dm_host_helper_qos(QOS_CLASS_USER_INTERACTIVE);   // the game's audio thread waits on the release event it signals
     for (;;) {
         dispatch_semaphore_wait(a->notify_sem, DISPATCH_TIME_FOREVER);
-        if (atomic_exchange_explicit(&a->notify_pending, 0, memory_order_acq_rel) && a->event)
+        if (atomic_exchange_explicit(&a->notify_pending, 0, memory_order_acq_rel) && a->event) {
+            if (a->health) atomic_fetch_add_explicit(&a->notify_begin, 1, memory_order_relaxed);
             hle_signal_system_event(a->event);
+            if (a->health) atomic_fetch_add_explicit(&a->notify_end, 1, memory_order_relaxed);
+        }
         // Acquire a producer that saw the old armed=1, so the pending recheck
         // cannot miss its release. Otherwise the producer or our re-arm posts.
         // A release-only store permits pending=1/armed=0 with both sides asleep.
@@ -160,6 +172,7 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     (void)f; (void)ts; (void)bus; (void)frames;
     aout *a = ctx;
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&a->cb_n, 1, memory_order_relaxed);
+    if (a->health) { a->requested_frames += frames; a->capacity_bytes += bl->mBuffers[0].mDataByteSize; }
     {
         // At each 2000-callback checkpoint publish a snapshot for the watchdog: LOG takes a stdio lock and must never run here or in the release-event notifier.
         // A busy logger leaves its mailbox full; keep accumulating then, rather than waiting, overwriting its snapshot or losing counts.
@@ -168,7 +181,20 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
         a->st_count++;
         if (++a->st_calls % 2000 == 0 && !atomic_load_explicit(&a->st_pending, memory_order_acquire)) {
             uint64_t un = atomic_load(&a->under_n), ubb = atomic_load(&a->under_b);
-            a->st_report = (audio_stats){a->st_calls, a->st_count, a->st_qsum, un - a->st_u0, ubb - a->st_ub0, a->st_fmin, a->st_fmax};
+            a->st_report = (audio_stats){.calls=a->st_calls, .count=a->st_count, .qsum=a->st_qsum,
+                .underruns=un-a->st_u0, .zero_bytes=ubb-a->st_ub0, .fmin=a->st_fmin, .fmax=a->st_fmax};
+            if (a->health) {
+                a->st_report.health = 1;
+                a->st_report.requested_frames = a->requested_frames;
+                a->st_report.capacity_bytes = a->capacity_bytes;
+                a->st_report.submitted = atomic_load_explicit(&a->q_tail, memory_order_acquire);
+                a->st_report.released = atomic_load_explicit(&a->rel_tail, memory_order_acquire);
+                a->st_report.reclaimed = atomic_load_explicit(&a->rel_head, memory_order_acquire);
+                a->st_report.notify_begin = atomic_load_explicit(&a->notify_begin, memory_order_relaxed);
+                a->st_report.notify_end = atomic_load_explicit(&a->notify_end, memory_order_relaxed);
+                a->st_report.notify_pending = atomic_load_explicit(&a->notify_pending, memory_order_acquire);
+                a->st_report.notify_armed = atomic_load_explicit(&a->notify_armed, memory_order_acquire);
+            }
             atomic_store_explicit(&a->st_pending, 1, memory_order_release);
             a->st_fmin = ~0u; a->st_fmax = 0; a->st_qsum = a->st_count = 0; a->st_u0 = un; a->st_ub0 = ubb;
         } }
@@ -348,6 +374,10 @@ static void stats_log(const audio_report *r) {
     LOG("audio #%d device callbacks %llu: %u–%u frames each, %.1f blocks queued on average at callback; in these %llu, %llu underruns, %.1f ms zero-padded", r->id,
         (unsigned long long)s->calls, s->fmin, s->fmax, (double)s->qsum / s->count, (unsigned long long)s->count,
         (unsigned long long)s->underruns, s->zero_bytes / (2.0 * r->ch) / (RATE / 1000.0));
+    if (s->health) LOG("audio #%d health at callback %llu: submitted=%u released=%u reclaimed=%u notify=%llu/%llu pending=%u armed=%u AU_requested_frames=%llu AU_capacity_bytes=%llu; cumulative independent snapshots, not a synchronized queue view", r->id,
+        (unsigned long long)s->calls, s->submitted, s->released, s->reclaimed,
+        (unsigned long long)s->notify_begin, (unsigned long long)s->notify_end, s->notify_pending, s->notify_armed,
+        (unsigned long long)s->requested_frames, (unsigned long long)s->capacity_bytes);
 }
 static void stats_drain(void) {
     audio_report reports[AOMAX]; int n = 0;
@@ -424,6 +454,8 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     atomic_init(&a->null_run, 0); atomic_init(&a->notify_run, 1);
     atomic_init(&a->notify_pending, 0); atomic_init(&a->notify_armed, 0);
     atomic_init(&a->st_pending, 0);
+    const char *health = getenv("DM_AUDIO_HEALTH"); a->health = health && !strcmp(health, "1");
+    atomic_init(&a->notify_begin, 0); atomic_init(&a->notify_end, 0);
     a->notify_sem = dispatch_semaphore_create(0); a->id = atomic_fetch_add(&nopen, 1);
     pthread_create(&a->notify_th, NULL, event_notify, a);
     if (ev) hle_bind_system_event(ev, 1);   // Buffer release event: bind a kernel event on the guest thread (auto-clear), afterwards signaled by the audio thread

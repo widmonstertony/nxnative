@@ -32,6 +32,147 @@ A Switch 2 game: update v655360 (the title screen says Ver. 2.0.1), SDK 20.5.25 
 
 The first boot shows the language list: `A`, `LUp`, `A` picks English. The character choice takes `LLeft` before `A`. From a warm cache, `A A LLeft A A Plus` reaches walking in about 300 s. On later boots, `A` at the title screen a few times continues the save and reaches walking in about 110 s. The work folder has `run/boot.sh`, `run/hdrive.sh` (no window, timed control lines) and `run/spam.sh`. The packed app takes about a minute to reach the language list (14 s of it the prepare step on a second start), so the fixed times in `run/spam.sh` miss it: press the keys once the list shows.
 
+## TonTon Air scene resolution cap (v327680)
+
+The separate TonTon Air library retains main build
+`816c5358e8178d802fcec4a7ce5a741a`, not the v655360 Mac build above.
+Its retained November 8 device log shows a 1920x1080 window and MetalFX
+present scaling to 2240x1260, followed by serious thermal state and roughly
+43–48 fps. Handheld mode alone did not cap its scene resolution.
+
+A mobile stopgap now limits the game's own dynamic-resolution choices,
+using [`resolution_levels.tsv`](resolution_levels.tsv). The v327680
+selector at main+0x1fb7a0 references all nine lists in that contract;
+width/height getters at +0x103a1d0/+0x103a210 read its 34-level table.
+The default cap is 1280x720, with `DM_WINDOW_SIZE=960x540` or `original`
+overrides. `DM_RESOLUTION_LEVELS_PATH` lets a multi-game front end select
+this exact profile's contract. Fixed addresses run only for that build ID,
+after every original table/list value and writable range has been checked.
+A failed check writes nothing. The table, maximum target allocations,
+signed code and shader chain stay unchanged. UI and output texture sizes
+can therefore still be 1080p; this is a scene cap, not proof of a 720p
+presentation texture or of the size of every intermediate pass.
+
+The principle was researched in the author's
+[BananaNative Android branch](https://github.com/Raphix91/BananaNative/tree/bfc32425f3d2391401b71dfda0cb09e6686fb79a)
+and independently implemented here for signed iOS data mappings; that
+branch's v655360 addresses are not used. Local validation covered the
+owned v327680 embedded image (all nine lists, unchanged code/table,
+720p/540p/original, wrong builds and rejected corrupt contracts) and the
+small Air loader/menu rebuild. Air 60.72 was installed in place; the actual run logged the 1280x720 cap
+and seven lowered lists. The user still reported crackling and stutter:
+late-scene measurements were about 28–44 fps with serious thermal state.
+Audio underruns appeared after the route changed from 48 kHz CarPlay to
+44.1 kHz Bluetooth, without establishing sole causation. The next 960x540 plus MetalFX run logged nine lowered lists and the
+player reported reduced stutter, with crackling still present. After about
+14,000 callbacks its four-block PCM queue collapsed toward zero; later
+2,000-callback windows contained 1,943–1,996 underruns, including the
+48 kHz built-in-speaker route. This rules out treating Bluetooth rate
+conversion as the sole explanation. Rendering still worked at roughly
+24–43 fps in the hot state, with expensive real-time render-thread budgets
+and 63 interactive workers. A per-game `DM_RT=0` comparison was written
+and read back, then confirmed in the next launch. The player still heard
+crackling; scene windows contained 5–857 underruns per 2,000 callbacks.
+The switch alone did not solve the defect. Air 60.73 is installed with opt-in
+[producer/release progress](../../../docs/reference/audio.md#distinguishing-pcm-production-from-release-notification-starvation)
+without altering PCM production or release semantics.
+
+The 60.73 speaker-route run logged 5,043 underrun callbacks out of 44,000
+(240 frames / 5 ms each). The worst 2,000-callback window zero-filled
+5,920 ms. `AU_capacity_bytes` remained exactly four times requested frames,
+so this run does not support an oversized-AudioUnit-buffer explanation.
+Release notifications continued to complete and released buffers continued
+to be reclaimed; the cumulative checkpoints cannot establish the latency
+of an individual notification, wake or mix. They do not prove that the
+notifier is fault-free.
+
+A subsequent bounded `DM_HITCH_DUMP=35:45` run identified the producer as
+`KTSL2AudioOut` (guest priority 30, waiting in `WaitSynchronization` through
+main+0x10ecb64). All 24 snapshots found it waiting there, one during mutex
+reacquisition; these are frame-hitch samples, not samples triggered by an
+audio underrun. The same host assigns priority-39/44 workers and that audio
+thread the same interactive QoS by default. A per-game comparison
+uses existing `DM_QOS_MAP=1`, `DM_QOS_EDGES=30,44`: audio remains interactive,
+workers in 39–44 become user-initiated, and lower-priority workers become
+utility. The 540p plus MetalFX cap is retained; hitch dumps are removed for
+the comparison. The next launch confirmed those bands, logged zero underruns
+through 16,000 device callbacks, and the player reported much less crackling.
+The scene still ran at about 41–45 fps: frame p50 21.7–23.2 ms, GPU p50
+10.4–11.3 ms, submit/present p50 16.9–17.4 ms. MetalFX presentation took
+about 2.6–2.9 ms separately; these overlapping intervals must not be added
+as a serial critical path. The device was already in thermal state 2.
+This supports retaining the narrow comparison for now; it is not a permanent
+all-scene audio fix or a new default for other games.
+
+The next per-game comparison enables existing `DM_PRESENT_SNAP=2`, absent
+from the measured launch, to release swapchain textures after a queued copy
+rather than the display tick ([frame buffering](../../../docs/settings.md#frame-buffering)).
+It retains the audio bands, 540p cap and MetalFX. The next launch confirmed
+snapshot buffering; the player reported only a slight improvement. Later
+scene windows still had frame p50 22.1–23.2 ms and p95 33.0–56.8 ms, with
+GPU p50 near 10 ms and submit/present near 17 ms. No audio underrun was
+logged through 42,000 callbacks. This did not meet the smoothness target.
+
+A subsequent `DM_QOS_EDGES=39,44` comparison keeps the priority-39 graphics
+dispatcher interactive alongside priority-30 audio, while priority-44 workers
+remain user-initiated. Its launch confirmed those bands. The player reported
+normal sound but continued severe stutter. The last three scene windows ran
+at 47.6–48.6 fps, frame p50 19.46–19.95 ms and p95 27.14–29.77 ms,
+submit/present p50 13.53–13.71 ms, GPU p50 12.26–12.59 ms. The run logged
+zero underruns through 30,000 callbacks and thermal state 2. These are
+successive manually reproduced runs, not a controlled matched-state speedup.
+The bands are retained provisionally; sustained 60 fps remains open.
+
+The retained host already has the texture-view cache, serial-hashed
+CPU-written-texture membership, binary-search memory-pool lookup and
+main-thread QoS initialization. Reapplying those upstream changes is not an
+identified missing fix. Existing `DM_NVN_CPUPROF=1` and `DM_NVN_WAITS=1`
+diagnostics were enabled for Pokopia alone and read back, awaiting a new
+representative scene capture; nested CPU phase timings overlap. No new host,
+shader rebuild or game launch was performed for this diagnostic step.
+
+Upstream's frame-buffering phone measurements are for Breath of the Wild,
+not proof of a Pokopia gain. The
+[iPhone-specific Pokopia Native guide](https://pokopia-native.vercel.app/iphone)
+reports a default 30 fps target and serious thermal state after about six
+minutes, with render-scale reduction as its mitigation. Its custom scaling
+and Android/Vulkan frame generation cannot be assumed to exist in this
+retained Metal runtime. No sustained 60 fps or universal resolution control
+is claimed.
+
+The subsequent full-timing run reproduced the stutter but exposed
+[missing queued-thread CPU reports](../../../docs/reference/frame-rate.md#cpu-phase-reports-miss-the-queued-submission-thread): only small texture/index
+counts were reported, and full per-operation timing increased submission CPU
+time to about 18–19 ms. Those timings are perturbed diagnostics, not a new
+baseline regression. Temporary CPU/wait flags were removed and read back;
+the change takes effect on restart. A narrow host-only diagnostic correction
+is installed as Air 60.74 after compile, link and signature checks. Installation
+retained all 26 game directories and the checked ROM sizes. It reports each
+submitting thread and samples each phase,
+without changing shaders, game code, rendering semantics or saves. A
+`DM_NVN_CPUPROF=64` capture confirmed the actual priority-39 graphics
+submission thread in the reports. On the next user-tested scene the player
+reported no stutter and no audio interruptions. The final four 300-frame
+windows ran at 58.8–59.9 fps, frame p50 16.63–16.74 ms and p95
+18.03–20.06 ms; GPU p50 was 11.66–11.86 ms. The last six audio windows
+(12,000 callbacks) had zero underruns, with the PCM queue averaging four
+blocks. The full 18,000-callback capture included 100 underruns (499.4 ms
+zero padding) in the window spanning callbacks 4,001–6,000, which also
+contained a background/foreground transition; that coincidence does not
+establish sole causation. Thermal state still reported 2. This is a successful scene retest, not proof
+of sustained 60 fps across all areas or of one change being the sole cause:
+these runs were not matched for thermal state, route and scene progression.
+The tested 540p plus MetalFX, snapshot and QoS settings are retained; the
+uninstalled O3 candidate is not credited with this result. The four diagnostic
+tests pass against both host source versions, and all 11 documentation tests
+pass. The gameplay regression harness was
+not configured (`REGRESS_ROOT` / `REGRESS_GAMES`); no harness pass is claimed.
+
+The retained Air renderer compile command ends in `-O1`, overriding an earlier
+`-O3`. The same diagnostic source was compiled separately with effective
+`-O3` for a possible CPU-cost comparison. That object is not installed, and
+compile success alone establishes no gameplay speedup.
+
 ## Open
 
 - The picture has not been compared with a Switch 2. The user's playtest found it fine. Sunlit ground matches published iPhone shots of the game. Shaded ground and walls are lavender. The player carries fine contour lines, already present in colour target 5435, which may be the material. In some moving shots far blocks showed through near ones; this has not been rechecked since the fixes below.
@@ -39,8 +180,46 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 - The pipeline archive saved nothing on the walk from the language list to the first area, on the partial library: archive lookups found 0 and found none 655 times, and 216 bases were compiled, though the host's probe found the archive's bases. The draws' pairs seem not to be those of `shader_pairs.tsv`, which come from BNSH variations. Whether a full library differs is not checked.
 - An IPA has not been built. A full iOS shader build would be needed first.
 
+## TonTon M2 performance port
+
+The M2 uses the frozen independent iPadOS 16.1 engine (`a432daafc3d0`),
+not Air's Metal 4 renderer. The first targeted 60.93 installation retained
+the guest module sections and every other game's framework. Original ROM
+identities and save hashes matched before and after installation. Its
+isolated test confirmed QoS bands 39/44 and no audio underruns through
+16,000 callbacks, but only the language-selection screen was observed;
+this was not a verified 540p/MetalFX or 3D gameplay pass.
+
+That test exposed two execution-path gaps, documented under
+[independent-engine performance options](../../../docs/reference/rendering.md#an-independent-ipad-engine-reads-performance-options-without-applying-them).
+The follow-up 60.94 is installed in place. It fixes current-cartridge
+contract lookup and the classic scaler's title restriction, preserving
+original module bytes, the existing shader chain and shader libraries.
+The fresh device log confirms all nine dynamic lists capped at 960x540
+and an actual classic MetalFX spatial pass from the retained 1920x1080
+UI/composite texture to the 2732x1536 drawable. This is a 540p scene cap;
+it does not make every intermediate or the scaler's input 540p. The
+opening's 3D character and dialogue animate around 59.9 fps, with no
+underruns in the recorded audio callback windows. A cold transition into
+character creation stalled for 6.37 seconds; stable-screen measurements
+do not erase that loading stall. The isolated run then reached the first-map
+tutorial and accepted stick movement. Stable 300-frame windows there ran
+at 55.4--60.0 fps in the final minute (usually 59.9), with frame p50
+16.64--17.06 ms and p95 17.17--22.47 ms. The final 16,000 audio callbacks
+retained four queued blocks without underruns.
+Cold pipeline/library creation still caused multi-second transitions, and
+some legacy render pipelines still report internal compiler errors. This
+is a first-map performance check, not a complete graphics or all-area pass;
+Air's successful-scene measurements must not be presented as M2 results. The classic renderer does not
+implement Air's `DM_PRESENT_SNAP` setting.
+
 ## Found on this game
 
+- [Independent-engine performance options](../../../docs/reference/rendering.md#an-independent-ipad-engine-reads-performance-options-without-applying-them): verify execution, not only saved preferences, on the frozen M2 engine.
+
+- [CPU phase reports miss the queued submission thread](../../../docs/reference/frame-rate.md#cpu-phase-reports-miss-the-queued-submission-thread).
+
+- [Distinguishing PCM production from release-notification starvation](../../../docs/reference/audio.md#distinguishing-pcm-production-from-release-notification-starvation): Air crackling remains under investigation; no repaired-audio claim.
 - [One compile for a pixel shader's side entry points](../../../docs/reference/shaders.md#one-compile-for-a-pixel-shaders-side-entry-points): 57% of the map's compiles were `_ba` and `_bl` libraries; a cold build of 1,021 shaders now takes 48% of the CPU on the Mac's flags and 47% on the iPhone's.
 - [KTGL on NVN2: Switch 2 GLSLC outputs and LD_ / LI_ LINKDATA](../../../docs/reference/shaders.md#ktgl-on-nvn2-switch-2-glslc-outputs-and-ld_--li_-linkdata): the split found almost none of its shaders.
 - [HADD2 and HMUL2 with an immediate](../../../docs/reference/shaders.md#hadd2-and-hmul2-with-an-immediate): the GPU hang and 88 ms frames.
@@ -55,3 +234,5 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 - [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameShare guest displays](../../../docs/reference/services.md#gameshare-guest-displays): boot aborts.
 - [Block-compressed storage the CPU wrote before first use](../../../docs/reference/nvn-objects.md#block-compressed-storage-the-cpu-wrote-before-first-use): its `IMAGE` BC1 / BC7 icons showed other items' pictures once their storage was reused (resolved).
 - [VOTEU writes the uniform predicate](../../../docs/reference/shaders.md#voteu-writes-the-uniform-predicate): 471 of its shaders change; in the first area only the full-screen `075fd7285c64b798` draws, its votes all false, so the picture is unchanged there.
+
+- [A handheld setting leaves the scene at 1080p](../../../docs/reference/rendering.md#a-handheld-setting-leaves-the-scene-at-1080p).

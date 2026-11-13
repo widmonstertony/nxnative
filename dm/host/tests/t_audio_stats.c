@@ -77,7 +77,7 @@ static int render(void *out, int count, int with_pcm) {
 }
 static void *drain_stats(void *unused) { (void)unused; stats_drain(); return NULL; }
 int main(void) {
-    setenv("DM_AUDIO", "0", 1); setenv("DM_AUDIO_MUTE", "0", 1);
+    setenv("DM_AUDIO", "0", 1); setenv("DM_AUDIO_MUTE", "0", 1); setenv("DM_AUDIO_HEALTH", "1", 1);
     report_entered = dispatch_semaphore_create(0); report_allow = dispatch_semaphore_create(0);
     report_done = dispatch_semaphore_create(0); released_event = dispatch_semaphore_create(0);
     uint32_t out[16] = {0}; uint8_t prm[8] = {0}, ev[64] = {0};
@@ -85,6 +85,13 @@ int main(void) {
     atomic_store(&ao(out)->consumer, BK_AU); // The fixture drives the AU callback, not the null backend.
     atomic_store(&ao(out)->state, STATE_STARTED); atomic_store(&block_report, 1);
     CHECK(render(out, 2000, 1), "PCM and release order at first statistics boundary");
+    audio_stats health = ao(out)->st_report;
+    CHECK(health.health && health.submitted == 2000 && health.released == 1999 && health.reclaimed == 1999,
+          "health snapshot distinguishes submitted, played and reclaimed buffers before the current pull");
+    CHECK(health.requested_frames == 3000 && health.capacity_bytes == 12000,
+          "health counts AU frame demand separately from buffer capacity");
+    CHECK(health.notify_begin == 1999 && health.notify_end == 1999,
+          "health distinguishes notifier entry from completed guest signals");
     CHECK(!atomic_load(&callback_io), "callback never enters stdio or its stream lock");
     if (atomic_load(&callback_io)) { h_au_Close(out); return 1; } // old code fails here, without waiting for a helper that never logs
     pthread_t logger; CHECK(!pthread_create(&logger, NULL, drain_stats, NULL), "run the watchdog's actual statistics drain");

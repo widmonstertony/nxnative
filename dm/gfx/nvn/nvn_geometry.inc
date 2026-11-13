@@ -1072,7 +1072,7 @@ static int geo_run_walk(id<MTL4RenderCommandEncoder> re) {
     S = s0; R = r0; g_pso_dirty = pd; g_dss_dirty = dd;
     return n;
 }
-static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base) { cp_stamp start = cp_begin(); geo_draw_(pr, dw0, di0, primitive_base); cp_end(6, start); }
+static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base) { cp_stamp start = cp_begin(6); geo_draw_(pr, dw0, di0, primitive_base); cp_end(6, start); }
 static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base) {
     for (int i = 1; i < g_geo_nrun; i++) if (g_geo_run[i].op && g_geo_run[i].op == g_exec_cur) {
         g_geo_run[i].op = NULL; geo_raster(&g_geo_run[i], i == g_geo_nrun - 1); return;

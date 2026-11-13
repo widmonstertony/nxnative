@@ -866,6 +866,24 @@ static void map_image(module_t *m, const char *dir) {
 }
 #endif
 
+#include "resolution_levels.h"
+static void apply_resolution_levels(module_t *m, const char *dir) {
+    if (m->nro || strcmp(m->name, "main") || m->patch_off <= 0) return;
+    FILE *f = dm_resolution_contract_open(dir, getenv("DM_RESOLUTION_LEVELS_PATH"),
+                                          getenv("DM_ROMFS"));
+    if (!f) return;
+    dm_resolution_result result;
+    int status = dm_resolution_levels(f, m->build_id, m->base, m->size,
+        (m->text_end + 0x3FFF) & ~0x3FFFull, m->patch_off,
+        getenv("DM_WINDOW_SIZE"), &result);
+    fclose(f);
+    if (status == 1)
+        LOG("resolution: scene cap %ux%u, %u dynamic lists lowered; original target sizes retained", result.width, result.height, result.changed);
+    else if (status < 0)
+        LOG("[RED] resolution cap rejected: %s; game data unchanged", result.reason);
+    else LOG("resolution cap not applied: %s", result.reason);
+}
+
 static char g_module_dir[1024];   // the folder the modules were loaded from (dm_module_dir)
 const char *dm_module_dir(void) { return g_module_dir; }
 
@@ -886,6 +904,7 @@ void load_modules(const char *dir, const char **names, int n) {
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
         t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute; from here on the loader only writes data
+        apply_resolution_levels(m, dir);
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
         t = now_ns(); register_gates(m, dir); tg += now_ns() - t;

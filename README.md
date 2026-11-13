@@ -27,10 +27,21 @@ MetalFX path: local GPU validation covered both 1280×720 and 960×540 input,
 including color and aspect-ratio bars. Deployment and game-by-game validation
 of that renderer on iPad are pending.
 
-On M2, build 60.86 is installed in place. Pokémon Violet 4.0.0 and
-Pokémon Legends: Z-A now select uncapped rendering with a separate
-elapsed-time game clock. The settings and retained game data were read
-back; gameplay speed still needs device verification.
+Air 60.72 adds a build-checked Pokopia scene-resolution cap. The actual
+Air run confirmed the 720p cap executed, but the user still reported stutter
+and audio underruns. The later 540p plus MetalFX run confirmed the cap;
+the player reported less stutter but persistent crackling. Per-game settings
+expose 720p/540p/original. Disabling render-thread real-time scheduling
+was tested and did not eliminate crackling. Audio repair and sustained
+performance remain open.
+[Resolution findings](dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680)
+distinguish internal scene size from 1080p buffers and final output. This is
+not a claim that every title has a tested 720p/540p render path.
+
+M2 build 60.86 introduced uncapped rendering with a separate elapsed-time
+game clock for Pokémon Violet 4.0.0 and Pokémon Legends: Z-A. Settings
+and retained game data were read back; normal simulation speed still needs
+a gameplay check.
 
 The M2 delivery also trialed a targeted Metal 3 mesh fix for Ocarina of
 Time and Mario Kart World. It turns an invalid generated triangle into a
@@ -38,7 +49,13 @@ degenerate triangle without changing valid indices or the shader
 argument layout. The four Ocarina libraries and the two Kart libraries
 with matching descriptors were read back on-device with rollback copies
 retained. This is an installation result: Ocarina's first 3D scene and
-Kart race stability and frame rate remain open.
+Kart race stability and frame rate remain open. The old iPad's Kart game data and runtime resources are present; its library now reports ready, but launch and rendering still need validation.
+
+On November 12, the old iPad received the missing 498 MB legacy Kart shader
+image and runtime tables, with SHA-256 readback verification. Its existing
+ROM identity, installed app and saves were preserved; this resource repair
+has not yet been launch-tested. The [delivery notes](docs/tonton-delivery.md)
+separate verified transfers from outstanding runtime work.
 
 | Game | What this fork changed | Verified result and open issues |
 | --- | --- | --- |
@@ -47,6 +64,12 @@ Kart race stability and frame rate remain open.
 | Zelda: Tears of the Kingdom | Restored missing shared-font assets; exposed a real 3D render-scale control and corrected the FPS overlay toggle for data-only games ([controls](https://github.com/widmonstertony/nxnative/commit/86e676d), [overlay](https://github.com/widmonstertony/nxnative/commit/acb19b6)) | Air player confirmed the game opened and later reported less stutter and no FPS overlay. Sustained 60 fps has not been verified. |
 | Pokémon Violet | Restored the shared fonts and offline Pokémon GO Plus + startup; on legacy Metal, bound the existing iPad game framework to its validated shader chain and supplied the matching raster and image-atomic companions. | M2 60.84 is installed with the existing 4.0.0 ROM and saves verified unchanged. The legacy character capture binding is included; the post-load scene still needs verification. See the [device test notes](dm/games/01008F6008C5E000/README.md#m2-ipad-update-400) for the scope of verification. Air title entry still needs a player retest. The [uncapped timing candidate](dm/games/01008F6008C5E000/README.md#m2-ipad-uncapped-render-timing-candidate) passed local clock tests; device gameplay is pending. |
 | Pokémon Legends: Z-A, Switch 2 Edition | Bound the newer transform-feedback parameters on legacy Metal without changing shaders using the old ABI. Earlier repairs filled missing Metal 3 shader variants and added a Metal 4 compute archive path ([shader loading](https://github.com/widmonstertony/nxnative/commit/2d1396b), [pipeline cache](https://github.com/widmonstertony/nxnative/commit/d24d7c2)) | M2 build 60.82 restored the third-person player model in the same hotel room and save where 60.81 omitted it. Camera rotation and player movement were checked on the device; later city scenes were not part of this check. The uncapped timing path has a local regression test; player movement speed in the reported scene still needs an A/B check. |
+| Hyrule Warriors: Age of Imprisonment | New build uses the upstream field and shader fixes below. | The Air shader build and signed candidate are complete locally. The full game image has not been imported or launched on Air. |
+| Fate/Samurai Remnant | Resumable shader compilation and validated transfer batches. CoreDevice inventory omissions are resolved by named-file SHA-256 readbacks instead of treating a missing row as permission to resend existing resources. | Air completed all 77,671 shaders on the existing chain on November 12. Interrupted 2,350-file and 2,334-file transfer checkpoints passed full readback without retransmission. Final runtime tables and the 6.13 GB shader image are complete and fully read back. Air 60.72 reports ready / can open; gameplay remains for the user to check. |
+| Crisis Core: Final Fantasy VII Reunion | Adjusted Air address-space reservation and added an M2 renderer repair for buffer atomics. | Air reached the title and later passed the previously crashing scene, with stutter reported. On M2, 20 runtime components were installed and read back with the existing ROM and saves intact; gameplay on that build is unverified. |
+| Animal Crossing: New Horizons | Restored the missing M2 runtime components for the existing game data. | Eight runtime components were installed and read back on M2; gameplay on that build is unverified. The Air player confirmed the title launched. |
+| Pokkén Tournament DX | Repaired the old iPad's rendering path for its existing installation. | Old iPad 60.97 reached the training HUD; fighters were still missing. This is not a gameplay pass. |
+| NieR:Automata | Tracked separately on the legacy renderer. | Old iPad game data is present; the A10X runtime is still missing. |
 | Pokémon Pokopia | Restored missing graphics libraries and fixed Switch 2 virtual microphone enumeration ([service fix](https://github.com/widmonstertony/nxnative/commit/646c4ab)) | Reached gameplay in device testing; the player reported character-preview rendering defects on Air and M2. |
 | The Witcher 3 | Repaired Air startup after tracing the executable's address-space reservation; verified the exact installed framework ([Air repair](https://github.com/widmonstertony/nxnative/commit/33b0df4)) | Air player confirmed title/game entry. M2 character materials still render incorrectly in some scenes. |
 | Naruto Shippuden: Ultimate Ninja Storm 4 | Fixed the OpenGL ES startup path, framebuffer queries, and NVN/GL texture and fence sharing ([startup](https://github.com/widmonstertony/nxnative/commit/f691081), [framebuffer](https://github.com/widmonstertony/nxnative/commit/2eddd56), [texture sharing](https://github.com/widmonstertony/nxnative/commit/175301f)) | Air player reached battle on one build. Later reports of black characters and another battle-entry crash are still open. |

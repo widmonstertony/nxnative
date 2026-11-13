@@ -202,6 +202,14 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 - **Found on:** the [synthetic real-time audio audit in issue #313](https://github.com/seedds/nxnative/issues/313#issuecomment-6523656102). No particular game's audible failure is attributed to this finding.
 - **Check:** `t_audio_stats` calls the real callback with synthetic PCM and traps callback-thread stdio, including its stream lock. With the watchdog's writer deliberately blocked, each PCM buffer still triggers its guest release event and is refilled correctly; queued and merged reports preserve their fields. Close drains a second pending snapshot while the watchdog holds only a local copy, which it logs after the output was freed. Statistics alone cause no guest event. The fixture needs no sound device or game files.
 
+### Distinguishing PCM production from release-notification starvation
+
+- **Symptom:** the device keeps rendering, but its PCM queue drains and crackling appears; an underrun count alone cannot locate the stalled stage.
+- **Cause:** the output callback, release notifier and guest producer are separate threads. A zero pending queue can mean absent PCM production, an unreclaimed played buffer, a notifier blocked while signalling the guest event, or excess callback byte demand. Those hypotheses must not be conflated.
+- **Diagnostics:** `DM_AUDIO_HEALTH=1` adds cumulative submitted/played/reclaimed buffer counts, notifier entry/completion counts, pending/armed flags, and AU requested-frame versus supplied-buffer-byte totals to the existing bounded callback snapshot. The watchdog logs the snapshot after releasing the output registry lock. No PCM is recorded; no logging, allocation or extra lock is added to the callback. Counters are independently sampled, not a synchronized queue view, so compare several windows rather than subtracting one mixed-time snapshot as an exact queue length. The default remains off, and playback/release behaviour is unchanged.
+- **Check:** `t_audio_stats` exercises the actual callback and event notifier with a blocked diagnostic writer and 100,000 individual release handoffs; it checks frame/byte demand and submitted/played/reclaimed/notifier progress. The exact deployed legacy audio source runs the adapted fixture too.
+- **Found on:** [Pokopia's Air crackling investigation](../../dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680); the root cause remains open.
+
 ### AudioOut release notification can sleep with pending work
 
 - **Symptom:** PCM is consumed correctly and its buffer reaches the released queue, but the guest release event never arrives. The notifier is asleep with `notify_pending=1` and `notify_armed=0`.

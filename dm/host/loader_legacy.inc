@@ -14,6 +14,7 @@
 
 module_t *g_mod;
 int g_nmod;
+static void apply_resolution_levels(module_t *m, const char *dir);
 static const void *g_module_image_mh;
 int dm_set_game_image_header(const void *header) {
     if (!header || g_nmod || (g_module_image_mh && g_module_image_mh != header)) return 0;
@@ -426,7 +427,7 @@ static void preload_nros(const char *dir, FILE *f) {
         module_t *m = &g_mod[g_nmod];
         strlcpy(m->name, name, sizeof m->name); m->nro = 1; m->nro_size = size;
         for (int k = 0; k < 32; k++) sscanf(hex + 2 * k, "%2hhx", &m->sha256[k]);
-        read_layout(m, dir); map_image(m, dir); parse_dynamic(m); register_gates(m, dir);
+        read_layout(m, dir); map_image(m, dir); apply_resolution_levels(m, dir); parse_dynamic(m); register_gates(m, dir);
         // The NRO header gives initialized data separately from bss. Keep only those bytes: bss is known zero before the first load, even for FFX's 925 MB static heap.
         m->pristine_len = *(const uint32_t *)(m->base + 0x34);
         if (*(const uint32_t *)(m->base + 0x30) != m->data_off || m->pristine_len > m->key_page_off - m->data_off) die("%s: NRO data layout mismatch", m->name);
@@ -708,6 +709,24 @@ static void map_image(module_t *m, const char *dir) {
 }
 #endif
 
+#include "resolution_levels.h"
+static void apply_resolution_levels(module_t *m, const char *dir) {
+    if (m->nro || strcmp(m->name, "main") || m->patch_off <= 0) return;
+    FILE *f = dm_resolution_contract_open(dir, getenv("DM_RESOLUTION_LEVELS_PATH"),
+                                          getenv("DM_ROMFS"));
+    if (!f) return;
+    dm_resolution_result result;
+    int status = dm_resolution_levels(f, m->build_id, m->base, m->size,
+        (m->text_end + 0x3FFF) & ~0x3FFFull, m->patch_off,
+        getenv("DM_WINDOW_SIZE"), &result);
+    fclose(f);
+    if (status == 1)
+        LOG("resolution: scene cap %ux%u, %u dynamic lists lowered; original target sizes retained", result.width, result.height, result.changed);
+    else if (status < 0)
+        LOG("[RED] resolution cap rejected: %s; game data unchanged", result.reason);
+    else LOG("resolution cap not applied: %s", result.reason);
+}
+
 static char g_module_dir[1024];   // the folder the modules were loaded from (dm_module_dir)
 const char *dm_module_dir(void) { return g_module_dir; }
 
@@ -726,7 +745,7 @@ void load_modules(const char *dir, const char **names, int n) {
     create_keys();
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
-        t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute; from here on the loader only writes data
+        t = now_ns(); map_image(m, dir); apply_resolution_levels(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute; from here on the loader only writes data
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
         t = now_ns(); register_gates(m, dir); tg += now_ns() - t;
