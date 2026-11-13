@@ -56,6 +56,29 @@ engine's `dm/host/hle_sf.c`, whose SHA-256 is
 `4e37968a18e54f1a00b4bb516665aaa6973cb96cb8d14f83e608b953cd99b6f4`. Relink just the Ocarina framework;
 the shared iOS engine does not use this patch.
 
+## Ocarina of Time: native frame pacing (M2 60.90 candidate)
+
+On the M2, the frozen Ocarina build could inherit the library's uncapped
+120 Hz presentation. Earlier device logs measured about 8.33 ms between
+presents in that mode and 16.67 ms at the opening with the game's native
+pacing. This engine has logic that advances with the frame cadence, so
+uncapped presentation can change how fast gameplay runs.
+
+[The scoped patch](ocarina-m2-native-pacing.patch) sets 60 Hz as the display
+target and honors the game's own presentation interval after applying global
+and per-game settings. Only program `0400486024DEC000` uses the policy, and its
+frame-rate setting displays the game's native mode. Apply this patch to the
+pinned M2 60.89 Gamebox shell from the directory containing `LibraryApp/`.
+The original `LibraryApp/Sources/main.m` SHA-256 is
+`cc1c4ce09d27ca76b00f57032c24f3d98e2eb35e1b21cfad71f657550ded58c7`.
+Relink the shell; keep the independent Ocarina engine, shader chain, game
+resources and saved data unchanged.
+
+The 60.90 shell compiled, linked and passed signature and local pacing
+checks. The M2 was unavailable for installation. Validation still requires
+the same controllable scene, checking game time against elapsed time; the
+earlier opening measurements do not establish gameplay speed.
+
 ## Ocarina of Time: offline play report (Air 60.60)
 
 The signed Air 60.59 launcher reached end of stream and aborted with result
