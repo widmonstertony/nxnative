@@ -42,7 +42,7 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Cause:** the host held frames up to `FSTEP_MAX` (3) vsyncs and paid debt back with a step one above the hold, but Mario Kart World's stub hands the game at most 2 vsyncs (its own intervals). At hold 3 the game stepped 2 vsyncs for every 3 shown, and at hold 2 the paid-back step of 3 was cut to 2, so the debt the host counted as paid was lost.
 - **Fix:** a frame-step stub declares the largest step it hands the game (`ctx.step_max`, written to `fixups.tsv` as `STEP_MAX`), the loader passes it to the host (`dm_fps_step_max`), and `nvn_fstep_next` keeps the hold, a step the game fixes and the paid-back step within it (`smax`). Stubs that declare nothing keep `FSTEP_MAX`.
 - **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md#frame-rate) (2 vsyncs; the 0.977 window on the 16 GB M6, and frames at hold 3 in every window of issue #1823's M4 Max runs).
-- **Check:** `t_fstep` (frames of 2.6 vsyncs with a cap of 2: hold 2, no step above 2; a step the game fixes at 3 held at 2); `test_patches` (Mario Kart World's stub declares 2).
+- **Check:** `t_fstep` (frames of 2.6 vsyncs with a cap of 2: hold 2, no step above 2; a step the game fixes at 3 held at 2); `test_patches` (Mario Kart World's stub declares 2). The classic selection runs the same routes as `t_fstep_legacy`, with its caller now passing the loaded `STEP_MAX`; device deployment remains separate.
 
 ### A regress run stops when another app takes the key window
 

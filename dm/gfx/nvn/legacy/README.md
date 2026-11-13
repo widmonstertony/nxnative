@@ -22,3 +22,11 @@ Classic multi-program embedding is not supported; use the modern renderer for
 `PROGRAMS_TSV`. The retained game library uses its explicit namespace format.
 
 Validation does not install builds on iOS devices or change existing game saves.
+
+## Selective timing backport
+
+The frame-step controller now follows the upstream bounded-average lateness and
+clock-ramp recovery rules. The classic caller uses the loaded stub's `STEP_MAX`
+contract and retains 60 Hz units; it does not enable modern 120 Hz pacing or alter
+shader/reflection layouts. `t_fstep_legacy` runs the same simulated timing routes
+as the modern controller. Source validation is separate from a device update.

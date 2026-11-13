@@ -14,7 +14,7 @@ The former branch name was `ios16-pokemon-za-port`; it was renamed, preserving i
 
 ## TonTon Gamebox: game fixes and verification
 
-The [upstream optimization audit](docs/tonton-upstream-audit.md) covers every installed title and the new Fate/EXTELLA LINK request: upstream source coverage, classic-device backport boundaries, TonTon-only fixes, measured scenes and unresolved issues. Source integration is distinct from device installation.
+The [upstream optimization audit](docs/tonton-upstream-audit.md) covers every installed title and the new Fate/EXTELLA LINK request: upstream source coverage, classic-device backport boundaries, TonTon-only fixes, measured scenes and unresolved issues. Source integration is distinct from device installation. The classic frame-step controller also has a targeted upstream backport, with 86 simulated timing checks passing; installation and performance validation are pending.
 
 Add each published game fix here with its affected device, what changed, and
 the deepest scene actually verified. A signed install or a successful shader

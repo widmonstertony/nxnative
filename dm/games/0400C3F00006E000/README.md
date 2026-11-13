@@ -217,3 +217,11 @@ The classic MetalFX path is active. A late race sample is 48 FPS at thermal
 level 2, so this is **not a 60 FPS performance pass**. Original saves were
 SHA-256 unchanged after the isolated test; no original body or shader-chain
 inputs changed. The candidate is installed only on M2, not Air.
+
+### Classic pacing source backport (November 12, 2026; deployment pending)
+
+The retained CPU controller now uses the upstream bounded-average lateness and
+clock-ramp recovery logic, and the classic caller passes the loaded stub's
+`STEP_MAX`. Modern and classic selections each pass 86 simulated timing checks.
+No shader ABI, chain or texture ownership layout changes. This is not part of
+the earlier 60.99 race result; a new device performance test is still required.
