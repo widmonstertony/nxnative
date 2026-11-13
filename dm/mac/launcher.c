@@ -151,6 +151,7 @@ static void cloud_saves_folder(void) {
         setenv("DM_CLOUDKIT_CONTAINER", container, 1);
         return;
     }
+    unsetenv("DM_CLOUDKIT_CONTAINER");
     CFStringRef domain = CFBundleGetIdentifier(CFBundleGetMainBundle());
     if (getenv("DM_SAVE_SYNC") || !domain) return;
     CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("cloudSaves.folder"), domain); char s[PATH_MAX];

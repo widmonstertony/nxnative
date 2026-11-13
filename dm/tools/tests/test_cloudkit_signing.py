@@ -41,3 +41,18 @@ class CloudKitSigningTests(unittest.TestCase):
         self.profile["Entitlements"]["application-identifier"] = "TEAM000002.org.example.gamebox"
         with self.assertRaisesRegex(ValueError, "exact existing app identifier"):
             self.configure()
+
+    def test_development_profile_does_not_authorize_production(self):
+        self.profile["Entitlements"][signing.ENVIRONMENT] = "Development"
+        with self.assertRaisesRegex(ValueError, "does not authorize this iCloud environment"):
+            signing.configure(self.profile, self.info, {}, self.app_id, self.container, "Production")
+
+    def test_refuses_to_switch_an_existing_environment(self):
+        with self.assertRaisesRegex(ValueError, "Changing the existing iCloud environment"):
+            signing.configure(self.profile, self.info, {signing.ENVIRONMENT: "Production"},
+                              self.app_id, self.container, "Development")
+
+    def test_resolves_prepared_project_bundle_placeholder(self):
+        self.info["CFBundleIdentifier"] = "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        info, _ = self.configure()
+        self.assertEqual(info["CFBundleIdentifier"], "org.example.gamebox")

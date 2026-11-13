@@ -280,10 +280,12 @@ static choice_kind read_choice(char *hash) {
     if (!strcmp(v, "ask")) return CH_ASK;
     if (!strcmp(v, "offline")) return CH_OFFLINE;
     choice_kind k = !strncmp(v, "cloud:", 6) ? CH_CLOUD : !strncmp(v, "local:", 6) ? CH_LOCAL : CH_NONE;
+    if (k == CH_NONE) goto invalid;
     const char *h = v + 6;
     if (k == CH_LOCAL && !strcmp(h, "none")) return k;
-    if (k != CH_NONE && strlen(h) == SS_HASH && strspn(h, "0123456789abcdef") == SS_HASH) { memcpy(hash, h, SS_HASH + 1); return k; }
-    SRED("DM_SAVE_SYNC_CHOICE=%s is not a choice (ask, cloud:<hash>, local:<hash>, local:none, offline): ignored, the newer save wins", v);
+    if (strlen(h) == SS_HASH && strspn(h, "0123456789abcdef") == SS_HASH) { memcpy(hash, h, SS_HASH + 1); return k; }
+invalid:
+    SRED("DM_SAVE_SYNC_CHOICE=%s is not a choice (ask, cloud:<hash>, local:<hash>, local:none, offline): ignored", v);
     return CH_NONE;
 }
 
@@ -420,7 +422,8 @@ static int fetch_timed(const char *cloud, const char *local, int ms) {   // fron
     if (!j) return -1;
     pthread_mutex_init(&j->mu, NULL); pthread_cond_init(&j->cv, NULL);
     snprintf(j->cloud, sizeof j->cloud, "%s", cloud);
-    if (snprintf(j->local, sizeof j->local, "%s.fetch.XXXXXX", local) >= sizeof j->local) {
+    int len = snprintf(j->local, sizeof j->local, "%s.fetch.XXXXXX", local);
+    if (len < 0 || (size_t)len >= sizeof j->local) {
         pthread_mutex_destroy(&j->mu); pthread_cond_destroy(&j->cv); free(j); return -1;
     }
     int fd = mkstemp(j->local);
@@ -582,7 +585,9 @@ static int send_save(const char *save, const char *title, const char *cloud) {
         if (backup_dir(save, "cloud", kept, sizeof kept, 1) || snprintf(raw, sizeof raw, "%s/save.dmsync", kept) >= (int)sizeof raw || rename(theirs, raw)) { SRED("cannot keep the cloud's damaged save before replacing it (errno=%d); not sent", errno); goto done; }
         SRED("the cloud's save %s is damaged; this device's replaces it, and the damaged file is kept in %s", cloud, kept);
     }
-    else if (got && strcasecmp(other.title, title)) { SRED("the cloud save belongs to a different title; kept both copies"); goto done; }
+    else if (got && strcasecmp(other.title, title)) {
+        SRED("the cloud save belongs to a different title; kept both copies"); goto done;
+    }
     else if (got && !strcmp(other.hash, mine.hash)) { write_base_at(save, scope, mine.hash); ok = 1; goto done; }
     else if (got && other.files && strcmp(other.hash, base)) {
         static _Atomic int told;   // once a session: the sender comes here after every Commit
@@ -649,6 +654,8 @@ static int mount_once(const char *save, const char *title) {
     cloud[0] = 0;
     int failed = 0, pr;
     const char *v = getenv("DM_SAVE_SYNC");
+    choice_kind choice = read_choice(chosen);
+    if (choice == CH_OFFLINE && front_cloudkit_configured()) { SLOG("playing offline by choice; this session will not sync"); return 0; }
     if (!cloud_file(title, cloud, sizeof cloud)) {
         // Offline or signed out at the first mount: play locally and retry
         // account discovery after a commit or a background flush.
@@ -661,19 +668,21 @@ static int mount_once(const char *save, const char *title) {
     if (rm_tree(tmp) || mkdirs(tmp)) { SRED("cannot make %s (errno=%d): off", tmp, errno); return 0; }   // rm_tree: what an earlier session left
     if (ss_scan(save, &mine)) { SRED("this device's save %s cannot be read (errno=%d): off", save, errno); return 0; }
     read_base_at(save, scope, base);
-    choice_kind choice = read_choice(chosen);
     int got = choice == CH_OFFLINE ? -1 : fetch_timed(cloud, theirs, FETCH_MS), both = 0;
-    if (got > 0 && ss_read(theirs, NULL, &other)) { SRED("the cloud's save %s is damaged: playing on with this device's, which replaces it (the damaged file is kept)", cloud); got = is_ck(cloud) ? -1 : 0; }
+    if (got > 0 && ss_read(theirs, NULL, &other)) {
+        if (is_ck(cloud)) { SRED("iCloud save failed validation; kept both copies"); got = -1; }
+        else { SRED("the cloud's save %s is damaged: playing on with this device's, which replaces it (the damaged file is kept)", cloud); got = 0; }
+    }
     else if (got > 0 && strcasecmp(other.title, title)) { SRED("the cloud's save %s is %s's, not %s's: not used", cloud, other.title, title); got = -1; }
     if (got < 0) { SLOG("playing on with this device's save; it is not sent until it has been compared with the cloud's"); failed = 1; }
-    ss_way way = got < 0 ? SS_KEEP : ss_decide(mine.hash, base, got ? other.hash : "", mine.saved, other.saved, choice != CH_NONE, &both);
+    ss_way way = got < 0 ? SS_KEEP : ss_decide(mine.hash, base, got ? other.hash : "", mine.saved, other.saved, choice != CH_NONE || is_ck(cloud), &both);
     // The player's choice, for the save it was made on (the cloud's may have changed between the check and this mount)
     const char *now = got > 0 && other.files ? other.hash : "none";
     if ((choice == CH_CLOUD || choice == CH_LOCAL) && got >= 0 && way != SS_KEEP) {
         if (strcmp(choice == CH_CLOUD ? chosen : (*chosen ? chosen : "none"), now))   // the way stays ss_decide's: a save that changed on both sides is replaced on neither
             SRED("the cloud's save changed after the player chose (now %s): the choice is not used", now);
         else way = choice == CH_CLOUD ? SS_PULL : SS_PUSH;
-    } else if (choice == CH_OFFLINE) SLOG("the player chose to play with this device's save without the cloud's");
+    }
     switch (way) {
     case SS_PULL:
         when(other.saved, t, sizeof t);
@@ -777,7 +786,8 @@ int save_sync_flush(int timeout_ms) {
 }
 
 int save_sync_after_exit(const char *save, const char *title) {   // save: DM_SAVE, its trailing slashes stripped as h_fs_MountSave strips them (the same <save>.sync and <save>-backups)
-    char cloud[PATH_MAX], dd[PATH_MAX];
+    char cloud[PATH_MAX], dd[PATH_MAX], chosen[SS_HASH + 1];
+    if (front_cloudkit_configured() && read_choice(chosen) == CH_OFFLINE) return 1;
     if (!save || !*save) return 1;
     snprintf(dd, sizeof dd, "%s", save); size_t L = strlen(dd); while (L > 1 && dd[L - 1] == '/') dd[--L] = 0;
     pull_journal j;

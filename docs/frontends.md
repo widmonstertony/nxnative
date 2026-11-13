@@ -90,6 +90,8 @@ For an in-place update, compare the installed application identifier with the st
 
 ### The cloud saves folder
 
+TonTon builds with a signed `DMCloudSaveContainer` configuration use [private CloudKit saves](tonton-cloudkit.md) automatically instead of this folder. A front end should not show a folder picker for those builds; `DM_SAVE_SYNC=0` still disables sync for a launch.
+
 The folder a Mac app's save is synced through ([Cloud saves](settings.md#cloud-saves)) is not a row of the settings list, since a folder is none of its kinds. It has a key of its own in the same store: `cloudSaves.folder`, a string with the folder's absolute path (`defaults write org.nxnative.<title ID> cloudSaves.folder "$HOME/Library/Mobile Documents/com~apple~CloudDocs/My Saves"`). Remove the key, or write an empty string, to turn cloud saves off. The app's settings window shows and changes the same key, so the player sees the folder a front end chose.
 
 - **Read at every start** by `dm/mac/launcher.c`, with or without the window, and passed on to the host as `DM_SAVE_SYNC`. A change takes effect at the game's next start.

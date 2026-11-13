@@ -1,3 +1,5 @@
+// A signed TonTon build selects its private CloudKit container in Info.plist. It syncs the same DMSYNC1 archive per title and Apple account.
+// Divergent CloudKit saves are retained until a front end supplies a choice for the exact remote revision. The folder transport below remains a fallback.
 // Saves through a cloud folder (iCloud Drive), so the Mac app and the iPhone app of one game play on from the same save. Off unless DM_SAVE_SYNC names the folder
 // (each app's launcher sets the folder the player chose in its Cloud saves: dm/mac/launcher.c from the Mac settings window, CloudSaves.m on the iPhone; "icloud" is iCloud Drive/nxnative Saves).
 // The folder holds one file per game, <folder>/<title ID>/save.dmsync (a folder named after the title ID is taken as the game's own): the committed save (DM_SAVE and DM_SAVE_device) packed into one file. iCloud replaces a file as a

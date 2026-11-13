@@ -3,6 +3,7 @@ runtime; the launcher's environment for the host (the bundle's files, the save, 
 code returned and SIGTERM forwarded to it, an alert when the game data is missing; the script's options and its pack_app.py command line; --seen-shaders' keys and partial library.
 No game files, keys or Xcode needed: a stand-in host compiled here records what it was given (temporary files only in a temporary folder)."""
 import contextlib
+from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
 import importlib.util
@@ -120,8 +121,7 @@ class PackReuse(unittest.TestCase):
             'pso/prebuilt.tsv': b'prebuilt', 'pso/rest_pairs.tsv': b'rest', 'pso/archive.tsv': b'index',
             'pso/gpu-prewarm-00.mtl4a': b'bases', 'pso/gpu-prewarm-00.keys': b'DMPSOIX1', 'pso/prewarm.tsv': b'stamp',   # --prebake's files and their index
             'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
-            'host/romfs_image.h': b'validator', 'host/romfs_identity.h': b'identity validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api',
-            'host/save_cloudkit.m': b'cloud transport',
+            'host/romfs_image.h': b'validator', 'host/romfs_identity.h': b'identity validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'host/save_cloudkit.m': b'private sync',
             'tools/romfs.py': b'reader', 'tools/romfs_image.py': b'identity writer',
             'ios/Sources/SaveSyncReport.swift': b'report', 'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
             'source/ControllerMap.swift': b'mapping parser', 'source/DesktopControls.swift': b'mapping editor',
@@ -200,6 +200,38 @@ class PackReuse(unittest.TestCase):
         info = pack_app.info_plist(self.args, '26.6', False)
         self.assertIs(type(info['DMSaveSyncChoice']), int)
         self.assertEqual(info['DMSaveSyncChoice'], 1)   # the host follows DM_SAVE_SYNC_CHOICE (docs/frontends.md, The cloud saves folder)
+
+    def test_cloudkit_profile_is_embedded_and_both_executables_are_signed(self):
+        signing = pack_app.cloudkit_signing
+        self.args.cloudkit_profile = str(self.tmp / 'existing.provisionprofile')
+        profile_path = Path(self.args.cloudkit_profile)
+        profile_path.write_bytes(b'fixture profile')
+        self.args.sign = 'Apple Development: fixture'
+        self.args.bundle_id = 'org.example.game'
+        self.args.cloudkit_app_identifier = 'TEAM000001.org.example.game'
+        self.args.cloudkit_container = 'iCloud.org.example.shared'
+        self.args.cloudkit_environment = 'Development'
+        profile = {'ExpirationDate': datetime.now(timezone.utc) + timedelta(days=1), 'Entitlements': {
+            'com.apple.application-identifier': self.args.cloudkit_app_identifier,
+            signing.CONTAINERS: [self.args.cloudkit_container],
+            signing.SERVICES: ['CloudKit'], signing.ENVIRONMENT: 'Development',
+        }}
+        with mock.patch.object(signing, 'read_profile', return_value=profile):
+            self.pack()
+            app = Path(self.args.out)
+            self.assertEqual((app / 'Contents/embedded.provisionprofile').read_bytes(), b'fixture profile')
+            self.assertEqual(plistlib.loads((app / 'Contents/Info.plist').read_bytes())['DMCloudSaveContainer'],
+                             self.args.cloudkit_container)
+            codesigns = [c for c in self.commands if c[0] == str(self.codesign)]
+            self.assertEqual(len(codesigns), 3)
+            for c in codesigns[:2]:
+                self.assertIn('--entitlements', c)
+                self.assertEqual(c[c.index('--identifier') + 1], self.args.bundle_id)
+            self.assertTrue(codesigns[0][-1].endswith('/Contents/MacOS/dmhost'))
+            self.assertIn('--verify', codesigns[2])
+            self.assert_reused()
+            profile_path.write_bytes(b'renewed fixture profile')
+            self.assert_repacked()
 
     def test_retargeted_input_symlink_repacks(self):
         msl = self.tmp / 'msl'
