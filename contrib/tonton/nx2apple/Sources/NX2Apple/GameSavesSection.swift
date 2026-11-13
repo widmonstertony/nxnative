@@ -20,7 +20,7 @@ struct GameSavesSection: View {
 
     private var override: SaveGameOverride { settings.game(game.titleID) }
     private var effective: SaveLocations.EffectiveSave {
-        SaveLocations.effectiveSave(titleID: game.titleID, appPath: game.appPath, global: settings.global, game: override)
+        SaveLocations.effectiveSave(titleID: game.titleID, appPath: GameboxCloud.enabled ? "" : game.appPath, global: settings.global, game: override)
     }
 
     var body: some View {

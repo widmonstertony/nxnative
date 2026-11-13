@@ -94,7 +94,11 @@ extension BuildStore {
             }
         }
         let tidHex = buildKey
-        let workDir = (outDir.isEmpty ? baseDir : outDir) + "/" + tidHex + "_build"
+        let local = target == BuildTarget.mac ? LocalMacBuild.load(titleID: tidHex, source: folder?.scriptInput ?? baseDir) : nil
+        if local != nil, LocalMacBuild.updating(titleID: tidHex) {
+            fail(t("tonton.buildAlreadyUpdating")); return
+        }
+        let workDir = local?.workDirectory ?? ((outDir.isEmpty ? baseDir : outDir) + "/" + tidHex + "_build")
         // The build's signing step refuses the attributes a cloud folder adds, after the long steps: stop here instead.
         if cloudFolderCheck(workDir) {
             failure = BuildFailure(kind: .cloudFolder, gameName: nil, detail: workDir)
@@ -172,7 +176,9 @@ extension BuildStore {
             for image in RomFSArchive.reusableImages(root: outDir.isEmpty ? baseDir : outDir, key: tidHex) { args += ["--romfs-from", image] }
         }
         let macApp = target == BuildTarget.mac
-        let macOutput = macApp ? MacAppOutput(workDir: URL(fileURLWithPath: workDir), key: tidHex, titleID: gameTitleID, preferred: macAppPath) : nil
+        let macOutput = macApp ? MacAppOutput(workDir: URL(fileURLWithPath: workDir), key: tidHex, titleID: gameTitleID, preferred: macAppPath,
+                                            outputDirectory: local.map { URL(fileURLWithPath: $0.outputDirectory) },
+                                            portableSaves: ProcessInfo.processInfo.environment["TONTON_MANAGED_SAVES"] != "1") : nil
         oneGameIPAPath = ""
         if exportsOneGame {
             // One game's own IPA with its game data inside (BuildStore+OneGame.swift, #540)
@@ -189,6 +195,7 @@ extension BuildStore {
         // The archive step packs whatever folder the build reported; without --work-dir that is the
         // script's default, which is the same workDir unless a separate output folder was chosen.
         effectiveWorkDir = hasWorkDir ? workDir : (inputDir as NSString).appendingPathComponent(tidHex + "_build")
+        if let local { args += local.arguments }
         args = BuildFailureClassifier.arguments(args, adding: override)
         if let override { say(String(format: t("fail.override.note"), override)) }
         say(String(format: t("msg.running"), py) + " " + args.joined(separator: " "))
@@ -203,6 +210,7 @@ extension BuildStore {
         // 'NuGet-Migrations' + lstat("") == ENOENT before any project is read. NSTemporaryDirectory()
         // is the per-user temp folder whether or not the app's own environment carries one.
         var denv = toolEnvironment(python: py)
+        if let local { denv.merge(local.environment) { $1 } }
         if !oneGameIPAPath.isEmpty { denv.merge(OneGameIPA.environment) { $1 } }
         let launch = nxbRun
             ? experimentalLaunch(nxb: experimentalBuilderBinary ?? "", scriptArguments: args, engine: engine, environment: denv, python: py)   // BuildStore+Builder.swift (#749)

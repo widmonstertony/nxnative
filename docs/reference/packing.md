@@ -158,6 +158,13 @@
 
 ## RomFS images
 
+### Imported Mac games have no rebuild inputs or lose their retained caches
+
+- **Symptom:** a frontend imports installed apps, but Rebuild has empty input rows, rejects complete `romfs.img` dump folders, or creates a second work directory.
+- **Cause:** installed-bundle discovery knows the title and app path, but not the verified source version, custom profile or work directory. The folder scanner accepted unpacked `romfs/` directories only, although `pack_dump.py` accepts images too.
+- **Fix:** the TonTon frontend imports a local build configuration only for the matching title and canonical source directory. It preserves the version and external profile, uses the configured independent work directory and Mac shader cache, and places the result in the chosen Applications subfolder. `GameFolder.scan` accepts the packer's complete image layouts, including a standalone update and image-based DLC. An unrelated source does not inherit that configuration. An already queued/running external update is shown instead of starting a duplicate build. A profile may explicitly declare `graphics_api` (`nvn`, `vulkan`, `gl`) when the imports contain several SDK APIs; this overrides the survey guess without changing other games.
+- **Found on:** the local TonTon library import, including [Ocarina of Time](../../dm/games/0400486024DEC000/README.md), whose complete standalone update has no separate base, and retained Vulkan input for Re:Zero. Synthetic directory, work reuse and output-placement tests pass; these are not gameplay acceptance.
+
 ### RomFS folder transfers fail or leave stale game files
 
 - **Symptom:** `devicectl` copying a large RomFS folder fails with POSIX error 24 (`EMFILE`) or spends most of its time on small files; deleting an old folder during iOS startup hits the launch watchdog. A push after changing extracted files can also keep sending old assets if an image is reused solely because it exists.

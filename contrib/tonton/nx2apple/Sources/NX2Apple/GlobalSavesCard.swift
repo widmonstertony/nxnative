@@ -8,6 +8,7 @@ import NXLauncher
 /// A game's own choice, made in its options, wins over both and is shown there as its own.
 struct GlobalSavesCard: View {
     @ObservedObject var settings: SaveSettingsStore
+    var titleIDs: [String] = []
     var chooseFolder: (URL?) -> URL? = CloudSavesCard.openPanel
     var home = NSHomeDirectory()
     @EnvironmentObject var loc: Localizer
@@ -17,12 +18,16 @@ struct GlobalSavesCard: View {
     var body: some View {
         let _ = settings.revision
         CardGroup(loc.t("savesloc.globalGroup"), footnote: loc.t("savesloc.globalNote")) {
-            CardRow(loc.t("cloud.title"), detail: cloudDetail, dot: global.cloudOn ? LauncherPalette.ready : LauncherPalette.unbuilt) {
+            if GameboxCloud.enabled {
+                TonTonCloudStatus(titleIDs: titleIDs)
+                CardDivider()
+            }
+              CardRow(loc.t(GameboxCloud.enabled ? "tonton.folderCloud" : "cloud.title"), detail: cloudDetail, dot: global.cloudOn ? LauncherPalette.ready : LauncherPalette.unbuilt) {
                 Button(loc.t(global.cloudOn ? "cloud.turnOff" : "savesloc.useICloud")) { toggleCloud() }
                     .padTarget("saves.global.cloud", scope: "main") { toggleCloud() }
                 Button(loc.t("cloud.choose")) { chooseCloud() }
                     .padTarget("saves.global.choose", scope: "main") { chooseCloud() }
-            }
+              }
             CardDivider()
             CardRow(loc.t("savesloc.globalFolder"), detail: global.saveRoot.map(SaveLocationText.shown) ?? loc.t("savesloc.usual"), help: global.saveRoot ?? "") {
                 Button(loc.t("savesloc.change")) { chooseRoot() }

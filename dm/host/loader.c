@@ -228,6 +228,13 @@ static void force_init(void) {
             if (!strcmp(g_force[g_fidx[j] - 1].name, g_force[i].name)) die("duplicate entry in the forced takeover list: %s", g_force[i].name);
         }
 }
+// Build-time contract check: validates the linked table without opening game files
+// or save data. The Mac builder runs this on the exact host it will package.
+void dm_validate_forced_takeovers(void) {
+    force_init();
+    LOG("forced takeover table: %u unique entries", g_nforce);
+}
+
 static void *force_lookup(const char *name) {
     if (!g_fmask) return NULL;
     for (unsigned j = sym_hash(name) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask) {

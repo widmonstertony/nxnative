@@ -81,6 +81,11 @@ package enum GameFolder {
     /// Packages that make the script take the folder as a folder of packages.
     private static let packages: Set<String> = ["nsp", "xci", "nsz", "xcz"]
 
+    // pack_dump.py also accepts a previously packed, complete RomFS image.
+    private static func hasRomFS(_ path: String) -> Bool {
+        isDir(path + "/romfs") || isFile(path + "/romfs.img") || isFile(path + "/RomFS.img")
+    }
+
     /// Subfolders that belong inside a dump or build tree and are never outer wrapper folders.
     private static let skipWrapperDirs: Set<String> = [
         "base", "updates", "dlc", "romfs", "exefs", "extract", "tools",
@@ -222,7 +227,7 @@ package enum GameFolder {
         let npdm: String
         if isFile(baseNPDM) {
             // A newer engine takes a folder whose base has no RomFS when an update has one (pack_dump.py at seedds/nxnative 641d148).
-            guard isDir(folder + "/base/romfs") || updates.contains(where: { isDir($0.path + "/romfs") }) else {
+            guard hasRomFS(folder + "/base") || updates.contains(where: { hasRomFS($0.path) }) else {
                 return .failure(.missing("base/romfs"))
             }
             npdm = baseNPDM
@@ -230,7 +235,7 @@ package enum GameFolder {
             // pack_dump.py also builds a dump with no base/ when updates/<version>/ holds both exefs/main.npdm and romfs/.
             let codeUpdates = updates.filter { isFile($0.path + "/exefs/main.npdm") }
             if let newestCode = codeUpdates.last {
-                guard let full = codeUpdates.last(where: { isDir($0.path + "/romfs") }) else {
+                guard let full = codeUpdates.last(where: { hasRomFS($0.path) }) else {
                     return .failure(.missing("updates/\(newestCode.version)/romfs"))
                 }
                 npdm = full.path + "/exefs/main.npdm"
@@ -246,8 +251,8 @@ package enum GameFolder {
             let path = folder + "/dlc/" + name
             guard name.count <= 16, let tid = UInt64(name, radix: 16) else { return .failure(.dlcName(name)) }
             guard tid > app + 0x1000, tid - app - 0x1000 <= 2000 else { return .failure(.notDLC(name, tid)) }
-            let numbered = subdirs(in: path).filter { isDir(path + "/" + $0 + "/romfs") }
-            let count = numbered.isEmpty ? (isDir(path + "/romfs") ? 1 : 0) : numbered.count
+            let numbered = subdirs(in: path).filter { hasRomFS(path + "/" + $0) }
+            let count = numbered.isEmpty ? (hasRomFS(path) ? 1 : 0) : numbered.count
             guard count == 1 else { return .failure(.dlcRomFS(name, count)) }
             dlc.append((titleID: tid, path: path))
         }

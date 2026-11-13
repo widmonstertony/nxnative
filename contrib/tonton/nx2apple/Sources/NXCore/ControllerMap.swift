@@ -3,7 +3,7 @@ import Foundation
 /// The host's input_map.h names and ordered parser. Names are case-insensitive and keys have exclusive ownership.
 package enum ControllerMap {
     package static let buttons = ["A", "B", "X", "Y", "LS", "RS", "L", "R", "ZL", "ZR", "Plus", "Minus", "Left", "Up", "Right", "Down"]
-    package static let functions = buttons + ["LUp", "LDown", "LLeft", "LRight", "RUp", "RDown", "RLeft", "RRight", "Shake"]
+    package static let functions = buttons + ["LUp", "LDown", "LLeft", "LRight", "RUp", "RDown", "RLeft", "RRight", "Shake", "Run"]
     package static let defaultKeys: [String: Int] = ["A":38,"B":40,"X":32,"Y":34,"LS":3,"RS":5,"L":12,"R":14,"ZL":6,"ZR":8,"Plus":36,"Minus":48,"Left":123,"Up":126,"Right":124,"Down":125,"LUp":13,"LDown":1,"LLeft":0,"LRight":2,"Shake":49]
     static func entries(_ value: String, pad: Bool) -> [(String, String)]? {
         guard !value.isEmpty, value.utf8.count <= 1023 else { return nil }
@@ -19,7 +19,7 @@ package enum ControllerMap {
                 guard let to = (buttons + ["Shake"]).first(where: { $0.lowercased() == target.lowercased() }) else { return nil }
                 result.append((name, to))
             } else {
-                guard !target.isEmpty, target.utf8.count < 8, target.utf8.allSatisfy({ (48...57).contains($0) }), let code = Int(target), code < 128 else { return nil }
+                guard !target.isEmpty, target.utf8.count < 8, target.utf8.allSatisfy({ (48...57).contains($0) }), let code = Int(target), code < 131 else { return nil }
                 result.append((name, String(code)))
             }
         }

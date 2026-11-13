@@ -213,7 +213,7 @@ struct LaunchOptionsView: View {
 
     /// Saves: the cloud state of a Mac game and the sheet that imports, exports and shows the backups.
     @ViewBuilder private func saves(_ game: LibraryGame, destination: LaunchDestination) -> some View {
-        if destination == .mac { TonTonCloudStatus() }
+        if destination == .mac, GameboxCloud.enabled { TonTonCloudStatus(titleIDs: [game.titleID]) }
         GameSavesSection(game: game, settings: saveSettings, players: players)   // first: the save files, import and export
         if destination == .mac { CloudSavesCard(game: game, overrides: saveSettings) }
         VStack(alignment: .leading, spacing: 10) {

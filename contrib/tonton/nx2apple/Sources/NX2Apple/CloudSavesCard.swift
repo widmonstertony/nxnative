@@ -45,7 +45,7 @@ struct CloudSavesCard: View {
         let setting = shownSetting
         let check = preview?.check ?? setting.folder.map { CloudSaveSync.check(folder: $0, titleID: game.titleID) }
         VStack(alignment: .leading, spacing: 10) {
-            Text(loc.t("cloud.title")).font(.manrope(15, .semibold)).foregroundStyle(LauncherPalette.secondaryText).padding(.leading, 2)
+            Text(loc.t(GameboxCloud.enabled ? "tonton.folderCloud" : "cloud.title")).font(.manrope(15, .semibold)).foregroundStyle(LauncherPalette.secondaryText).padding(.leading, 2)
             VStack(alignment: .leading, spacing: 0) {
                 folderRow(setting)
                 if let check, let notice = notice(check) {
@@ -57,7 +57,7 @@ struct CloudSavesCard: View {
             }
             .background(LauncherPalette.card, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(LauncherPalette.cardBorder))
-            Text(problem ?? loc.t(setting.isOn ? "cloud.applies" : "cloud.offNote")).font(.manrope(12))
+            Text(problem ?? loc.t(GameboxCloud.enabled ? "tonton.folderCloudNote" : setting.isOn ? "cloud.applies" : "cloud.offNote")).font(.manrope(12))
                 .foregroundStyle(problem == nil ? .secondary : Self.attention)
                 .padding(.leading, 2).fixedSize(horizontal: false, vertical: true)
         }

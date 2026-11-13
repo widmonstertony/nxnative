@@ -31,6 +31,24 @@ final class GameFolderTests: XCTestCase {
         FileManager.default.createFile(atPath: root + "/" + rel, contents: data)
     }
 
+    func testCompleteImageBasedBaseAndDLC() throws {
+        write("base/exefs/main.npdm", Self.npdm(programID: 0x040074A01BF12000))
+        write("base/romfs.img")
+        write("dlc/040074A01BF13001/romfs.img")
+        let result = try GameFolder.scan(root).get()
+        XCTAssertEqual(result.titleIDHex, "040074A01BF12000")
+        XCTAssertEqual(result.dlc.count, 1)
+    }
+
+    func testStandaloneUpdateUsesItsMatchingCodeAndFullImage() throws {
+        write("updates/131072/exefs/main.npdm", Self.npdm(programID: 0x0400486024DEC000))
+        write("updates/131072/RomFS.img")
+        let result = try GameFolder.scan(root).get()
+        XCTAssertEqual(result.titleIDHex, "0400486024DEC000")
+        XCTAssertEqual(result.newestUpdate?.version, 131072)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/base"))
+    }
+
     /// Donkey Kong Bananza's layout (#512): base, one update, one DLC.
     private func makeGame(_ app: UInt64 = 0x040074A01BF12000) {
         write("base/exefs/main.npdm", Self.npdm(programID: app)); write("base/exefs/main"); mkdir("base/romfs")

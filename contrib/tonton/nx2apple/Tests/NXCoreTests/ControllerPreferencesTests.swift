@@ -64,7 +64,7 @@ final class ControllerPreferencesTests: XCTestCase {
         for spec in ["a=sHaKe,B=NoNe", "A=B,", "Left=RS"] { XCTAssertTrue(ControllerMap.valid(spec, pad: true), spec) }
         for spec in ["", "A=16", "Shake=A", "A=B,,", "A=B, B=A", "A=B,bad", "A=RUp"] { XCTAssertFalse(ControllerMap.valid(spec, pad: true), spec) }
         for spec in ["a=40,b=038", "Shake=NoNe", "rUp=127,"] { XCTAssertTrue(ControllerMap.valid(spec, pad: false), spec) }
-        for spec in ["A=-1", "A=128", "A=1.5", "A= 40", "A=", "A=00000000", "A=40,B=oops"] { XCTAssertFalse(ControllerMap.valid(spec, pad: false), spec) }
+        for spec in ["A=-1", "A=131", "A=1.5", "A= 40", "A=", "A=00000000", "A=40,B=oops"] { XCTAssertFalse(ControllerMap.valid(spec, pad: false), spec) }
         XCTAssertFalse(ControllerMap.valid(String(repeating: "A=B,", count: 300), pad: true), "host saved-map buffer limit")
         let keys = ControllerMap.keys("a=40")
         XCTAssertEqual(keys["A"], 40)

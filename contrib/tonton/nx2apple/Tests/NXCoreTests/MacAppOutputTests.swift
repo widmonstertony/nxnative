@@ -27,6 +27,19 @@ final class MacAppPlacementTests: XCTestCase {
         MacAppOutput(workDir: folder.appendingPathComponent(key + "_build"), key: key, titleID: known ? key : nil, preferred: "")
     }
 
+    func testRetainedWorkAndManagedGameFolderDoNotMoveSaves() throws {
+        let games = folder.appendingPathComponent("Games")
+        try fm.createDirectory(at: games, withIntermediateDirectories: true)
+        let app = games.appendingPathComponent("My game.app")
+        try makeApp(app, id, name: "Example")
+        let work = folder.appendingPathComponent("old-cache/work")
+        let plan = MacAppOutput(workDir: work, key: id, titleID: id, preferred: app.path, outputDirectory: games, portableSaves: false)
+        XCTAssertEqual(plan.workDirectoryURL, work)
+        XCTAssertEqual(plan.builderURL.path, app.path)
+        XCTAssertEqual(try plan.finish().path, app.path)
+        XCTAssertFalse(fm.fileExists(atPath: games.appendingPathComponent(".nx2apple-library").path))
+    }
+
     func testConcurrentFirstBuildsWithTheSameSanitizedNameKeepBothGames() throws {
         let first = output(id), second = output(other)
         try makeApp(first.builderURL, id, name: "雪 / Journey")

@@ -14,7 +14,7 @@ enum GameStart {
                                        sticks: StickDeadzoneSettings? = nil, homeMenu: Bool = false, launcherBundleID: String? = Bundle.main.bundleIdentifier,
                                        screen: NSScreen? = NSApp?.keyWindow?.screen ?? NSScreen.main) -> [String: String] {
         library.migrateLaunchOptions()
-        CloudSavesMigration.run()   // before the app reads its env.txt: DM_SAVE_SYNC=icloud keeps the folder the iPhone app uses
+        if !GameboxCloud.enabled { CloudSavesMigration.run() }
         let settings = LaunchSetting.forMac(app: game.appPath, titleID: game.titleID, repo: repo, labels: labels) ?? []
         let overrides = game.launchEnvironment(settings).merging(game.controllerLaunchOverrides) { _, manual in manual }
         let savingEnabled = game.controllerSavingEnabled(environment: overrides)
@@ -40,9 +40,12 @@ enum GameStart {
         var base = SaveTransfer.macSave(titleID: game.titleID, appPath: game.appPath).save
         if let saves {
             let own = GameCloudSaves(titleID: game.titleID, appPath: game.appPath).setting
-            let save = SaveLocations.effectiveSave(titleID: game.titleID, appPath: game.appPath, global: saves.global, game: saves.game)
+            let save = SaveLocations.effectiveSave(titleID: game.titleID, appPath: GameboxCloud.enabled ? "" : game.appPath, global: saves.global, game: saves.game)
             let cloud = SaveLocations.effectiveCloud(global: saves.global, game: saves.game, own: own)
-            let saveEnv = SaveLocations.environment(save: save, cloud: cloud)
+            var saveEnv = SaveLocations.environment(save: save, cloud: cloud)
+            // Turning off the optional folder channel returns to TonTon's
+            // original backups; it must not turn off the private container.
+            if GameboxCloud.enabled, saveEnv["DM_SAVE_SYNC"] == "0" { saveEnv.removeValue(forKey: "DM_SAVE_SYNC") }
             if let folder = saveEnv["DM_SAVE"] { try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true) }
             environment.merge(saveEnv) { $1 }
             base = save.path

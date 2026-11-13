@@ -81,7 +81,7 @@ struct SettingsPage: View {
 
     @ViewBuilder private var libraryCategory: some View {
         LibraryFoldersCard(library: library, onAddFolder: onChooseLibraryFolder)
-        if let saveSettings { GlobalSavesCard(settings: saveSettings) }
+        if let saveSettings { GlobalSavesCard(settings: saveSettings, titleIDs: library.games.map(\.titleID)) }
         if let players { PlayersCard(players: players) }
     }
 
