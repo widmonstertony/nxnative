@@ -1,0 +1,13 @@
+--- a/dm/ios/LibraryApp/Sources/main.m
++++ b/dm/ios/LibraryApp/Sources/main.m
+@@ -78,6 +78,10 @@
+         if(!choice.length)choice=spec[@"default"];
+         if(!choice.length||[choice isEqual:@"auto"])continue;
+         if([key isEqual:@"DM_FRAME_LIMIT"]){
++            // An explicit per-game environment is read before the shelf applies
++            // its default. Keep it; a saved title override still applies below.
++            const char *profile=getenv("DM_FRAME_LIMIT");
++            if(profile&&(!strcmp(profile,"game")||!strcmp(profile,"unlimited")))continue;
+             if([choice isEqual:@"unlimited"]||[choice isEqual:@"game"])setenv(key.UTF8String,choice.UTF8String,1);
+             continue;
+         }

@@ -123,3 +123,43 @@ Update 1.8.0 (v917504, SDK 21.4.0) is not on this Mac. Pull request #1116 ported
 - [A version without one of the profile's modules stops the host at boot](../../../docs/reference/packing.md#a-version-without-one-of-the-profiles-modules-stops-the-host-at-boot)
 - [The controller applet waits for players](../../../docs/reference/services.md#the-controller-applet-waits-for-players) (1.8.0, pull request #1596; GitHub issue #1640: the player screen closed when the second controller had not pressed yet)
 - 1.8.0, by pull request #1116: [The camera through the graphics system](../../../docs/reference/services.md#the-camera-through-the-graphics-system), [Layer HDR metadata](../../../docs/reference/services.md#layer-hdr-metadata), the SDK 21 forms in [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameChat at boot](../../../docs/reference/services.md#gamechat-at-boot)
+
+## TonTon iPad compatibility validation (2026-11-12)
+
+The M2 iPadOS 16.1 test on TonTon 60.94 used the existing frozen
+`b88c9e5f457c` shader libraries and signed guest modules. A new isolated-save
+session reached the title, Single Player menus, Mushroom Cup selection and
+Mario Bros. Circuit; the large black silhouettes and the earlier GPU page
+fault did not recur in that session. This is not a 60 FPS pass: race windows
+measured frame medians of 26.70–28.14 ms, p95 55.71–94.86 ms, and average
+24.1 FPS in the last window, with cold pipeline compilation stalls up to
+5 seconds. The original save SHA-256 was unchanged after the test.
+
+The compatibility shelf read `DM_FRAME_LIMIT=game` from this title's
+configuration, then overwrote it with the global default `unlimited`.
+The new log explicitly reported uncapped presentation, and settled menu
+windows ran near 120 FPS before the device reached serious thermal state.
+The narrow [compatibility patch](../../../docs/compat/m2-library-frame-profile.patch)
+keeps an explicit per-game environment ahead of the shelf default; a saved
+per-title setting still applies afterward. It changes one menu object in the
+host, preserves all game frameworks and shader chains, and does not rebuild
+shaders. The same-team 60.95 host-only delta was installed in place; all ROM
+identities and original save hashes matched before and after installation.
+A fresh isolated-save session confirmed MetalFX spatial encoding from the
+1920x1080 final composite into the iPad's 2732x1536 viewport. This is evidence
+of actual scaler execution, not evidence that every scene intermediate is
+720p. With an explicit low graphics tier, native 60 Hz pacing and priority
+mapping (`DM_QOS_MAP=1`, `DM_QOS_EDGES=39,44`), settled menu windows measured
+59.4–60.0 FPS, frame p50 16.55–16.69 ms, and thermal state 0 instead of the
+previous uncapped menu's 120 FPS / thermal state 2. The cup movie played and the same
+50cc Mario Bros. Circuit race loaded without a GPU fault or crash; a bounded
+three-second A hold moved the kart. In the measured race windows the median
+was 22.44–23.56 ms, with GPU medians 18.48–20.35 ms; window averages ranged
+27.2–42.6 FPS because another first-use pipeline stall took 3.67 seconds.
+This improves the sampled result but still fails the approximately 60 FPS
+race target. Audio callback windows through 66,000 callbacks reported no
+underrun. Original save hashes matched again after the isolated session, and
+the shelf was reopened with temporary save/diagnostic overrides removed. The profile comparison changes multiple
+settings, so the individual contribution of priority mapping is not isolated. Air's separate buffered-present
+configuration also still needs a fresh user gameplay log; this iPad result is
+not an Air race pass.
