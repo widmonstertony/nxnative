@@ -19,15 +19,16 @@ typedef struct {
     unsigned char down[DESKTOP_KEYS];
     uint64_t binding[DESKTOP_KEYS];
     int8_t axis[DESKTOP_KEYS];   // NX2Apple function ids for the remappable stick directions
-    double walk, sensitivity, dx, dy, rx, ry, quiet;
-    int invert_y;
+    double walk, sensitivity, gain, deadzone, dx, dy, rx, ry, quiet;
+    int invert_y, plus_shift;
+    uint64_t look_focus, look_modifier;
 } desktop_input;
 
 static const struct { const char *name; int code; } desktop_keys[] = {
     {"A",0},{"S",1},{"D",2},{"F",3},{"H",4},{"G",5},{"Z",6},{"X",7},{"C",8},{"V",9},
     {"Q",12},{"W",13},{"E",14},{"R",15},{"Y",16},{"T",17},{"1",18},{"2",19},{"3",20},{"4",21},
     {"6",22},{"5",23},{"9",25},{"7",26},{"8",28},{"0",29},{"O",31},{"U",32},{"I",34},{"P",35},
-    {"Enter",36},{"L",37},{"J",38},{"K",40},{"N",45},{"M",46},{"Tab",48},{"Space",49},{"Escape",53},
+    {"+",24},{"-",27},{"Numpad+",69},{"Numpad-",78},{"Enter",36},{"L",37},{"J",38},{"K",40},{"N",45},{"M",46},{"Tab",48},{"Space",49},{"Escape",53},
     {"Shift",56},{"Alt",58},{"Ctrl",59},{"Left",123},{"Right",124},{"Down",125},{"Up",126},
     {"MouseLeft",DESKTOP_MOUSE_LEFT},{"MouseRight",DESKTOP_MOUSE_RIGHT},{"MouseMiddle",DESKTOP_MOUSE_MIDDLE}
 };
@@ -45,12 +46,12 @@ static int desktop_button(const char *name, uint64_t *button) {
 }
 static void desktop_release(desktop_input *s) {
     memset(s->down,0,sizeof s->down);
-    s->dx = s->dy = s->rx = s->ry = s->quiet = 0;
+    s->dx = s->dy = s->rx = s->ry = s->quiet = 0; s->plus_shift = 0;
 }
 static int desktop_remap(desktop_input *s, const char *spec);
 // Validate a whole profile before enabling it. Unknown or malformed bindings keep the classic keyboard available.
 static int desktop_load(desktop_input *s, const char *path) {
-    memset(s,0,sizeof *s); s->walk = s->sensitivity = 1;
+    memset(s,0,sizeof *s); s->walk = s->sensitivity = s->gain = 1; s->deadzone = 3600.0 / DM_STICK_MAX;
     memset(s->axis, -1, sizeof s->axis);
     FILE *f = path ? fopen(path,"r") : NULL;
     if (!f) return 0;
@@ -73,6 +74,15 @@ static int desktop_load(desktop_input *s, const char *path) {
             int found = 0;
             for (int i = 0; i < 4; i++) if (!strcmp(value,modes[i])) { next.movement = i; found = 1; }
             if (!found) { valid = 0; break; }
+        } else if (!strcmp(line,"mouse_focus_button") || !strcmp(line,"mouse_focus_modifier")) {
+            uint64_t mask;
+            if (!desktop_button(value,&mask) || !mask || mask >= (1ull << 16)) { valid = 0; break; }
+            if (!strcmp(line,"mouse_focus_button")) next.look_focus = mask; else next.look_modifier = mask;
+        } else if (!strcmp(line,"mouse_gain") || !strcmp(line,"mouse_deadzone")) {
+            char *tail; double v = strtod(value,&tail);
+            int gain = !strcmp(line,"mouse_gain");
+            if (*tail || !isfinite(v) || (gain ? (v <= 0 || v > 8) : (v < 0 || v > 0.8))) { valid = 0; break; }
+            if (gain) next.gain = v; else next.deadzone = v;
         } else if (!strcmp(line,"walk_scale")) {
             char *tail; double v = strtod(value,&tail);
             if (*tail || !isfinite(v) || v <= 0 || v > 1) { valid = 0; break; }
@@ -126,15 +136,21 @@ static void desktop_camera_tick(desktop_input *s, double dt) {
     if (s->quiet >= 0.018) { s->rx = s->ry = 0; return; }
     if (x || y) {
         double speed = hypot(x,y);
-        double deflection = fmin((3600 + speed * s->sensitivity * 700 / (120 * dt)) / DM_STICK_MAX, 1);
+        double gain = s->gain > 0 ? s->gain : 1;
+        double deadzone = s->gain > 0 ? s->deadzone : 3600.0 / DM_STICK_MAX;
+        double deflection = fmin((deadzone * DM_STICK_MAX + speed * s->sensitivity * gain * 700 / (120 * dt)) / DM_STICK_MAX, 1);
         s->rx = x / speed * deflection;
         s->ry = y / speed * deflection;
         if (s->invert_y) s->ry = -s->ry;
     }
 }
-static uint64_t desktop_sample(const desktop_input *s, int32_t axes[4]) {
+static uint64_t desktop_sample(desktop_input *s, int32_t axes[4]) {
     uint64_t buttons = 0;
-    for (int i = 0; i < DESKTOP_KEYS; i++) if (s->down[i]) buttons |= s->binding[i];
+    // Typing + on an ANSI keyboard uses Shift+=. Do not turn that modifier
+    // into Sprint/Cancel, including the gap between releasing = and Shift.
+    if (!s->down[56]) s->plus_shift = 0;
+    if (s->down[56] && s->down[24] && s->binding[24] == DM_BTN_PLUS) s->plus_shift = 1;
+    for (int i = 0; i < DESKTOP_KEYS; i++) if (s->down[i] && !(s->plus_shift && i == 56)) buttons |= s->binding[i];
     double scale = buttons & DESKTOP_RUN ? 1 : s->walk;
     axes[0] = axes[1] = 0;
     {
@@ -147,5 +163,9 @@ static uint64_t desktop_sample(const desktop_input *s, int32_t axes[4]) {
         axes[2] = held[7] != held[6] ? (held[7] - held[6]) * DM_STICK_MAX : (int32_t)(s->rx * DM_STICK_MAX);
         axes[3] = held[4] != held[5] ? (held[4] - held[5]) * DM_STICK_MAX : (int32_t)(s->ry * DM_STICK_MAX);
     }
+    // Some games use the right stick for target selection during focus and
+    // require a shoulder modifier for camera rotation. Apply it only to live
+    // mouse motion, leaving keyboard right-stick target selection unchanged.
+    if (s->look_focus && (buttons & s->look_focus) && (s->rx || s->ry)) buttons |= s->look_modifier;
     return buttons & ~DESKTOP_RUN;
 }

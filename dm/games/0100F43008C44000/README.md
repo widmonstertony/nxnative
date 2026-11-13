@@ -141,3 +141,14 @@ The user reports fullscreen UI outside the iPad picture. The shared
 keeps the HUD inside the native canvas without stretching the camera or changing
 input layout. Callback and geometry tests cover iPad ratios; updated device
 builds and user evaluation are pending.
+
+
+## TonTon Mac Legends controls (2026-11-13)
+
+The desktop input update calibrates fine mouse motion and exposes physical
+keyboard Plus/Minus keys. Z-A maps the move diamond to I/J/K/L in top/left/bottom/right
+order and applies the original R+right-stick camera chord during mouse focus.
+See [the input contract](../../../docs/desktop-controls-upstream.md#legends-desktop-response-and-physical-keys).
+The per-title host preserves its installed shader chain and game resources.
+Input regressions and packaging passed; player gameplay acceptance is pending.
+No save data is modified by the update.

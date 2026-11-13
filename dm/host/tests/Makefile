@@ -427,3 +427,6 @@ $(B)/t_desktop_input: t_desktop_input.c ../desktop_input.h ../input_map.h ../dm_
 
 $(B)/t_input_map: t_input_map.c ../input_map.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -o $@ t_input_map.c
+
+$(B)/t_pokemon_desktop: t_pokemon_desktop.c ../desktop_input.h ../input_map.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Wextra -Werror -Wno-unused-function -I.. -o $@ t_pokemon_desktop.c

@@ -24,3 +24,30 @@ UI strings use the system-selected Simplified or Traditional Chinese bundle loca
 Pure input tests cover all 23 installed profiles, alias release, normalized diagonal movement, walk/full-speed selection, remapped movement and buttons, mouse direction/inversion, stop and focus reset. NX2Apple's parser suite covers valid and invalid mappings. The shared settings and Mac packer tests check persistence and launcher rules without opening game saves.
 
 Installation updates each game's matching host and the settings launcher; game code, ROM resources, shader chain and save directories are unchanged. Gameplay and physical multi-display acceptance are left to the player as requested. No gameplay or multi-display pass is claimed.
+
+
+## Legends desktop response and physical keys
+
+The Arceus and Z-A profiles use `mouse_gain=3` and `mouse_deadzone=0.32`.
+The earlier 3,600/32,767 minimum stick deflection left fine mouse motion below
+these games' useful camera range. Profile calibration increases the output,
+while preserving the 120 Hz time normalization and zeroing it after motion
+stops. Other profiles retain their previous response. The player's sensitivity
+and invert-Y settings still apply.
+
+Both keyboard `+`/`=` and `-`, plus their numeric-keypad variants, send the
+corresponding Switch Plus/Minus function. Arrow keys remain the D-pad; WASD
+remains movement. The mapping editor labels movement, camera and D-pad
+separately and permits rebinding their individual directions.
+
+Z-A's move diamond is I=X (top), J=Y (left), K=B (bottom), L=A (right).
+Mouse right holds ZL focus, mouse left holds ZR aim and releases it to throw.
+The physical-controller face swaps do not change these keyboard assignments.
+These are host-input checks; new gameplay acceptance remains the player's.
+
+Z-A changes the right stick to target selection while ZL focus is held;
+its controller screen requires R plus the right stick to rotate the camera.
+The profile applies that R modifier automatically while the mouse moves under
+focus, then releases R when motion stops. Keyboard right-stick target selection
+remains available. This follows the original controller chord, without a game
+memory patch. Reference: [controller screen and table](https://www.shacknews.com/article/146390/pokemon-legends-za-controls-button-inputs).
