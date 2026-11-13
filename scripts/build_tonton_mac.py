@@ -49,7 +49,7 @@ def main():
     info_path = app / 'Contents/Info.plist'
     info = plistlib.loads(info_path.read_bytes())
     shutil.copyfile(Path(exe) / 'NX2Apple', app / 'Contents/MacOS' / info['CFBundleExecutable'])
-    info.update(CFBundleShortVersionString='1.5.0', CFBundleVersion='2026111301',
+    info.update(CFBundleShortVersionString='1.5.0', CFBundleVersion='2026111302',
                 TonTonFrontendCommit=json.loads((FRONT / 'UPSTREAM.json').read_text())['commit'],
                 TonTonEngineSource=str(REPO),
                 TonTonUpdateReport=str(args.app.absolute().parent / 'games-progress.json'),

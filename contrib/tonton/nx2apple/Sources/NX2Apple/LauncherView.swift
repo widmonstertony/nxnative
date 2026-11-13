@@ -646,7 +646,7 @@ struct LauncherView: View {
             m.gameDir = game.sourceFolder.isEmpty ? (m.basePath as NSString).deletingLastPathComponent : game.sourceFolder
         }
         m.macAppPath = game.appPath
-        m.outDir = game.outputDirectory
+        m.outDir = game.outputDirectory.isEmpty ? library.folder : game.outputDirectory
         m.done = false; m.doneNote = ""; m.stages = []
         m.target = game.lastTarget
         page = .builds

@@ -358,7 +358,7 @@ extension LauncherView {
 
     /// The games built with older tools that can be built again from the files the library holds.
     var olderToolsGames: [LibraryGame] {
-        library.games.filter { toolsAge.older.contains($0.id) && !$0.inputs["base", default: []].isEmpty }
+        library.games.filter { toolsAge.older.contains($0.id) && GameBuildSetup.hasInputs($0.inputs) }
     }
 
     /// An outlined pill that adds games to the build queue: one game, or all that were built with older tools. It starts nothing itself.

@@ -61,6 +61,14 @@ enum TonTonBootstrap {
                 games[index]["lastTarget"] = "mac"
             }
         }
+        // Earlier imports decoded untouched catalog placeholders with an iOS
+        // default, even though this installation is being configured for Mac.
+        for index in games.indices {
+            guard let title = games[index]["titleID"] as? String, names[title] != nil,
+                  (games[index]["inputs"] as? [String: [String]] ?? [:]).isEmpty,
+                  ["appPath", "iosAppPath", "ipaPath", "archivePath"].allSatisfy({ (games[index][$0] as? String ?? "").isEmpty }) else { continue }
+            games[index]["lastTarget"] = "mac"
+        }
         snapshot["games"] = games
         if snapshot["folder"] == nil { snapshot["folder"] = "" }
         if snapshot["folders"] == nil { snapshot["folders"] = [String]() }

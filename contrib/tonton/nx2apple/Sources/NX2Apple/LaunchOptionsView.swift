@@ -130,12 +130,19 @@ struct LaunchOptionsView: View {
 
     /// A game with no build for any destination: one explanation, and Build this game… with the game's form filled in.
     private func noBuild(_ game: LibraryGame) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(loc.t("launch.noBuild")).font(.manrope(14)).foregroundStyle(LauncherPalette.secondaryText).fixedSize(horizontal: false, vertical: true)
-            Button(loc.t("library.setUpBuild")) { dismiss(); onBuild(game) }
+        let action = GameBuildSetup.action(inputs: game.inputs, running: m.running)
+        return VStack(alignment: .leading, spacing: 16) {
+            Text(loc.t(action.noteKey)).font(.manrope(14)).foregroundStyle(LauncherPalette.secondaryText).fixedSize(horizontal: false, vertical: true)
+            if m.running, !GameBuildSetup.hasInputs(game.inputs) {
+                Text(loc.t("launch.missingBuildFiles")).font(.manrope(13)).foregroundStyle(LauncherPalette.secondaryText).fixedSize(horizontal: false, vertical: true)
+            }
+            if !GameBuildSetup.hasInputs(game.inputs), let issue = TonTonInputStatus.read(titleID: game.titleID) {
+                Text(String(format: loc.t("tonton.damagedUpdateInput"), issue.version))
+                    .font(.manrope(13)).foregroundStyle(LauncherPalette.notice).fixedSize(horizontal: false, vertical: true)
+            }
+            Button(loc.t(action.buttonKey)) { dismiss(); onBuild(game) }
                 .buttonStyle(LauncherSecondaryButtonStyle()).launcherRowControls()
-                .disabled(m.running || game.inputs["base", default: []].isEmpty)
-                .padTarget("opt.build", scope: "launch") { if !m.running { dismiss(); onBuild(game) } }
+                .padTarget("opt.build", scope: "launch") { dismiss(); onBuild(game) }
         }
         .padding(30).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

@@ -165,6 +165,13 @@
 - **Fix:** the TonTon frontend imports a local build configuration only for the matching title and canonical source directory. It preserves the version and external profile, uses the configured independent work directory and Mac shader cache, and places the result in the chosen Applications subfolder. `GameFolder.scan` accepts the packer's complete image layouts, including a standalone update and image-based DLC. An unrelated source does not inherit that configuration. An already queued/running external update is shown instead of starting a duplicate build. A profile may explicitly declare `graphics_api` (`nvn`, `vulkan`, `gl`) when the imports contain several SDK APIs; this overrides the survey guess without changing other games.
 - **Found on:** the local TonTon library import, including [Ocarina of Time](../../dm/games/0400486024DEC000/README.md), whose complete standalone update has no separate base, and retained Vulkan input for Re:Zero. Synthetic directory, work reuse and output-placement tests pass; these are not gameplay acceptance.
 
+### An unbuilt library entry has a disabled setup button without an explanation
+
+- **Symptom:** Launch options shows an unbuilt game and a disabled Build this game button, even though selecting its source files is the next step.
+- **Cause:** the action required a nonempty `base` slot before opening the setup form and also disabled itself whenever another game was building. Folder/NUP-only inputs were treated as missing by the same base-only checks elsewhere in the UI.
+- **Fix:** use the same input rule for NSP bases and game folders/NUPs. An idle catalog entry with no files opens file setup; an entry with files opens its build configuration. During another build, the action explicitly opens the current progress page and leaves the running task's inputs unchanged. An empty slot or an update alone is not a full input. Untouched imported Mac catalog placeholders use the Mac target.
+- **Found on:** [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md) in the TonTon Mac library. Synthetic tests cover missing files, folders/NUPs, update-only inputs and an active build. This UI change does not repair a damaged original package.
+
 ### RomFS folder transfers fail or leave stale game files
 
 - **Symptom:** `devicectl` copying a large RomFS folder fails with POSIX error 24 (`EMFILE`) or spends most of its time on small files; deleting an old folder during iOS startup hits the launch watchdog. A push after changing extracted files can also keep sending old assets if an image is reused solely because it exists.

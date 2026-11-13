@@ -36,7 +36,7 @@ struct ManageItem: Identifiable {
                      hasBuildFolder: Bool, buildFilesTitle: String? = nil, hasLog: Bool = false, deviceName: String, launching: Bool = false,
                      actions a: ManageActions) -> [ManageItem] {
         var items = [ManageItem(id: "rebuild", symbol: "arrow.clockwise", title: t(olderTools ? "library.rebuild" : "library.buildAgain"),
-                                enabled: !running && !game.inputs["base", default: []].isEmpty, run: a.rebuild)]
+                                enabled: !running && GameBuildSetup.hasInputs(game.inputs), run: a.rebuild)]
         if game.isReady {
             if game.onDevice {
                 items.append(.init(id: "device", symbol: "iphone", title: String(format: t("dev.open"), deviceName),
