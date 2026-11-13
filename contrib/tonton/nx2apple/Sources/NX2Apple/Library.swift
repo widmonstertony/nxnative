@@ -754,6 +754,14 @@ final class GameLibrary: ObservableObject {
     }
 
     func remove(_ id: UUID) {
+        // Bundled TonTon catalog placeholders must respect an explicit removal.
+        // Actual source imports remain available if the user adds the game again.
+        if Bundle.main.bundleIdentifier == "com.tonytan.nxgamelibrary.mac",
+           let game = games.first(where: { $0.id == id }) {
+            var hidden = Set(UserDefaults.standard.stringArray(forKey: "TonTon.hiddenCatalogTitles") ?? [])
+            hidden.insert(game.titleID)
+            UserDefaults.standard.set(hidden.sorted(), forKey: "TonTon.hiddenCatalogTitles")
+        }
         games.removeAll { $0.id == id }
         try? FileManager.default.removeItem(at: ArtworkStore.customDirectory(for: id, in: artworkDirectory))   // our copies, never the game's files
         if selectedID == id { selectedID = games.first?.id }

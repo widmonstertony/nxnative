@@ -44,7 +44,8 @@ enum TonTonBootstrap {
                               "appPath": app.path, "lastTarget": "mac", "defaultsApplied": true])
             }
         }
-        for entry in catalog {
+        let hiddenTitles = Set(UserDefaults.standard.stringArray(forKey: "TonTon.hiddenCatalogTitles") ?? [])
+        for entry in catalog where !hiddenTitles.contains(entry["id"] ?? "") {
             guard let title = entry["id"], let name = entry["name"], !games.contains(where: { $0["titleID"] as? String == title }) else { continue }
             games.append(["id": UUID().uuidString, "titleID": title, "name": name, "lastTarget": "mac", "defaultsApplied": true])
         }

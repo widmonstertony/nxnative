@@ -222,6 +222,18 @@ extension GameFolderTests {
         XCTAssertFalse(none.hasTitleID, "left to the script, which reads it from the code")
     }
 
+    func testLinkedNUPUsesTheContainerSizeAndStillRejectsTruncation() throws {
+        write("Original.nup", syntheticNUP([(0, 0x04003F40232DE000, 0), (1, 0x04003F40232DE000, 196608)]))
+        let link = root + "/Managed.nup"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: root + "/Original.nup")
+        let contents = try GameFolder.readNUP(link).get()
+        XCTAssertEqual(contents.titleIDHex, "04003F40232DE000")
+        XCTAssertEqual(contents.scriptInput, link)
+        XCTAssertEqual(contents.newestUpdate?.version, 196608)
+        write("Original.nup", syntheticNUP([(0, 0x04003F40232DE000, 0)], size: 1 << 30))
+        XCTAssertEqual(GameFolder.readNUP(link).failureValue, .nupPartial("Managed.nup"))
+    }
+
     func testABrokenNUPIsNamed() {
         write("Other.nup", Data("not a nup at all, just some bytes".utf8))
         XCTAssertEqual(GameFolder.scan(root + "/Other.nup").failureValue, .notNUP("Other.nup"))

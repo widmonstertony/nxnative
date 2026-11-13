@@ -2,6 +2,13 @@
 
 ## Game packages
 
+### TonTon rejects a complete NUP reached through a symbolic link
+
+- **Symptom:** a managed source link is reported as a partial NUP and its game is absent from the build selection.
+- **Cause:** the frontend opened the target but compared the header's container length with `attributesOfItem` on the link, which reports the link's own size.
+- **Fix:** `GameFolder.readNUP` gets the length from the same open file handle with `seekToEnd`, then seeks to the TOC. The linked input path stays intact; truncated targets still fail the length check. An unavailable target is still rejected.
+- **Found on:** [Hyrule Warriors: Age of Imprisonment](../../dm/games/04003F40232DE000/README.md), a read-only source linked into TonTon's managed input folder. This is an input validation check, not a new gameplay test.
+
 ### An iOS build stops when the profile has no prewarm seed list
 
 - **Symptom:** after the shader build, `build_ipa.sh` stops at `copy shader tables` because `pso_manifest.tsv` does not exist. This also stops the shell's game-framework build.

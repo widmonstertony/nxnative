@@ -4,6 +4,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 
 ## Packing
 
+- a managed source link is reported as a partial NUP and its game is absent from the build selection. → [TonTon rejects a complete NUP reached through a symbolic link](../reference/packing.md#tonton-rejects-a-complete-nup-reached-through-a-symbolic-link)
 - after the shader build, `build_ipa.sh` stops at `copy shader tables` because `pso_manifest.tsv` does not exist. This also stops the shell's game-framework build. → [An iOS build stops when the profile has no prewarm seed list](../reference/packing.md#an-ios-build-stops-when-the-profile-has-no-prewarm-seed-list)
 - package identification stops with `ValueError: subsection not found` in `pfs0_names`, or LibHac reports `ResultFsPathNotFound` opening the last file of an NSP. → [PFS0 file-name table missing its final NUL](../reference/packing.md#pfs0-file-name-table-missing-its-final-nul)
 - `no base game, only update packages: pack the base game and its update into one NUP`, even when the update carries the complete game's files (issue #1195). → [A NUP with complete standalone updates stops at "no base game"](../reference/packing.md#a-nup-with-complete-standalone-updates-stops-at-no-base-game)
