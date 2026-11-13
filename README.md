@@ -23,16 +23,18 @@ Air build 60.61 defaults compatible native Switch games to handheld mode and
 MetalFX spatial upscaling, with a per-game override. Handheld mode leaves the
 render size to each game. The compatibility renderer now also has a classic
 MetalFX path: local GPU validation covered both 1280×720 and 960×540 input,
-including color and aspect-ratio bars. Deployment and game-by-game validation
-of that renderer on iPad are pending.
+including color and aspect-ratio bars. M2 60.94–60.96 executed that path in Pokopia and Kart device sessions;
+other games still need individual validation.
 
-Air 60.72 adds a build-checked Pokopia scene-resolution cap. The actual
-Air run confirmed the 720p cap executed, but the user still reported stutter
-and audio underruns. The later 540p plus MetalFX run confirmed the cap;
-the player reported less stutter but persistent crackling. Per-game settings
-expose 720p/540p/original. Disabling render-thread real-time scheduling
-was tested and did not eliminate crackling. Audio repair and sustained
-performance remain open.
+Air 60.72 introduced a build-checked Pokopia scene-resolution cap. Subsequent
+540p plus MetalFX, per-title audio/graphics priority bands and snapshot
+buffering improved successive tests. After the low-overhead queued-thread
+sampler correction in Air 60.74, the player reported smooth gameplay and
+normal uninterrupted sound. That is a player result, not a sustained 60 FPS
+benchmark. M2 60.94 also executed its independent scene-cap contract and
+classic MetalFX path; an isolated first-map tutorial measured 55.4–60 FPS
+and no audio underruns in its final callback windows. Cold pipeline stalls
+and the previously reported character-preview defect remain separate issues.
 [Resolution findings](dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680)
 distinguish internal scene size from 1080p buffers and final output. This is
 not a claim that every title has a tested 720p/540p render path.
@@ -58,7 +60,7 @@ separate verified transfers from outstanding runtime work.
 
 | Game | What this fork changed | Verified result and open issues |
 | --- | --- | --- |
-| Mario Kart World | Restored movie texture views, terrain uploads and sparse mappings; fixed black scenery with conditional clears; reduced upload and pipeline work; restored Air's 60 Hz pacing ([movie](https://github.com/widmonstertony/nxnative/commit/3d0a3a0), [clears](https://github.com/widmonstertony/nxnative/commit/381ed5f), [upload cache](https://github.com/widmonstertony/nxnative/commit/e221694), [pacing](https://github.com/widmonstertony/nxnative/commit/e847a4c)) | Air player confirmed the black scenery was gone, but reported low race performance and intermittent race-entry crashes. Air logs still show 1080p input to MetalFX even in handheld mode. On M2, free roam rendered in a prior test; mesh faults and race performance remain open. |
+| Mario Kart World | Restored movie texture views, terrain uploads and sparse mappings; fixed black scenery with conditional clears; reduced upload and pipeline work; restored Air's 60 Hz pacing ([movie](https://github.com/widmonstertony/nxnative/commit/3d0a3a0), [clears](https://github.com/widmonstertony/nxnative/commit/381ed5f), [upload cache](https://github.com/widmonstertony/nxnative/commit/e221694), [pacing](https://github.com/widmonstertony/nxnative/commit/e847a4c)) | M2 60.96 reached an actual 50cc race with 720p scene attachments and MetalFX; late windows averaged 47.1–48.0 FPS without a crash, below the 60 FPS target. Air 60.75 preserves the explicit reduced tier; fresh race validation is pending. The 540p experiment is not yet a visual pass and has not been delivered to Air. [Device evidence and limits](dm/games/0400C3F00006E000/README.md#tonton-ipad-compatibility-validation-2026-11-12). |
 | Zelda: Ocarina of Time | Corrected opening movie decoding on Metal 3 and handled the offline play-report request that aborted at the end of the opening ([movie](https://github.com/widmonstertony/nxnative/commit/4f25737), [M2](https://github.com/widmonstertony/nxnative/commit/ed552f8), [Air](https://github.com/widmonstertony/nxnative/commit/4ecd063)) | M2 60.90 installed the [scoped 60 Hz pacing fix](https://github.com/widmonstertony/nxnative/pull/3) and reached the title in an isolated device test; the forest save and first controllable 3D scene are still unverified on that build. Air previously reached the title; the player later reported a crash. |
 | Zelda: Tears of the Kingdom | Restored missing shared-font assets; exposed a real 3D render-scale control and corrected the FPS overlay toggle for data-only games ([controls](https://github.com/widmonstertony/nxnative/commit/86e676d), [overlay](https://github.com/widmonstertony/nxnative/commit/acb19b6)) | Air player confirmed the game opened and later reported less stutter and no FPS overlay. Sustained 60 fps has not been verified. |
 | Pokémon Violet | Restored the shared fonts and offline Pokémon GO Plus + startup; on legacy Metal, bound the existing iPad game framework to its validated shader chain and supplied the matching raster and image-atomic companions. | M2 60.84 is installed with the existing 4.0.0 ROM and saves verified unchanged. The legacy character capture binding is included; the post-load scene still needs verification. See the [device test notes](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5/dm/games/01008F6008C5E000/README.md#m2-ipad-update-400) for the scope of verification. Air title entry still needs a player retest. The [uncapped timing candidate](https://github.com/widmonstertony/nxnative/tree/a86d90baf72c52349460907040f97b9634df2ed5/dm/games/01008F6008C5E000/README.md#m2-ipad-uncapped-render-timing-candidate) passed local clock tests; device gameplay is pending. |
@@ -69,7 +71,7 @@ separate verified transfers from outstanding runtime work.
 | Animal Crossing: New Horizons | Restored the missing M2 runtime components for the existing game data. | Eight runtime components were installed and read back on M2; gameplay on that build is unverified. The Air player confirmed the title launched. |
 | Pokkén Tournament DX | Repaired the old iPad's rendering path for its existing installation. | Old iPad 60.97 reached the training HUD; fighters were still missing. This is not a gameplay pass. |
 | NieR:Automata | Tracked separately on the legacy renderer. | Old iPad game data is present; the A10X runtime is still missing. |
-| Pokémon Pokopia | Restored missing graphics libraries and fixed Switch 2 virtual microphone enumeration ([service fix](https://github.com/widmonstertony/nxnative/commit/646c4ab)) | Reached gameplay in device testing; the player reported character-preview rendering defects on Air and M2. |
+| Pokémon Pokopia | Added a build-checked scene cap, priority bands and the independent iPad classic MetalFX path; restored missing graphics libraries and fixed Switch 2 virtual microphone enumeration ([service fix](https://github.com/widmonstertony/nxnative/commit/646c4ab)) | Air 60.74 player retest reported smooth gameplay and normal sound at the retained 540p cap with MetalFX. M2 60.94 first-map tutorial measured 55.4–60 FPS; cold pipeline stalls and character-preview rendering defects remain open. |
 | The Witcher 3 | Repaired Air startup after tracing the executable's address-space reservation; verified the exact installed framework ([Air repair](https://github.com/widmonstertony/nxnative/commit/33b0df4)) | Air player confirmed title/game entry. M2 character materials still render incorrectly in some scenes. Old iPad game data is present; its A10X runtime is still missing. |
 | Naruto Shippuden: Ultimate Ninja Storm 4 | Fixed the OpenGL ES startup path, framebuffer queries, and NVN/GL texture and fence sharing ([startup](https://github.com/widmonstertony/nxnative/commit/f691081), [framebuffer](https://github.com/widmonstertony/nxnative/commit/2eddd56), [texture sharing](https://github.com/widmonstertony/nxnative/commit/175301f)) | Air player reached battle on one build. Later reports of black characters and another battle-entry crash are still open. |
 | Fate visual novels | Repaired native OpenGL framebuffer entry points needed during story initialization ([framebuffer aliases](https://github.com/widmonstertony/nxnative/commit/845c721)) | Air player verified both title screens display at the correct size and Hollow Ataraxia can enter the story. This does not cover the rest of each title. |

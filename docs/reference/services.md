@@ -1132,3 +1132,10 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** an NRR with 1 in the byte at +5 (the Switch 2's) has a header 0x180 bytes longer. The same fields follow it: program ID +0x4b0, size +0x4b8, hash table +0x4c0, its count +0x4c4.
 - **Fix:** `hle_ro.c` and `nro_collect.py` read the table by that byte.
 - **Found on:** [Mario Tennis Fever](../../dm/games/0400D4201C6EA000/README.md).
+
+### An explicit graphics tier is ignored by a frozen host
+
+- **Symptom:** a per-game reduced graphics tier is selected but the SDK still reports the operation-mode default. A handheld title continues choosing its full-budget renderer path.
+- **Cause:** the compatibility host's `GetCurrentGraphicsScale` only read operation mode, while its shelf could overwrite a per-game override. Tier 0 means the whole GPU; it does not mean the smallest image. The SDK's parameter values 10/20/30 correspond to tiers 0/1/2.
+- **Fix:** both SDK queries use the same validated `DM_GFX_SCALE` override, with `DM_GRAPHICS_SCALE` accepted for existing TonTon profiles. Unset or invalid values keep this frozen host's operation-mode default. The shelf must preserve the explicit per-game value. A tier is not a pixel-size guarantee: measure the actual scene attachments separately from the final UI composite and MetalFX output. This changes neither simulation timing nor the shader chain.
+- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md), M2 TonTon 60.96 and Air 60.75. The M2 race remained below 60 FPS; the tier fix alone is not a performance pass.

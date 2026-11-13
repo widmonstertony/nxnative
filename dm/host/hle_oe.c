@@ -290,7 +290,22 @@ HLE_FORCE("_ZN2nn2oe22SetCpuOverclockEnabledEb", "CPU overclock switch (through 
 // oe::GetGraphicsScalingParameters). The SDK maps the parameter's first word 10 / 20 / 30 to scale 0 / 1 / 2. Donkey Kong Bananza keeps it as a quality tier: a byte of its graphics
 // settings (+0x1c7, main+0x549348, next to the handheld flag it takes from the operation mode at +0x1c4), and an index into {3, 12, 16} (main+0x1d1a604) whose value less 3 (0, 9, 13)
 // goes to a renderer parameter (main+0x549614). Which tier the console reports in which mode is not measured: the host answers 0 handheld and 1 console, following the operation mode
-HLE_FORCE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", "graphics scale (Switch 2, through am): 0 handheld, 1 console", int, h_oe_GfxScale, void) { return opmode() == 1; }
+// Keep the frozen engine's default when no explicit tier was selected.
+// Switch 2's 10/20/30 parameters map to tiers 0/1/2. Tier 0 is the
+// whole GPU, not the smallest image. This override does not change timing.
+static int oe_graphics_scale(void) {
+    const char *s = getenv("DM_GFX_SCALE");
+    if (!s) s = getenv("DM_GRAPHICS_SCALE"); // existing TonTon profiles
+    if (s && s[0] >= '0' && s[0] <= '2' && !s[1]) {
+        static atomic_flag logged = ATOMIC_FLAG_INIT;
+        if (!atomic_flag_test_and_set_explicit(&logged, memory_order_relaxed))
+            LOG("oe: explicit graphics tier %d (parameters %d); scene size remains game-selected", s[0]-'0', 10*(s[0]-'0'+1));
+        return s[0]-'0';
+    }
+    return opmode() == 1;
+}
+HLE_FORCE("_ZN2nn2oe28GetGraphicsScalingParametersEv", "Switch 2 graphics parameters: 10, 20 or 30", unsigned, h_oe_GfxParams, void) { return 10u * (unsigned)(oe_graphics_scale()+1); }
+HLE_FORCE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", "Switch 2 graphics tier; explicit setting or frozen default", int, h_oe_GfxScale, void) { return oe_graphics_scale(); }
 HLE_FORCE("_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", "graphics scale change notification (Switch 2, through am); the scale changes only with the operation mode",
           void, h_oe_GfxScaleNotify, unsigned on) { (void)on; }
 // The frame length the game aims at (Switch 2 SDKs): oe::SetGraphicsTargetFrameRate maps up to 59 fps to mode 1, up to 119 to mode 2 and above to mode 3, SetGraphicsTargetFrameRateAuto
