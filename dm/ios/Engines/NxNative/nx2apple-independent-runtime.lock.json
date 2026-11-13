@@ -1,0 +1,189 @@
+{
+  "repository": "https://github.com/LNPANDY/NX2Apple",
+  "commit": "d0adbda8f505a137ef254e4b7e7e58744244255c",
+  "engine_base": "0c078130f6db7d0d32c1dc28146feaf97713f008",
+  "applied_patch_series": [
+    {
+      "path": "patches/0001-ios-game-data-folder.patch",
+      "sha256": "06478691871d654c7b56de97f17b417fd97d78da889d7f37e3d0973eb4f5fe2a"
+    },
+    {
+      "path": "patches/0002-ios-slim-ipa.patch",
+      "sha256": "99e687ef5f8ead1fce07305ff14a0a9a167647fcb367d6518fc9a25e5e3f0c29"
+    },
+    {
+      "path": "patches/0003-mac-keymap.patch",
+      "sha256": "88b6c569e8bf7b86e3e131e436f5b33831667cba069799b413ca4a55d7585af0"
+    },
+    {
+      "path": "patches/0004-hades2-update-profile.patch",
+      "sha256": "3ec6768aa365bfa8d7042219801adbb2955c15ba48ecfaaa628feb45ae10b22e"
+    },
+    {
+      "path": "patches/0005-fork-patches-stamp.patch",
+      "sha256": "e15ca707931179598f15fac8a5fb3a4fec06ce6f1142df6c0e770a146e91b1a6"
+    },
+    {
+      "path": "patches/0006-front-mac-dm-screen.patch",
+      "sha256": "80fec0b8b65b7b8ba6a812f54912d3c3379acc530139277c3bbfd1b05d252bd1"
+    },
+    {
+      "path": "patches/0007-metal-a-newer-compiler-of-the-recorded-generatio.patch",
+      "sha256": "82799b04fa9143e6e696d57c1c08ebcc171e21b38cc691a4a07ac52a570dceb7"
+    },
+    {
+      "path": "patches/0008-totk-1.4.2-frame-step-sites.patch",
+      "sha256": "bf98e828fed44ce39af0c66b0cb914fc713483ced5aa28b729178f1f9a40ee76"
+    },
+    {
+      "path": "patches/0009-runtime-profile.patch",
+      "sha256": "d803360ec726e2bd3f12497fc681ab266ef65fa8632699ea9beae6b8d9c55927"
+    },
+    {
+      "path": "patches/0010-front-mac-pointer-hide.patch",
+      "sha256": "609eb2dd33e46506e92684a82035c7f46042eb75537b18e7092f7be77d8b610e"
+    },
+    {
+      "path": "patches/0011-ios-apply-controller-button-mappings-to-physical.patch",
+      "sha256": "1b61a16ea454d3cbdf69a928e61bb3e1bb3bf13aa50cefdc30009df18618122b"
+    },
+    {
+      "path": "patches/0012-ios-quit-a-game-from-the-in-game-menu-or-by-hold.patch",
+      "sha256": "b31e8fca7214967c71c7e27adba3fb727908415211510911d39010e44e8509a3"
+    },
+    {
+      "path": "patches/0013-nsp-script-hand-the-extraction-and-the-shader-sp.patch",
+      "sha256": "7c50375eb5a8c8e3a96a878d36d6cb97046878c75173216e3543f2f861c355c1"
+    },
+    {
+      "path": "patches/0014-mac-split-a-joy-con-pair-into-two-sideways-contr.patch",
+      "sha256": "f586558cd3731540df53e297982d2727286c8e97e8826578245efbacc007d4f6"
+    },
+    {
+      "path": "patches/0015-host-read-embedded-sections-from-the-image-that.patch",
+      "sha256": "e00cda15c6482d3d1dcb5eaba00bc4ef7ae9dd3bb6633b19e0bdc31b8f8b301f"
+    },
+    {
+      "path": "patches/0016-keep-the-selected-python-when-generating-the-mac.patch",
+      "sha256": "d18e90d26e4718a6d6965e9b09c8ead1e8d85b4ea42d2ff936258f1e9436bc1f"
+    },
+    {
+      "path": "patches/0017-support-steam-controller-and-shared-mac-control.patch",
+      "sha256": "2c082b2a5efce296b3604b164ad18a0ba27d976c356e984d6f615e17464b9817"
+    },
+    {
+      "path": "patches/0018-tests-update-fixtures-for-shader-progress-and-romfs-validation.patch",
+      "sha256": "e16090a3f1e509e93d1a0d12e80a693c43467906248cb894d4ebed7e12967af5"
+    },
+    {
+      "path": "patches/0019-build-ipa-from-nsp-reuse-the-other-platform-s-ro.patch",
+      "sha256": "727e432f65374dc839c64223d5e0dd0d4a24a9ccc9bfa4a4f59cd1f95683551b"
+    },
+    {
+      "path": "patches/0020-ios-touch-controls-layout.patch",
+      "sha256": "ead7a0d49352ebe5b09705cbe2442c1351369448e4e5fad1761a66f7b3ad6781"
+    },
+    {
+      "path": "patches/0021-ios-hide-the-settings-gear-during-tv-play-with-a.patch",
+      "sha256": "8152242915fac707329994291d2110a69d136c233cc02329e3b037cf038260ac"
+    },
+    {
+      "path": "patches/0022-keep-the-mac-game-in-focus-while-its-window-is-u.patch",
+      "sha256": "90dac9b4e47af2bb42b7c4602b5e364c865ab24aa08842d14113ba270f15dcfa"
+    },
+    {
+      "path": "patches/0023-host-serve-nsd-services.patch",
+      "sha256": "a3c827c94fe0c1f82acc0717543161c7c31fd5e3ba9f33e65dfbcd0f9a87e938"
+    },
+    {
+      "path": "patches/0024-shader-split-zstd-in-process.patch",
+      "sha256": "2790f3fd9ecc5b2fa82043033bf002e73ead13e3187872a272b20176cf935f9e"
+    },
+    {
+      "path": "patches/0025-allow-ios-packaging-without-a-recorded-prewarm-s.patch",
+      "sha256": "a36ae9abd280efce83f2e0c4ce85e1479f156699b467113c1b89d815dc94bd5b"
+    },
+    {
+      "path": "patches/0026-ios-fade-out-the-settings-gear-after-3-idle-seco.patch",
+      "sha256": "841efc2b1e7d2f21cbffd0bdbcb940c9d679e40ccf8d7b6abb2775d245b1a6b7"
+    },
+    {
+      "path": "patches/0027-hid-report-vibration-device-info-for-startup-han.patch",
+      "sha256": "f9cd7b77dfb8d7c588ae0ee857177754faaff6842748005a6e039094bf482ac4"
+    },
+    {
+      "path": "patches/0028-mac-app-exit-at-once-with-dm-preflight.patch",
+      "sha256": "dea41d85b4f13c206058e1cf20a420584bbfaa63b8f24ee585571821cc82b145"
+    },
+    {
+      "path": "patches/0029-pack-app-the-game-s-name-in-each-of-its-language.patch",
+      "sha256": "418b92711057c565e28266e97a30628f952cedfa7266f3b2ba14fba0d6bfd5cd"
+    },
+    {
+      "path": "patches/0030-mac-app-an-update-without-control-data-gets-no-b.patch",
+      "sha256": "8931a234cc05ea7724f8eba0690f9901068e9d37eb97e03b8c8911008046ad7c"
+    },
+    {
+      "path": "patches/0031-mac-library-folder.patch",
+      "sha256": "ce62b54f4a9bdf8ce09d8e82ee848d86516c0c43d82a934544cd8bfafa17e9a4"
+    },
+    {
+      "path": "patches/0032-shader-prefetch-a-launcher-setting-and-a-profile.patch",
+      "sha256": "f6e4ad242532dab189cb5e8ec922f3f438d7b3fc72067046a75b51c709526099"
+    },
+    {
+      "path": "patches/0033-launcher-a-frame-rate-choice-for-games-shown-at.patch",
+      "sha256": "8e2e8307860b724f2f5337931e3d3c13d5f40efdbae835dd6eaaac4f23d3da30"
+    },
+    {
+      "path": "patches/0034-controllers-a-radial-deadzone-for-each-stick.patch",
+      "sha256": "259c36d51c6cbaa3481cd03ff08dbc3952e6f78ce4cfd5b52e24e1572a62c772"
+    },
+    {
+      "path": "patches/0035-mac-home-menu-and-background-pause.patch",
+      "sha256": "86131ca28a46a3518c8c3238aaaa0a46b8ad1196fcc07d5ae8ee609cde010add"
+    },
+    {
+      "path": "patches/0036-controllers-apply-radial-stick-deadzones-in-dm-j.patch",
+      "sha256": "fc095a48279fcdd1246064541049f6a4119838259843523b16a7652816ac914b"
+    },
+    {
+      "path": "patches/0037-mac-controller-followups.patch",
+      "sha256": "b3cbd42dde1042599cb29cf6388fd3794d6e40b5a1c591c0be0f9a28a77cc950"
+    },
+    {
+      "path": "patches/0038-bc-cpu-decode.patch",
+      "sha256": "b71d3a8ca45407e45053a99305d9e39c8f599f42a6ea88e0f671118cf368b2f5"
+    },
+    {
+      "path": "patches/0039-ios-game-framework.patch",
+      "sha256": "27d5b1058c762e53a3e0cc03ef5c1819309bff3c159b6930881e5c4e80941635"
+    },
+    {
+      "path": "patches/0040-ios-touch-settings-and-toggle.patch",
+      "sha256": "814f5d364828edc24f0c054db9176da61474175f607e50aa4023e776c81ca47c"
+    },
+    {
+      "path": "patches/0041-ios-host-teardown.patch",
+      "sha256": "5db1d73ee97354252df476a202d5acdc4d9aa977f3922a2f8b036d74b5911c52"
+    },
+    {
+      "path": "patches/0043-nvn-post-wait-for-an-unclaimed-ring-slot-and-siz.patch",
+      "sha256": "9b5eab4d91bf52d213b9f95042c3e6cde147f1501098944cdfe1003e676d3bcd"
+    },
+    {
+      "path": "patches/0044-host-haptics-drive-joycon-l-and-joycon-r-on-sepa.patch",
+      "sha256": "a3c7b992b3c603f886c8e3c48dc628b00c01ba56d485f838d6418729605bad23"
+    },
+    {
+      "path": "patches/0045-nvn-inherit-aliased-virtual-pool-flags-and-bound.patch",
+      "sha256": "8fc6645c734124f5682fe7acf4748e42f76ca90b94738d0d33e0715c95bfc0f0"
+    }
+  ],
+  "engine_shader_chain": "a5e7fb6e4fa4",
+  "deployed_air_build": "20261103.60.78",
+  "deployed_title": "010051400B17A000",
+  "classic_engine_shader_chain": "a3a5cfdab59c",
+  "classic_supports_full_teardown": false,
+  "note": "A provenance lock for the deployed independent engine, not permission to relabel old shader libraries."
+}

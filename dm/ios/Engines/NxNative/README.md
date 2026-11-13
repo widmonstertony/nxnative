@@ -149,4 +149,4 @@ start rather than retaining an incomplete snapshot. No framework is unloaded.
 
 The Air 60.78 installation preserves all existing frameworks and 27 game
 directories; the new Fate card is ready. The new quit/relaunch path has not
-been player-tested. Classic M2 hosts do not advertise this capability yet.
+been player-tested. M2 60.102 separately installs the classic Fate host with all matched resources and 58 DLC; its card is ready. Classic M2 hosts do not advertise this lifecycle capability yet.
