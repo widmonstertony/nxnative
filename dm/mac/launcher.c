@@ -6,6 +6,8 @@
 // (the previous run's kept as <title ID>.prev.log). Environment switches: one KEY=VALUE per line in <Application Support folder>/env.txt, then Resources/dm/env.txt (the first one wins; neither
 // replaces a variable already set), as the iOS app reads Documents/env.txt and dm/env.txt. Then the player's saved choices: launcher.<VAR> strings in the app's preferences domain (its bundle ID), which a
 // front end or a settings window writes, each checked against the bundle's settings (Info.plist DMSettings, from launcher.json) and used only for a variable still unset; DM_SAVED_CHOICES=0 ignores them.
+// DM_KEYMAP and DM_PAD_MAP are saved choices too (launcher.DM_KEYMAP, launcher.DM_PAD_MAP) but no launcher.json rows, so DMSettings cannot check them: the host's own parser does (dm/host/input_map.h,
+// input_map_valid), and a value it would not take whole is ignored. They are read whether or not the settings window ran, since the window does not offer them.
 // So the order is: the launch environment, the player's env.txt, the bundle's, saved choices, the host's tested defaults (docs/frontends.md, Saved choices).
 // Before the host starts, the settings window (dm/mac/Launcher.swift dm_mac_launcher, linked in by pack_app.py) runs in this process and puts the player's settings into the environment; it keeps
 // what the launch environment and the env files set (DM_ENV_LAUNCH_KEYS, DM_ENV_FILE_KEYS). DM_LAUNCHER=0 or --no-launcher (open <app> --args --no-launcher) starts the game without the window,
@@ -21,13 +23,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/attr.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "romfs_image.h"
 #include "romfs_identity.h"
 #include "save_sync.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-function"   // the header is the host's: this file uses only input_map_valid
 #include "input_map.h"
+#pragma clang diagnostic pop
 
 extern char **environ;
 int dm_mac_launcher(void);   // Launcher.swift: 1 = Play (the settings are in the environment), 0 = the player quit, 2 = no window (apply the saved choices here)
@@ -73,6 +80,58 @@ static void mkdirs(const char *path) {   // mkdir -p
     char p[PATH_MAX]; snprintf(p, sizeof p, "%s", path);
     for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0755); *s = '/'; }
     mkdir(p, 0755);
+}
+
+/// Whether the volume holding `path` can hold a save: the host's save transaction clones the save
+/// folder (clonefile) and publishes a commit by swapping two folders (renamex_np RENAME_SWAP), which
+/// only APFS does (hle_fs.c). 1 yes, 0 no (exFAT, HFS+, FAT, network volumes), -1 when the volume
+/// does not say, which the caller takes as yes.
+static int volume_holds_saves(const char *path) {
+    struct attrlist al = {.bitmapcount = ATTR_BIT_MAP_COUNT, .volattr = ATTR_VOL_INFO | ATTR_VOL_CAPABILITIES};
+    struct { uint32_t length; vol_capabilities_attr_t caps; } __attribute__((aligned(4), packed)) buf;
+    if (getattrlist(path, &al, &buf, sizeof buf, 0)) return -1;
+    uint32_t need = VOL_CAP_INT_CLONE | VOL_CAP_INT_RENAME_SWAP;
+    if ((buf.caps.valid[VOL_CAPABILITIES_INTERFACES] & need) != need) return -1;
+    return (buf.caps.capabilities[VOL_CAPABILITIES_INTERFACES] & need) == need;
+}
+
+static int dir_has_entries(const char *path) {   // anything inside at all (a save folder, a log folder)
+    DIR *d = opendir(path); if (!d) return 0;
+    struct dirent *e; int any = 0;
+    while ((e = readdir(d))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { any = 1; break; }
+    closedir(d); return any;
+}
+
+static int copy_file(const char *from, const char *to) {
+    FILE *in = fopen(from, "rb"); if (!in) return 0;
+    FILE *out = fopen(to, "wb"); if (!out) { fclose(in); return 0; }
+    char buf[1 << 16]; size_t n; int ok = 1;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0) if (fwrite(buf, 1, n, out) != n) { ok = 0; break; }
+    if (ferror(in)) ok = 0;
+    fclose(in); if (fclose(out)) ok = 0;
+    if (!ok) unlink(to);
+    return ok;
+}
+
+/// Recursive copy for the one-time migration of a save folder. Symlinks are followed (a save is
+/// plain files); a file that already exists is left alone, so a half-finished copy can be resumed.
+/// AppleDouble files (._name, the metadata macOS writes beside each file on exFAT and FAT) are not
+/// part of the save and are left behind: copied, they would be files of their own in the guest's save.
+static void copy_tree(const char *from, const char *to) {
+    mkdirs(to);
+    DIR *d = opendir(from); if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || !strncmp(e->d_name, "._", 2)) continue;
+        char a[PATH_MAX], b[PATH_MAX];
+        snprintf(a, sizeof a, "%s/%s", from, e->d_name);
+        snprintf(b, sizeof b, "%s/%s", to, e->d_name);
+        struct stat st;
+        if (stat(a, &st)) continue;
+        if (S_ISDIR(st.st_mode)) copy_tree(a, b);
+        else if (S_ISREG(st.st_mode) && access(b, F_OK)) copy_file(a, b);
+    }
+    closedir(d);
 }
 
 static void env_file(const char *path) {   // KEY=VALUE lines, # starts a comment; a variable already set stays
@@ -124,12 +183,24 @@ static int rule_env(CFTypeRef rule, char *env, size_t n) {   // a rule's variabl
     return e && CFGetTypeID(e) == CFStringGetTypeID() && CFStringGetCString(e, env, (CFIndex)n, kCFStringEncodingUTF8);
 }
 
-static void saved_choices(void) {   // after the env files, before the bundle's own defaults (DM_LANG): a variable already set keeps its value
+static void saved_control(CFStringRef domain, const char *env, int pad) {   // DM_KEYMAP / DM_PAD_MAP: checked by the host's parser, not by DMSettings
+    CFStringRef key = CFStringCreateWithFormat(NULL, NULL, CFSTR("launcher.%s"), env);
+    CFPropertyListRef v = CFPreferencesCopyAppValue(key, domain); CFRelease(key);
+    if (!v) return;
+    char s[1024];
+    if (CFGetTypeID(v) != CFStringGetTypeID() || !CFStringGetCString(v, s, sizeof s, kCFStringEncodingUTF8)) fprintf(stderr, "launcher: saved choice for %s ignored: not a string of at most %zu bytes\n", env, sizeof s - 1);
+    else if (!input_map_valid(s, pad)) fprintf(stderr, "launcher: saved choice %s=%s ignored: the host does not take it\n", env, s);
+    else if (getenv(env)) fprintf(stderr, "launcher: saved choice %s=%s not used: %s=%s is set (environment or env.txt)\n", env, s, env, getenv(env));
+    else { setenv(env, s, 0); fprintf(stderr, "launcher: env %s=%s (saved choice)\n", env, s); }
+    CFRelease(v);
+}
+
+static void saved_choices(int window) {   // after the env files, before the bundle's own defaults (DM_LANG): a variable already set keeps its value. window: the settings window ran and applied its own settings
     CFArrayRef rules = setting_rules(); CFStringRef domain = CFBundleGetIdentifier(CFBundleGetMainBundle());
-    if (!rules || !domain) return;   // packed without launcher settings: nothing to choose
+    if (!domain) return;
     const char *off = getenv("DM_SAVED_CHOICES");
     if (off && !strcmp(off, "0")) { fprintf(stderr, "launcher: saved choices ignored (DM_SAVED_CHOICES=0)\n"); return; }
-    for (CFIndex i = 0; i < CFArrayGetCount(rules); i++) {
+    for (CFIndex i = 0; rules && !window && i < CFArrayGetCount(rules); i++) {   // packed without launcher settings: nothing of these to choose
         CFTypeRef rule = CFArrayGetValueAtIndex(rules, i); char env[128], s[1024];
         if (!rule_env(rule, env, sizeof env)) continue;
         CFStringRef key = CFStringCreateWithFormat(NULL, NULL, CFSTR("launcher.%s"), env);
@@ -141,6 +212,7 @@ static void saved_choices(void) {   // after the env files, before the bundle's 
         else { setenv(env, s, 0); fprintf(stderr, "launcher: env %s=%s (saved choice)\n", env, s); }
         CFRelease(v);
     }
+    saved_control(domain, "DM_KEYMAP", 0); saved_control(domain, "DM_PAD_MAP", 1);
 }
 
 // Cloud saves: the folder chosen in the settings window (Launcher.swift CloudSavesSection, cloudSaves.folder in the app's preferences) becomes DM_SAVE_SYNC
@@ -186,12 +258,14 @@ static int external_image_matches(const char *path, const char *identity) {
 int main(int argc, char **argv) {
     char self[PATH_MAX], exe[PATH_MAX]; uint32_t n = sizeof self;
     if (_NSGetExecutablePath(self, &n) || !realpath(self, exe)) return 1;
+    if (getenv("DM_PREFLIGHT")) return 0;   // the front end opens the app once after a build so that macOS verifies it now, not at the player's first start
     char contents[PATH_MAX], res[PATH_MAX], host[PATH_MAX], dm[PATH_MAX], romfs[PATH_MAX], msl[PATH_MAX], p[PATH_MAX];
     snprintf(contents, sizeof contents, "%s", exe); *strrchr(contents, '/') = 0; *strrchr(contents, '/') = 0;   // .../Contents/MacOS/<launcher> → .../Contents
     snprintf(res, sizeof res, "%s/Resources", contents); snprintf(host, sizeof host, "%s/MacOS/dmhost", contents);
     snprintf(dm, sizeof dm, "%s/dm", res); snprintf(romfs, sizeof romfs, "%s/romfs", res);
     char name[256] = "nxnative", id[64] = "", marker[512] = "", lang[32] = "";
     if (!info_string("CFBundleName", name, sizeof name)) snprintf(name, sizeof name, "nxnative");
+    char fork_patches[8192] = ""; info_string("DMForkPatches", fork_patches, sizeof fork_patches);
     info_string("DMRomfsMarker", marker, sizeof marker); info_string("DMLanguage", lang, sizeof lang);
     if (!info_string("DMTitleID", id, sizeof id) || strchr(id, '/')) { alert(name, "This app has no title ID in its Info.plist (DMTitleID): pack it again with build_ipa_from_nsp.py --platform mac-app."); return 1; }
     struct stat st; snprintf(p, sizeof p, "%s/romfs.img", res);
@@ -230,18 +304,93 @@ int main(int argc, char **argv) {
         return 1;
     }
     const char *home = getenv("HOME"); if (!home || !*home) return 1;
+    char library_not_apfs[PATH_MAX] = "";   // a game library folder on a volume that cannot hold saves (volume_holds_saves)
     char sup[PATH_MAX], save[PATH_MAX], temp[PATH_MAX], logs[PATH_MAX], log[PATH_MAX], prev[PATH_MAX];
     snprintf(sup, sizeof sup, "%s/Library/Application Support/nxnative/%s", home, id);
     snprintf(save, sizeof save, "%s/save", sup); snprintf(temp, sizeof temp, "%s/temp", sup);
     snprintf(logs, sizeof logs, "%s/Library/Logs/nxnative", home);
+    // Saves and logs beside the game, not under ~/Library: a library folder the user can move or
+    // keep on an external drive has to carry its saves with it, or they are effectively lost the
+    // moment the folder moves (the files are still in ~/Library, where nobody looks for them).
+    //
+    // The library root is the folder the app sits in, when that folder also holds games/ — the
+    // layout the Mac front end writes (<out>/<id>.app, <out>/games/<id>/romfs.img). A bundle
+    // copied somewhere else keeps the old ~/Library paths, so nothing breaks for a user who never
+    // used the launcher's folder.
+    {
+        char appdir[PATH_MAX]; snprintf(appdir, sizeof appdir, "%s", exe);
+        // Four cuts: <…>/<id>.app/Contents/MacOS/<launcher> → MacOS → Contents → <id>.app → the folder
+        // holding it. Three landed on the .app itself, so the probe looked for <id>.app/games — which
+        // never exists — and the migration never ran (the report: saves stayed in ~/Library).
+        *strrchr(appdir, '/') = 0; *strrchr(appdir, '/') = 0;
+        *strrchr(appdir, '/') = 0; *strrchr(appdir, '/') = 0;
+        // The marker file the Mac front end writes beside the .app (a dot file, so the Finder hides
+        // it): this folder is a game library, and the game's saves and log live in it. DM_ROOT (the
+        // learned shader state, env.txt), temp/ and everything else stay under ~/Library — only
+        // what is needed and reused comes along, so the library folder stays lean.
+        char probe[PATH_MAX]; snprintf(probe, sizeof probe, "%s/.nx2apple-library", appdir);
+        if (!stat(probe, &st)) {
+            snprintf(logs, sizeof logs, "%s/log", appdir);
+            if (volume_holds_saves(appdir) == 0) {
+                // A library on exFAT, HFS+ or FAT (an external drive): the host would mount its save
+                // read-only and drop every write while the game says it saved, and cloud saves would
+                // have nothing to send. The save stays in ~/Library on the Mac's own APFS disk; the
+                // log still goes with the game. A save the library folder holds from an earlier
+                // build is copied in, once, as the migration below does the other way.
+                char libsave[PATH_MAX]; snprintf(libsave, sizeof libsave, "%s/save/%s", appdir, id);
+                mkdirs(save);
+                if (dir_has_entries(libsave) && !dir_has_entries(save)) {
+                    copy_tree(libsave, save);
+                    fprintf(stderr, "launcher: saves copied from %s to %s\n", libsave, save);
+                }
+                snprintf(library_not_apfs, sizeof library_not_apfs, "%s", appdir);
+                char noted[PATH_MAX]; snprintf(noted, sizeof noted, "%s/.library-not-apfs-noted", sup);
+                if (stat(noted, &st)) {
+                    char msg[3 * PATH_MAX];
+                    snprintf(msg, sizeof msg, "The game library folder %s is on a drive that is not formatted as APFS, and games cannot save there.\n\nThis game saves in %s instead. Cloud saves work from there.\n\nTo keep saves with the game library, put it on an APFS drive.", appdir, save);
+                    mkdirs(sup); alert(name, msg);
+                    int fd = open(noted, O_WRONLY | O_CREAT, 0644); if (fd >= 0) close(fd);
+                }
+            } else {
+                snprintf(save, sizeof save, "%s/save/%s", appdir, id);
+                // First run after this change: bring the old saves across rather than starting the
+                // player on an empty save slot. Copied, not moved — an older build of the same app
+                // still reads the old place, and a copy is cheap next to a save.
+                char oldsave[PATH_MAX], oldlog[PATH_MAX];
+                snprintf(oldsave, sizeof oldsave, "%s/save", sup);
+                snprintf(oldlog, sizeof oldlog, "%s/Library/Logs/nxnative/%s.log", home, id);
+                mkdirs(save); mkdirs(logs);
+                if (dir_has_entries(oldsave) && !dir_has_entries(save)) {
+                    copy_tree(oldsave, save);
+                    fprintf(stderr, "launcher: saves copied from %s to %s (they now live with the game)\n", oldsave, save);
+                }
+                // The previous session's log becomes the .prev.log, as the rotation below would have
+                // it: the .log itself is opened fresh right after, and copying into it would be
+                // truncated away by that open.
+                char newprev[PATH_MAX]; snprintf(newprev, sizeof newprev, "%s/%s.prev.log", logs, id);
+                // Explicit compares, not !stat(): stat() returns -1 when the file is missing, which is
+                // truthy — reading "!" as "does not exist" here inverted the condition and skipped the
+                // copy (found by the end-to-end test below).
+                if (stat(oldlog, &st) == 0 && stat(newprev, &st) != 0) {
+                    if (copy_file(oldlog, newprev)) fprintf(stderr, "launcher: the previous log was copied from %s\n", oldlog);
+                }
+            }
+        }
+    }
     snprintf(log, sizeof log, "%s/%s.log", logs, id); snprintf(prev, sizeof prev, "%s/%s.prev.log", logs, id);
     mkdirs(save); mkdirs(temp); mkdirs(logs);
+    // Say where this game reads and writes, on every start: a player checking whether their saves
+    // moved with the game should not have to know the migration rules.
+    fprintf(stderr, "launcher: saves %s\nlauncher: log %s\n", save, log);
     rename(log, prev);
     int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); setvbuf(stdout, NULL, _IOLBF, 0); }
+    fprintf(stderr, "fork patches: %s\n", *fork_patches ? fork_patches : "none");   // first line of the log (Info.plist DMForkPatches)
     fprintf(stderr, "launcher: %s (%s), host %s\n", name, id, host);
+    if (*library_not_apfs) fprintf(stderr, "[RED] launcher: the game library %s is not on an APFS volume, which saves need: saves stay in %s\n", library_not_apfs, save);
     CFArrayRef rules = setting_rules();   // the settings the launch environment already set: the window shows them, fixed
     for (CFIndex i = 0; rules && i < CFArrayGetCount(rules); i++) { char env[128]; if (rule_env(CFArrayGetValueAtIndex(rules, i), env, sizeof env) && getenv(env)) add_key(&g_launch_keys, env); }
+    for (const char **key=(const char *[]){"DM_KEYMAP","DM_PAD_MAP",NULL}; *key; key++) if(getenv(*key)) add_key(&g_launch_keys,*key);
     snprintf(p, sizeof p, "%s/env.txt", sup); env_file(p);
     snprintf(p, sizeof p, "%s/env.txt", dm); env_file(p);
     setenv("DM_ENV_FILE_KEYS", g_file_keys ? g_file_keys : "", 1); setenv("DM_ENV_LAUNCH_KEYS", g_launch_keys ? g_launch_keys : "", 1);
@@ -252,7 +401,7 @@ int main(int argc, char **argv) {
     if (!window) fprintf(stderr, "launcher: no settings window (DM_LAUNCHER=0 or --no-launcher)\n");
     int shown = window ? dm_mac_launcher() : 2;
     if (!shown) return 0;   // Quit: no game
-    if (shown == 2) saved_choices();
+    saved_choices(shown == 1);   // the window applied its settings; the controls are not among them
     cloud_saves_folder();
     setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_TEMP", temp, 0);
     snprintf(p, sizeof p, "%s/Library/Application Support/nxnative/system", home); setenv("DM_SYSTEM_DIR", p, 0);   // the player's own console files, for every game

@@ -60,6 +60,7 @@ VNACP=${CONTROL:-$VNACP}   # from here on, the file that lists the game's langua
 export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.$(echo "$GAME" | tr 'A-Z' 'a-z')} DM_DISPLAY_NAME DM_APP_VERSION DM_APP_CATEGORY=$(gp app_category) DM_TEAM_ID=${DM_TEAM_ID:-0000000000}   # placeholder identity: unsigned, the install tool replaces it
 if [ "${DM_SHOW_FPS:-0}" = 1 ]; then export DM_SHOW_FPS=YES; else export DM_SHOW_FPS=NO; fi
 export DM_LANG=${DM_LANG:-en-US}
+export DM_FORK_PATCHES=$(paste -sd, "$DM/fork_patches.txt" 2>/dev/null || true)   # DMForkPatches in Info.plist (scripts/patches.py writes the list; empty on a build without fork patches)
 if [ "$PREPARE_XCODE" = YES ]; then
   IOS=${DM_XCODE_PROJECT_DIR:-$W/xcode}
   mkdir -p "$IOS" || die "mkdir $IOS"
@@ -153,11 +154,14 @@ program_tables() {
 if [ -f "$GD/resolution_levels.tsv" ]; then cp "$GD/resolution_levels.tsv" "$TD/" || die "copy resolution contract"; fi
 cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv $TD/ || die "copy rewriter tables"
 if [ -f "$PATCHED/nro.tsv" ]; then cp "$PATCHED/nro.tsv" $TD/ || die "copy the NRO table"; fi   # the NRO modules the game loads with nn::ro (hle_ro.c), embedded by gen_embed.py
-if [ "$GFXAPI" = vulkan ] || [ "$GFXAPI" = gl ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" $TD/ || die "copy shader tables"   # empty NVN tables: the NVN layer draws nothing
-else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" $TD/ || die "copy shader tables"
+if [ "$GFXAPI" = vulkan ] || [ "$GFXAPI" = gl ]; then cp "$GD/shader_map.tsv" $TD/ || die "copy shader tables"   # empty NVN table: the NVN layer draws nothing
+else cp "$GD/shader_map.tsv" "$GD/c1_full.tsv" $TD/ || die "copy shader tables"
   if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" $TD/ || die "copy cb_extent.tsv"; else t "no $GD/cb_extent.tsv: the host copies whole uniform bindings"; fi
   # the shader pairs, beside the shader map where the pipeline prebuild reads them (nvn_mtl.m pso_prebuild): without them the app makes no pulling bases, and a hybrid draw has no stand-in
   for f in shader_pairs.tsv pso_pairs.tsv; do if [ -f "$GD/$f" ]; then cp "$GD/$f" $TD/ || die "copy $f"; fi; done; fi   # optional
+# A profile may have no recorded prewarm seeds yet (Pokopia). The host also reads the device's own list.
+if [ -f "$GD/pso_manifest.tsv" ]; then cp "$GD/pso_manifest.tsv" $TD/ || die "copy pso_manifest.tsv"
+else t "no $GD/pso_manifest.tsv: no bundled prewarm seed list"; fi
 # The launcher's settings for this game (Launcher.swift): dm/games/settings.tsv filtered by the profile, main's rewriter table and the game's languages (dm/games/settings.py)
 L=$(GFXAPI="$GFXAPI" python3 "$DM/games/settings.py" "$GAME" "$PATCHED" "$VNACP" $TD/launcher.json) || die "launcher settings (dm/games/settings.py)"; t "launcher: $L"
 }
@@ -292,6 +296,9 @@ if [ -n "${PROGRAMS_TSV:-}" ]; then   # each program's shader libraries, RomFS, 
   done < <(prog_rows); prog_back
 else
 MAPS=()
+# The fork packs the slim IPA by default (upstream: DM_COPY_ROMFS=NO): DM_FULL_ROMFS=1 or DM_COPY_ROMFS=YES packs the
+# game files into the package, which for a large game is many GB and iOS refuses to install it (PackageExtractionFailed)
+[ -n "${DM_COPY_ROMFS:-}" ] || { [ -n "${DM_FULL_ROMFS:-}" ] && DM_COPY_ROMFS=YES || DM_COPY_ROMFS=NO; }
 if [ "${DM_COPY_ROMFS:-YES}" = NO ]; then
   t "no game files in the IPA (DM_COPY_ROMFS=NO): the app takes Documents/romfs.img (scripts/push_romfs.sh)"
   # The image's identity (dm/host/romfs_identity.h) goes into the app as romfs.id: main.m then uses only a Documents/romfs.img with the same size and index hash, and says so when it is another version or missing.
@@ -301,7 +308,11 @@ if [ "${DM_COPY_ROMFS:-YES}" = NO ]; then
     MAPS=("$P/romfs.id=$O/romfs.id"); t "game files identity: $(cat "$O/romfs.id")"
   fi
 elif [ -f "$ROMFS" ]; then MAPS=("$P/romfs.img=$ROMFS"); else MAPS=("$P/romfs=$ROMFS"); fi
-if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
+if [ "$DM_COPY_ROMFS" != NO ] && [ -n "$AOC" ] && [ -d "$AOC" ]; then
+  MAPS+=("$P/aoc=$AOC"); t "add-on content packed into the IPA: $(ls "$AOC" | tr '\n' ' ')"
+elif [ -n "$AOC" ] && [ -d "$AOC" ]; then
+  t "add-on content alongside the game data (DM_FULL_ROMFS=1 packs it): $(ls "$AOC" | tr '\n' ' ')"
+fi
 if [ -n "${PSO:-}" ]; then MAPS+=("$P/pso=$PSO"); fi
 MAPS+=("$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR" "$P=$APP")
   if [ -d "$(dirname "$ROMFS")/html" ]; then MAPS+=("$P/html=$(dirname "$ROMFS")/html"); t "offline HTML pages: $(dirname "$ROMFS")/html"; fi   # beside its RomFS, where the host finds them (hle_web.c)

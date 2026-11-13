@@ -65,7 +65,7 @@ static inline uint64_t cap_obj_index(uint64_t v) { return v & ((1ull << 56) - 1)
 // Chunk payloads
 typedef struct { uint32_t index, kind; uint64_t old_lo, size; } cap_regn;   // kind 0: pool storage, 1: memory a record points to outside the pools (deferred handles, event words)
 typedef struct { uint64_t mem, size; } cap_padd;                             // mem: CAP_ADDR
-typedef struct { uint32_t index, flags; uint64_t mem, size; int32_t vmode, pad; } cap_pobj;
+typedef struct { uint32_t index, flags; uint64_t mem, size; int32_t vmode; uint32_t host_flags; } cap_pobj;
 // ok: bit i = stage i has a key; iface[s]: fingerprint of the bindings and vertex inputs the replay layer resolved for NVN stage s (0 = none), so a replay
 // whose translated shaders take other bindings than the records were made for stops (nvn_replay) instead of drawing with them
 typedef struct { uint32_t index, nstage; uint64_t serial; uint8_t key[6][8]; uint8_t ok, pad[7]; uint64_t iface[6]; } cap_prog;
@@ -74,7 +74,7 @@ typedef struct { uint32_t index; int32_t n; uint64_t pool; int64_t off; int32_t 
 typedef struct { int32_t tid; uint8_t ok, has_v, gone, pad; tex_t t; view_t v; } cap_treg;
 typedef struct { int32_t sid, pad; samp_par p; } cap_sreg;
 // per texture the frame reaches: live = initialized and not finalized (mtl_tex_init); cpu = its host texture is uploaded from its pool (CPU-written, or a texture the
-// flush tracking of DM_GAME_TEX_DIRTY_UPLOAD made packaged): the replay marks it CPU-written so it takes the same path
+// flush tracking of the profile's tex_dirty_upload made packaged): the replay marks it CPU-written so it takes the same path
 enum { CAP_TK_LIVE = 1, CAP_TK_CPU = 2 };
 typedef struct { tex_t t; uint32_t kind, pad; } cap_tknd;   // t: relocated
 typedef struct { tex_t t; uint32_t pixfmt, type, width, height, depth, levels, slices, samples, nsub, pad; } cap_tpix;   // t: relocated, the texture to create and fill

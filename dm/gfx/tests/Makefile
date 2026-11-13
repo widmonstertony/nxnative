@@ -712,3 +712,12 @@ check_t_pool_typebridge: t_pool_typebridge
 t_sparse_pool_cache: t_sparse_pool_cache.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_sparse_pool_cache.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 check_t_sparse_pool_cache: RUN_ENV = MTL_DEBUG_LAYER=1
+t_bc_cpu: t_bc_cpu.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_bc_cpu.m $(MTL_T_SRC) $(FW)
+check_t_bc_cpu: RUN_ENV = MTL_DEBUG_LAYER=1
+
+t_vpool_alias: t_vpool_alias.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_vpool_alias.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+.PHONY: check_t_vpool_alias
+check_t_vpool_alias: t_vpool_alias
+	MTL_DEBUG_LAYER=1 ./t_vpool_alias

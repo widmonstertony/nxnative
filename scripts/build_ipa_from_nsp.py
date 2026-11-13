@@ -33,6 +33,7 @@
 # unless ALLOW_OTHER_METAL / --allow-other-metal. Issue #242 reported corruption with another compiler; the cause is still unconfirmed.
 # Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone 5.x, fonttools and zbic (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, zstd. SPIRV-Cross is the in-repo build. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
+# DM_EXPERIMENTAL_BUILDER=1 with NXB_BIN=<path of nxbuild's nxb binary>: the extraction and the shader split run through nxbuild's binaries where it supports the case, with the same outputs and events; anything else runs as always (nxb_tool).
 import ast, collections, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, signal, struct, subprocess, sys, tempfile, threading, time, types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
@@ -86,6 +87,7 @@ SURVEY_ONLY = False                     # a game with no profile in dm/games: on
 PROFILE_OUT = ''                        # where a provisional profile goes (empty = <build folder>/profile, i.e. <NSP folder>/<title ID>_build/profile unless WORK_DIR is set; the profile is <this>/<title ID>/)
 PROGRAM_INDEX = 0                       # a multi-program application (Super Mario 3D All-Stars: a launcher and one program per game): which program to pack, 0 = the application's own; its title ID is the application's + the index.
                                         #   A game of several programs (its profile's key programs) is packed as one from program 0: this setting packs one of them alone, for bring-up
+ROMFS_FROM = []                         # RomFS images of this game an earlier build left outside this build folder (--romfs-from): the other platform's app or games/<title ID>/romfs.img, reused when they are this version's
 ALLOW_DAMAGED = False                   # a damaged NSP (files failing the NCA's hash check: an incomplete copy or a broken download), or files whose bytes do not start as their names promise (a .zs that is no zstd stream: a NUP or a dump has no hashes), stop the build; True writes those files as read and goes on
 ALLOW_SHADER_REGRESSIONS = False        # shaders that translated in this game's previous build and fail with the current translation chain stop the build (logs/shader_regressions.log lists them);
                                         #   True packs the app without them
@@ -476,6 +478,141 @@ def tool_env(environ=os.environ):
     then TOOL_PATHS for the tools it lacks (a GUI app such as Spyder gets only the system PATH, or none). Cloud saves are off (run_saves.cloud_off): the build's host runs
     (captures, checks, the prebuild) play on scratch saves, and one inherited from the shell would pull the player's cloud save into them and send theirs over it."""
     return run_saves.cloud_off(dict(environ, PATH=os.pathsep.join([environ.get('PATH') or '/usr/bin:/bin:/usr/sbin:/sbin'] + TOOL_PATHS)))
+
+
+# ---- The experimental builder (nxbuild) ----
+# DM_EXPERIMENTAL_BUILDER=1 with NXB_BIN=<the nxb binary, or its folder>: the stages nxbuild reproduces byte for byte run through its binaries beside nxb (the extraction:
+# nxb-extract, or nxb extract; the shader split: nxb-split, or nxb split). This script stays the driver: the stage names, the events, the work folder and the reuse keys are the same. A stage nxbuild does
+# not support (exit code NXB_UNSUPPORTED, or any other failure), a case it is not given (XCI, NSZ, merged packages, DLC, captures, a provisional or derived profile) and an
+# output that fails the checks below run the standard way, with a note in the log. Without the variable nothing changes.
+NXB_UNSUPPORTED = 4   # nxbuild's exit code for "not supported yet": nothing it wrote is an output (nxbuild's docs/integration-requests.md)
+_nxb_noted = set()
+_nxb_nups = set()   # NUPs whose versions nxb-extract wrote (its aoc/ images are the DLC's: extract_aoc does not pack them again)
+
+
+def nxb_note(msg):   # one note per message and build: a missing binary is named once, not per version
+    if msg not in _nxb_noted: _nxb_noted.add(msg); say(f'experimental builder: {msg}')
+
+
+def nxb_tool(sub, env=None):
+    """The command of nxbuild's stage sub (extract, split) when the experimental builder is on, else None: its own binary nxb-<sub> beside NXB_BIN when there is one
+    (nxbuild's first releases), else the nxb binary's subcommand ([nxb, sub], one binary for every stage)"""
+    env = os.environ if env is None else env
+    if env.get('DM_EXPERIMENTAL_BUILDER') != '1': return None
+    where = Path(os.path.expanduser(env.get('NXB_BIN', '')))
+    if not env.get('NXB_BIN') or not where.exists(): nxb_note(f'NXB_BIN does not name the nxb binary ({env.get("NXB_BIN", "")!r}): the standard builder runs every stage'); return None
+    folder = where if where.is_dir() else where.parent
+    for cmd in ([folder / f'nxb-{sub}'], [folder / 'nxb', sub]):
+        if cmd[0].is_file() and os.access(cmd[0], os.X_OK): return cmd
+    nxb_note(f'no nxb in {folder}: the standard builder runs every stage'); return None
+
+
+def nxb_run(cmd, log, what):
+    """Run an nxbuild binary with its output in log only (its [RED] lines are not the build's: a stage it cannot do runs the standard way). True when it exited 0"""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    err = ''
+    try:
+        with open(log, 'w') as f: p = subprocess.Popen([str(c) for c in cmd], stdout=f, stderr=subprocess.STDOUT)
+        try: code = p.wait()
+        except KeyboardInterrupt: p.terminate(); p.wait(); raise
+    except OSError as e: code, err = None, str(e)
+    if code == 0: return True
+    try: unsupported = code == NXB_UNSUPPORTED or 'not supported yet' in log.read_text(errors='replace')
+    except OSError: unsupported = False
+    why = f'could not start ({err})' if code is None else 'not supported yet' if unsupported else f'exit code {code}'
+    nxb_note(f'{what}: {why} (see {log}), the standard builder runs it')
+    return False
+
+
+def nxb_extract_nup(ex, name, k, base, app, n, marker):
+    """One version of a NUP through nxb-extract (no keys: `--nup`) into ex/name, the layout pack_version writes, and the DLC images into <work>/aoc. True when its output passed the checks (ExeFS/main,
+    RomFS.img, the marker, the log's '<program ID> version <v>:' line); False leaves nothing of it, for pack_nup. nxb-extract writes no reuse stamp: this keeps its own (the NUP's size and time, the version, the tool)"""
+    tool = nxb_tool('extract')
+    if not tool: return False
+    work, dst = ex.parent, ex / name
+    ver = k.version if k.kind == pack_nup.UPDATE else 0
+    try: st, tst = n.path.stat(), Path(tool[0]).stat()
+    except OSError: return False
+    keyfile = dst / 'RomFS.img.nxb-nup.key'
+    key = fingerprint(('nxb-nup', str(n.path), st.st_size, st.st_mtime_ns, ver, [str(c) for c in tool], tst.st_size, tst.st_mtime_ns))
+    if reused(keyfile, key) is not None and (dst / 'ExeFS' / 'main').is_file() and (dst / 'RomFS.img').is_file():
+        _nxb_nups.add(n.path); say(f'experimental builder: {name} was extracted with nxb-extract and the NUP is unchanged: reusing it'); return True
+    rmtree(keyfile)
+    log, scratch = work / 'logs' / f'nxb_extract_{name}.log', work / f'nxb_nup_{name}.partial'
+    rmtree(scratch)
+    ok = nxb_run([*tool, '--nup', n.path, '--work', scratch, '--version', ver], log, f'extract {name}')   # never --discard-images: the image is the output
+    out = scratch / 'extract' / f'v{ver}'
+    if ok:
+        try:
+            whole = (out / 'ExeFS' / 'main').is_file() and (out / 'RomFS.img').is_file() and (not marker or (rfs.source(out) / marker).exists())
+            said = re.search(rf'^{app:016X} version {ver}: ', log.read_text(errors='replace'), re.M) is not None
+        except (OSError, ValueError, struct.error): whole = said = False
+        if whole and said:
+            swap_in(out, dst)
+            if (scratch / 'aoc').is_dir() and n.path not in _nxb_nups: swap_in(scratch / 'aoc', work / 'aoc')   # the images are the same in every version's run
+            _nxb_nups.add(n.path)
+            keyfile.write_text(key + '\n')
+            rmtree(scratch)
+            say(f'experimental builder: extracted {name} with nxb-extract')
+            return True
+        nxb_note(f'extract {name}: the output of nxb-extract failed the checks (see {log}), the standard builder runs it')
+    rmtree(scratch)
+    return False
+
+
+def nxb_extract(keys, base, upd, tmp, logs, name, app, marker):
+    """The extraction of one version through nxb-extract into tmp (the layout nx_extract writes: ExeFS/, RomFS.img, control.nacp, icon.jpg). True when its output passed the checks;
+    False leaves no tmp, for nx_extract. Only plain NSPs of one title: an XCI, NSZ or merged package, another program or a damaged NSP go the standard way"""
+    tool = nxb_tool('extract')
+    if not tool: return False
+    def plain(p):
+        try: return p.suffix.lower() == '.nsp' and is_package(p) and not any(n.lower().endswith('.ncz') for n in package_names(p)) and sum(n.lower().endswith('.cnmt.nca') for n in package_names(p)) <= 1   # not a merged package (several content metas)
+        except (OSError, ValueError, struct.error, BuildError): return False
+    if PROGRAM_INDEX or ALLOW_DAMAGED or not all(plain(p) for p in (base, upd) if p):
+        nxb_note(f'extract {name}: an XCI, NSZ or merged package, --program or --allow-damaged is not supported yet, the standard builder runs it'); return False
+    log, scratch = logs / f'nxb_extract_{name}.log', tmp.with_name(tmp.name + '.nxb-base')
+    rmtree(tmp); rmtree(scratch)
+    cmd = [*tool, '--keys', keys, '--base', base] + (['--out', scratch, '--update', upd, tmp, '--updates-only'] if upd and upd != base else ['--out', tmp])
+    ok = nxb_run(cmd, log, f'extract {name}')
+    rmtree(scratch)
+    if ok:
+        text = log.read_text(errors='replace')
+        title = re.search(r'^title ([0-9a-f]{16})', text, re.M)
+        try: whole = (tmp / 'ExeFS' / 'main').is_file() and (tmp / 'RomFS.img').is_file() and (not marker or (rfs.source(tmp) / marker).exists())
+        except (OSError, ValueError, struct.error): whole = False
+        if whole and title and int(title[1], 16) == app - PROGRAM_INDEX:
+            shutil.copyfile(log, logs / f'extract_{name}.log')   # the next build's size estimate reads the summary lines there, as nx_extract writes them
+            say(f'experimental builder: extracted {name} with nxb-extract')
+            return True
+        nxb_note(f'extract {name}: the output of nxb-extract failed the checks (see {log}), the standard builder runs it')
+    rmtree(tmp)
+    return False
+
+
+def nxb_split(roms, mains, tmp, names, logs, g):
+    """The shader split through nxb-split into tmp/pkg and tmp/tables (shader_split.py's outputs). Returns the text the caller reads from shader_split.py's log (its 'shaders: N' line),
+    or None for shader_split.py, with tmp emptied again. Taken only when the tables it wrote have the data rows of the profile's (pso_pairs.tsv too where the profile has one): a reader
+    nxbuild lacks shows there. The caller passes only builds with a registered profile and no DLC, captures, NROs or decoder"""
+    tool = nxb_tool('split')
+    if not tool: return None
+    dirs = [Path(m).parent.parent for m in mains]
+    if any(Path(r) != d / 'RomFS.img' or Path(m) != d / 'ExeFS' / 'main' for r, m, d in zip(roms, mains, dirs)) or not (g.dir / 'game.tsv').is_file():
+        nxb_note('shader split: the inputs are not RomFS images of extractions, the standard builder runs it'); return None
+    log, t = logs / 'nxb_split.log', tmp / 'tables'
+    ok = nxb_run([*tool, '--game', g.dir / 'game.tsv', '--pkg', tmp / 'pkg', '--map', t / names[0], '--facts', t / names[1], '--pairs', t / names[2], '--pso-pairs', t / 'pso_pairs.tsv', *dirs],
+                 log, 'shader split')
+    if ok:
+        bad = [ln for ln in log.read_text(errors='replace').splitlines() if ln.startswith('[RED]')]
+        check = names + (('pso_pairs.tsv',) if g.table('pso_pairs.tsv').is_file() else ())
+        try: same = (tmp / 'pkg').is_dir() and (t / 'pso_pairs.tsv').is_file() and all(data_rows((t / n).read_bytes()) == data_rows(g.table(n).read_bytes()) for n in check)
+        except OSError: same = False
+        if not bad and same:
+            rows = [ln for ln in (t / names[0]).read_text(errors='replace').splitlines() if ln.strip() and not ln.startswith(('#', 'package\t'))]
+            say('experimental builder: split the shaders with nxb-split')
+            return f'shaders: {len(rows)} (nxb-split)\n'
+        nxb_note('shader split: the output of nxb-split ' + ('could not read every file' if bad else 'differs from the profile\'s tables') + f' (see {log}), the standard builder runs it')
+    rmtree(tmp); t.mkdir(parents=True)
+    return None
 
 
 # ---- NSP identification ----
@@ -1032,6 +1169,25 @@ def frame_step_builds(path, table='FRAME_STEP'):   # the keys of a table of a pa
     return set()
 
 
+def registered_display(g, d):
+    """The display version the profile registers for the main build in d (the build rows: hle_sdk16.c GetDisplayVersion answers the game with it), or None when no row
+    registers that build or its row says ?"""
+    main = d / 'ExeFS/main'; bid = build_id(main) if main.exists() else None
+    return next((b['display'] for b in g.builds().values() if bid and b.get('main') == bid and b.get('display') not in (None, '', '?')), None)
+
+
+def app_display_version(g, game, base, update):
+    """The app version: the packed version's display version. Its own control data (nx_extract and a NUP package save it next to the RomFS), else the version number the profile
+    registers for its main build (not a package version such as v458752, which some rows hold), else the base game's control data, but only when the base game is packed (update:
+    False). An update packed without control data (a dump, a NUP update without a NACP) has none: the base game's would name a version that does not run (#953), so the app
+    carries the package version alone (pack_app.py DMPackageVersion). Empty when there is none"""
+    own = nacp.version(game / 'control.nacp')
+    if own: return own
+    reg = registered_display(g, game) or ''
+    if re.fullmatch(r'\d+(\.\d+){0,2}', reg): return reg
+    return '' if update else nacp.version(base / 'control.nacp')
+
+
 def derive_profile(g, pdir, ver, d, mods, app=None, shader_only=False):
     """The game's profile for a version it was not brought up on (the folder has no update, another update, files of other builds, or a registered build under another title ID: app),
     in pdir (outside the repository, where a provisional profile goes): its keys as they are, with this version's build row, package and shader versions, and app's title ID and
@@ -1045,9 +1201,7 @@ def derive_profile(g, pdir, ver, d, mods, app=None, shader_only=False):
     # The display version: the package's control data, else the one the profile registers for this main build. A NUP update or a dump carries no control data, and the game asks
     # the host for the version by its main's build ID (hle_sdk16.c GetDisplayVersion, the build rows): a row with ? is what the game then shows (Super Mario Bros. Wonder 1.2.1
     # from an update-only NUP: "Ver. ?" on its title screen, though the profile registers that build as 1.2.1)
-    main = d / 'ExeFS/main'; bid = build_id(main) if main.exists() else None
-    known = next((b['display'] for b in g.builds().values() if bid and b.get('main') == bid and b.get('display') not in (None, '', '?')), None)
-    T, disp = '\t', nacp.version(d / 'control.nacp') or known or '?'
+    T, disp = '\t', nacp.version(d / 'control.nacp') or registered_display(g, d) or '?'
     add = pg.main_modules(d / 'ExeFS', mods) if not shader_only and (d / 'ExeFS/main').exists() else {}   # a module's slot can change between versions: what main imports and the profile's list leaves out (Absolum 1.2.1's movie module). The host loads what the row names
     mods = sorted({*mods, *add}, key=pg.load_order) if add else mods
     row = T.join(['build', ver, disp] + [f'{m}={build_id(d / "ExeFS" / m)}' for m in mods if (d / 'ExeFS' / m).exists()])
@@ -1241,6 +1395,77 @@ def extracted(log):   # (files, bytes) from the summary lines nx_extract wrote t
     return (sum(int(n) for n, _ in rows), int(sum(float(mb) for _, mb in rows) * 2**20)) if rows else None
 
 
+def package_contents(p):   # the content IDs of a package's NCAs (each one's name: the first 16 bytes of its SHA-256), sorted; None when the package cannot be listed
+    try: return sorted(n.split('.', 1)[0].lower() for n in package_names(p) if n.lower().endswith(('.nca', '.ncz')))
+    except (OSError, ValueError, struct.error, BuildError): return None
+
+
+def image_identity(app, name, base, upd):
+    """What an extraction's RomFS.img was read from: the program, the version, whether damaged files were let through, and the content IDs of the base game's and the update's
+    packages, which name every NCA by its hash: another package under the same version (a different dump, a replaced file) has other content IDs"""
+    return {'title': f'{app:016x}', 'program': PROGRAM_INDEX, 'version': name, 'allow_damaged': ALLOW_DAMAGED,
+            'contents': [package_contents(base), package_contents(upd) if upd and upd != base else []]}
+
+
+def image_sha256(img):
+    with open(img, 'rb') as f: return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+def write_image_id(dst, app, name, base, upd):
+    """<dst>/RomFS.img.id: the image's identity, size and SHA-256. It goes wherever the image goes (the launcher's games/<title ID>/romfs.img.id, a Mac app's Resources/romfs.img.id), so
+    that a build of this game for the other platform can reuse the image instead of extracting it again (--romfs-from, LNPANDY/NX2Apple#708)"""
+    img, out = dst / 'RomFS.img', dst / 'RomFS.img.id'
+    if not img.is_file(): return
+    tmp = out.with_name(out.name + '.partial')
+    tmp.write_text(json.dumps(image_identity(app, name, base, upd) | {'bytes': img.stat().st_size, 'sha256': image_sha256(img)}, sort_keys=True) + '\n')
+    tmp.replace(out)
+
+
+def image_ids(app, name, base, upd):   # the --romfs-from images whose identity file (<image>.id) names this program, version and these packages, with the size it records: (image, identity)
+    want = image_identity(app, name, base, upd)
+    if None in want['contents']: return   # packages that cannot be listed are never matched
+    for img in ROMFS_FROM:
+        try:
+            have = json.loads(Path(f'{img}.id').read_text())
+            if isinstance(have, dict) and all(have.get(k) == v for k, v in want.items()) and have.get('bytes') == img.stat().st_size: yield img, have
+        except (OSError, ValueError): continue
+
+
+def reuse_image(nx, keys, base, upd, tmp, log, name, app, marker):
+    """The RomFS.img of this version that an earlier build for the other platform left (--romfs-from) into tmp, in place of extracting it again (LNPANDY/NX2Apple#708): the Mac app and the
+    iPhone build read the same image. Taken only when its identity file names this program, version and the packages' content IDs, its bytes hash to the SHA-256 written there, and its
+    files are the ones these packages hold: nx_extract --manifest writes the code modules and the control data as the extraction does, and every RomFS file's path, size and first 32 bytes, without the RomFS.
+    Returns the image taken, with tmp in the layout extract writes; None leaves no tmp, for the extraction"""
+    found = None
+    for img, have in image_ids(app, name, base, upd):
+        try: rfs.Image(img); ok = image_sha256(img) == have.get('sha256')   # the index is whole, and the bytes are the ones the identity was written for
+        except (OSError, ValueError, struct.error): ok = False
+        if ok: found = img, have; break
+        say(f'not reusing {img}: its bytes are not the ones its identity file records')
+    if not found: return None
+    img, have = found
+    rmtree(tmp)
+    if run([nx, keys, base, upd or '-', tmp, '--manifest'] + extract_flags(app), log, fatal=False) == 0:
+        try:
+            files = sorted(pg.romfs_files(tmp / 'romfs_manifest.tsv'))
+            same = (tmp / 'ExeFS' / 'main').is_file() and files == sorted(pg.romfs_files(img))
+        except (OSError, ValueError, struct.error): same = False
+        if same:
+            rmtree(tmp / 'romfs_manifest.tsv'); rmtree(tmp / 'romfs_nro')
+            try:   # an APFS clone on the same volume (no space, no write), else a copy, which a full disk can stop
+                pack_dump.clone(img, tmp / 'RomFS.img')
+                (tmp / 'RomFS.img.id').write_text(json.dumps(have, sort_keys=True) + '\n')
+                whole = (tmp / 'RomFS.img').stat().st_size == have['bytes'] and (not marker or (rfs.source(tmp) / marker).exists())
+            except (OSError, ValueError, struct.error): whole = False
+            if whole:
+                with open(log, 'a') as f: f.write(f'{tmp / "RomFS.img"}: {len(files)} files {sum(n for _, n, _ in files) / 2**20:.1f} MB, reused from {img}\n')   # the summary line extracted() reads
+                say(f'reusing the RomFS image of {name} from {img}')
+                return img
+        say(f'not reusing {img}: its files are not the ones the packages hold (see {log})')
+    rmtree(tmp)
+    return None
+
+
 def extract(nx, keys, ex, name, base, upd, logs, g, app, repo):
     """One version of the packages (base, and upd when it has an update) → <ex>/<name>/: ExeFS/ and RomFS.img. The build IDs are checked by the caller (build_mismatch); app: the application
     read from the packages (--app). Reused while its key (<name>/extract.key, extraction_key: nx_extract, the packages, the options) is that of the extraction that made it; a folder with no
@@ -1259,11 +1484,14 @@ def extract(nx, keys, ex, name, base, upd, logs, g, app, repo):
     def poll():
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
     PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd and upd != base else 0), est=not last)
-    run([nx, keys, base, upd or '-', tmp, '--romfs-image'] + extract_flags(app), log)
+    donor = reuse_image(nx, keys, base, upd, tmp, log, name, app, marker)   # the image a build for the other platform left (--romfs-from), when it is this version's
+    if not donor and not nxb_extract(keys, base, upd, tmp, logs, name, app, marker):   # the experimental builder, when it is on and can (else nothing happens there)
+        run([nx, keys, base, upd or '-', tmp, '--romfs-image'] + extract_flags(app), log)
     swap_in(tmp, dst)   # the old folder goes whole, its key and offline pages with it
+    if not donor: write_image_id(dst, app, name, base, upd)   # only a fresh extraction: an older one reused above was not checked against the packages, so nothing vouches for it
     n, b = extracted(log) or (0, 0)
     kf.write_text(f'{key}\n{n:,} files, {amount(b, "B")}\n')
-    PROG.end(f'{n:,} files, {amount(b, "B")}')
+    PROG.end(f'{n:,} files, {amount(b, "B")}' + (f', the image reused from {donor}' if donor else ''))
     return dst
 
 
@@ -1303,13 +1531,15 @@ def scan_nup(path, want=None):   # a NUP as scan_nsps gives a folder of NSPs, wi
     return app, {'base': base, 'updates': sorted(vers.items()), 'dlc': [(tid, None, k) for tid, k in sorted(dlc.items())], 'nup': n}
 
 
-def extract_nup(ex, name, k, base, app, n):   # one version of a NUP (k: its base or an update package) into the layout extract makes; the code modules and the image are kept while unchanged
+def extract_nup(ex, name, k, base, app, n, marker=None):   # one version of a NUP (k: its base or an update package) into the layout extract makes; the code modules and the image are kept while unchanged
     dst = ex / name; part = dst / 'RomFS.img.part'; rmtree(dst / 'extract.key')   # not nx_extract's output: an NSP build of this version extracts it again
     def poll():
         try: return {'done': part.stat().st_size}
         except OSError: return None
     try:
         PROG.stage(f'unpack {name}', poll=poll, unit='B', total=n.tree_bytes(pack_nup.romfs_of(k, base)), est=True)
+        if nxb_extract_nup(ex, name, k, base, app, n, marker):   # the experimental builder, when it is on and can (else nothing happens there)
+            PROG.end(amount((dst / 'RomFS.img').stat().st_size, 'B')); return dst
         how = pack_nup.pack_version(n, k, base, app, dst, say=lambda s: None, step=lambda s: PROG.set(step=s))
     except pack_nup.Error as e: raise BuildError(str(e)) from e
     PROG.end(amount((dst / 'RomFS.img').stat().st_size, 'B') + {'kept': ', reused (inputs unchanged)', 'verified': ', reused (image checked)'}.get(how, ''))
@@ -1367,6 +1597,11 @@ def extract_aoc(nx, keys, repo, work, app, fam, logs):
     if not fam['dlc']: return None
     if fam.get('nup'):
         PROG.stage('unpack DLC', step='unpacking')
+        if fam['nup'].path in _nxb_nups and all((work / 'aoc' / f'{tid - app - 0x1000}.img').is_file() for tid, _, _ in fam['dlc']):   # nxb-extract wrote them with the versions
+            want = {f'{tid - app - 0x1000}.img' for tid, _, _ in fam['dlc']}
+            for f in (work / 'aoc').iterdir():
+                if f.name not in want: rmtree(f)   # DLC no longer in the container
+            PROG.end(f'{len(fam["dlc"])} DLC'); return work / 'aoc'
         try: pack_nup.pack_dlc(fam['nup'], app, {tid: k for tid, _, k in fam['dlc']}, work / 'aoc', say=lambda s: None)
         except pack_nup.Error as e: raise BuildError(str(e)) from e
         PROG.end(f'{len(fam["dlc"])} DLC')
@@ -1609,8 +1844,8 @@ def build_mac_host(repo, out, env, logs, g):
     and the macOS SDK) are as at the last build into out. The host runs the game's own arm64 code natively, so an Intel Mac stops here (GitHub issue #54)"""
     if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, and this Mac has an Intel processor')
     host = repo / 'dm/host'
-    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a', 'gen/dav1d/libdav1d.a', 'host_msl'], logs / 'mac_host_make.log', env=env, cwd=host)
-    dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
+    run(['make', '-s', f'PYTHON={sys.executable}', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a', 'gen/dav1d/libdav1d.a', 'host_msl'], logs / 'mac_host_make.log', env=env, cwd=host)
+    dry = subprocess.run(['make', '-n', '-B', f'PYTHON={sys.executable}', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
     line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
     if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
     cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
@@ -2248,9 +2483,17 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
     tmp = pkg.with_name(pkg.name + '.partial'); rmtree(tmp); (tmp / 'tables').mkdir(parents=True)
     def counted(ln):   # shader_split.py's 'progress: <done>/<total>'
         if m := re.fullmatch(r'progress: (\d+)/(\d+)', ln): PROG.set(done=int(m[1]), total=int(m[2]), unit='files')
-    run([py, repo / 'dm/gfx/tools/shader_split.py', ','.join(map(str, roms)), ','.join(map(str, mains)), tmp / 'pkg'] + [tmp / 'tables' / n for n in names + ('pso_pairs.tsv',)] + ([','.join(map(str, dlc_roms))] if dlc_roms else []),
-        logs / 'shader_split.log', env=env, on_line=counted)
-    text = (logs / 'shader_split.log').read_text(errors='replace')
+    # the experimental builder takes a registered profile's split of the game files alone; DLC, run-time captures, NROs and a game decoder stay with shader_split.py
+    captured = env.get('DM_NRO_DIR') or any(env.get(s) or next((Path(r).parent / f).glob(p), None) for r in roms for s, f, p in
+                                             (('DM_GLSLC_CAPTURE', 'glslc_capture', '*.glslc'), ('DM_UE_SHADERS', 'ue_shaders', '*.ushaderbytecode')))
+    plain = not (provisional or oodle or dlc_roms or captured)
+    if not plain and os.environ.get('DM_EXPERIMENTAL_BUILDER') == '1':
+        nxb_note('shader split: a provisional or derived profile, DLC, run-time captures or a game decoder is not supported yet, the standard builder runs it')
+    text = nxb_split(roms, mains, tmp, names, logs, g) if plain else None
+    if text is None:
+        run([py, repo / 'dm/gfx/tools/shader_split.py', ','.join(map(str, roms)), ','.join(map(str, mains)), tmp / 'pkg'] + [tmp / 'tables' / n for n in names + ('pso_pairs.tsv',)] + ([','.join(map(str, dlc_roms))] if dlc_roms else []),
+            logs / 'shader_split.log', env=env, on_line=counted)
+        text = (logs / 'shader_split.log').read_text(errors='replace')
     m = re.search(r'shaders: (\d+) \(', text)
     bad = re.search(r'^\[RED\] (\d+) file\(s\) could not be read.*$', text, re.M)   # the split leaves out a file no reader reads (its own red line per file in the log) and goes on
     if bad and not provisional:   # the profile's tables were split from every file: one that does not read now is a reader change
@@ -2944,12 +3187,13 @@ def mac_app_name(name):   # the app's file name: the game name with the characte
     return re.sub(r'\s*[:/]\s*', ' - ', name).strip(' .-') or 'nxnative'
 
 
-def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, lang, g, name, version, bundle_id, icon, sign, env, logs, env_file='', gpus='', programs=None, control=None, external_romfs=False, external_shaders=False, prebake=False):
+def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, lang, g, name, version, bundle_id, icon, sign, env, logs, env_file='', gpus='', programs=None, control=None, external_romfs=False, external_shaders=False, prebake=False, package=''):
     """The last stage of PLATFORM 'mac-app': pack the Mac app (dm/mac/pack_app.py) from what a Mac-only build made: the Mac host and font (mac_host), the packed version's RomFS and rewritten
     modules, the Mac shader libraries (msl: <shader>/cache, whose b-<chain> goes in, or a Vulkan or GL game's <shader>, whose vk / gl goes in), the DLC, the profile's tables (with the shader pairs
     the pipeline prebuild reads), the pipeline archive made offline for this Mac (mac_pso; gpus: --gpu / PSO_GPUS), the launcher settings and an environment file.
     The save and the log go to the player's Library, keyed by the folder's title ID (app); a new app replaces the old one only when it is complete. programs: a game of several programs, the others' files
-    (other_programs), which go in beside the first's as one app. control: the control.nacp that lists the game's languages (languages_control), by default the packed version's"""
+    (other_programs), which go in beside the first's as one app. control: the control.nacp that lists the game's languages (languages_control), by default the packed version's
+    package: the packed version (v458752), which the app carries beside its display version (version, empty when the packed update has none: app_display_version)"""
     lib = msl / (f'b-{chain_of(repo)}' if gfx == 'nvn' else 'vk' if gfx == 'vulkan' else 'gl')
     pso = mac_pso(py, repo, work, lib, g, gpus, env, logs) if gfx == 'nvn' and g.table('shader_pairs.tsv').is_file() else None   # a stage of its own, before the app's
     if prebake and pso: pso = mac_prebake(py, repo, work, msl, g, host, pso, env, logs)   # --prebake: a stage of its own, after the archive
@@ -2966,9 +3210,10 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
     if external_shaders: cmd += ['--external-shaders']
     if env.get('DMSH_COMPACT_MAC_SOURCES') == '1': cmd += ['--share-shader-image']
     split_pairs = work / 'shader/pso_pairs.tsv'   # the split's copy of pso_pairs.tsv, for a profile without the table (as mac_run's DM_PSO_PAIRS)
-    for opt, v in (('--version', version), ('--category', g.get('app_category')), ('--marker', g.get('romfs_marker')), ('--aoc', aoc), ('--icon', icon),
+    for opt, v in (('--version', version), ('--package-version', package), ('--category', g.get('app_category')), ('--marker', g.get('romfs_marker')), ('--aoc', aoc), ('--icon', icon),
                    ('--pso', pso), ('--pso-pairs', split_pairs if gfx == 'nvn' and not g.table('pso_pairs.tsv').is_file() and split_pairs.is_file() else None),
-                   ('--env-file', Path(os.path.expanduser(env_file)).resolve() if env_file else None), ('--settings', settings)):
+                   ('--env-file', Path(os.path.expanduser(env_file)).resolve() if env_file else None), ('--settings', settings),
+                   ('--control', control or game / 'control.nacp')):   # the game's name in each language (DMTitleNames), from the same control data as its languages
         if v: cmd += [opt, v]
     for n, r in (programs or {}).items(): cmd += ['--program', f'{n}\t{r["patched"]}\t{r["romfs"]}\t{r["msl"]}\t{r["tables"]}\t{r["html"]}']
     if (game / 'html').is_dir(): cmd += ['--html', game / 'html']
@@ -3020,6 +3265,8 @@ def parse_args(argv):
     ap.add_argument('--xcode-workspace', help='workspace collecting prepared games (default: NxNative.xcworkspace beside the NSP folder; use with --prepare-xcode)')
     ap.add_argument('-l', '--language', help='game language, a code or a name: ja, fr, de, es, it, nl, pt, ru, ko, zh-Hans, zh-Hant, en-GB, fr-CA, es-419, pt-BR, Japanese, ... (default: the LANGUAGE setting, else English); '
                     'it must be one the game supports, which the console lists')
+    ap.add_argument('--romfs-from', action='append', metavar='IMAGE', help='a RomFS image of this game an earlier build left (a Mac app\'s Contents/Resources/romfs.img, the launcher\'s games/<title ID>/romfs.img), '
+                    'taken instead of extracting the image again when the identity file beside it (<image>.id) names this title and version, its SHA-256 matches, and its files are the ones the packages hold; may be given more than once')
     ap.add_argument('--keep-extracted', action=argparse.BooleanOptionalAction, help='keep the extracted game files after the IPA is built, for the next build (default: the KEEP_EXTRACTED setting, on)')
     ap.add_argument('--work-dir', help='the game\'s build folder, used as it is (default: the WORK_DIR setting, else <title ID>_build in the NSP folder); the extracted files, shader cache and temporary files live there, and the IPA or Mac app defaults to the folder holding it')
     ap.add_argument('--env-file', help='environment switches for a diagnostic build (one KEY=VALUE per line)')
@@ -3143,6 +3390,7 @@ def main(args=None):
     PROG.mode = progress_mode(args.progress or PROGRESS)
     global ALLOW_DAMAGED; ALLOW_DAMAGED = args.allow_damaged or ALLOW_DAMAGED
     global PROGRAM_INDEX; PROGRAM_INDEX = args.program if args.program is not None else PROGRAM_INDEX
+    global ROMFS_FROM; ROMFS_FROM = [Path(p).expanduser() for p in args.romfs_from] if getattr(args, 'romfs_from', None) else ROMFS_FROM
     global ALLOW_SHADER_REGRESSIONS; ALLOW_SHADER_REGRESSIONS = args.allow_shader_regressions or ALLOW_SHADER_REGRESSIONS
     global ALLOW_OTHER_METAL; ALLOW_OTHER_METAL = args.allow_other_metal or ALLOW_OTHER_METAL
     here = Path(globals().get('__file__') or sys.argv[0]).resolve()
@@ -3287,7 +3535,7 @@ def main(args=None):
     dirs = {}
     for ver in versions:   # each merged version streams directly into its own image
         b, u = picks[ver]
-        dirs[ver] = extract_nup(ex, ver, u or b, b, app, fam['nup']) if nup else extract_dump(ex, ver, u or b, app, external_romfs=args.mac_external_romfs) if dump else extract(nx, keys, ex, ver, b, u, logs, g, app, repo)
+        dirs[ver] = extract_nup(ex, ver, u or b, b, app, fam['nup'], g.get('romfs_marker')) if nup else extract_dump(ex, ver, u or b, app, external_romfs=args.mac_external_romfs) if dump else extract(nx, keys, ex, ver, b, u, logs, g, app, repo)
         if not nup and not dump: extract_html(nx, keys, dirs[ver], b, u, logs, app, repo)
     check_formats(dirs)
     check_versions_aarch64(dirs, logs, g, nacp.name(dirs[versions[0]] / 'control.nacp') or f'{app:016X}')   # before build_mismatch, derive_profile and build_sources read the modules
@@ -3334,8 +3582,8 @@ def main(args=None):
     if prepare_xcode:
         try: xcode_projects.check_bundle_id(workspace, project, bundle_id)
         except ValueError as e: raise BuildError(str(e)) from e
-    # the app version is the packed game's display version: the update's control data when an update is packed (nx_extract saves it next to the RomFS), else the base game's
-    app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp') or g.builds().get(pkg_ver, {}).get('display')
+    # the app version is the packed version's display version (app_display_version): never the base game's when an update is packed
+    app_version = app_display_version(g, game, base, picks[pkg_ver][1] is not None)
     if mac_pack and not (args.out or OUT_IPA): out_ipa = work.parent / f'{mac_app_name(app_name)}{"-provisional" if shadowed else ""}.app'
     icon, stand_in = app_icon(user_icon, spare_icon, game, base)
     if (not mac or mac_pack) and getattr(args, 'in_programs', None) is None:   # an app is made, once: a program packed with the application's first (in_programs) is part of its app
@@ -3402,7 +3650,7 @@ def main(args=None):
         programs = other_programs(args, g)
         if not icon: say(('no game icon: the NUP carries none' if nup else 'no game icon: a dump folder has no control data') + '; the app\'s icon will be blank; --icon / ICON or --fallback-icon / FALLBACK_ICON gives it one' if dump else '[RED] no game icon in the extraction (an older extraction did not save it: delete extract/ and run again); the app\'s icon will be blank')
         mac_app(py, repo, out_ipa, app, work, game, patched, host, font, ios, aoc, gfx, lang, g, app_name, app_version, bundle_id, icon, args.mac_sign or MAC_SIGN, env, logs, env_file,
-                (args.gpu or PSO_GPUS).strip(), programs, control, external_romfs=args.mac_external_romfs, external_shaders=args.mac_external_shaders, prebake=PREBAKE if args.prebake is None else args.prebake)
+                (args.gpu or PSO_GPUS).strip(), programs, control, external_romfs=args.mac_external_romfs, external_shaders=args.mac_external_shaders, prebake=PREBAKE if args.prebake is None else args.prebake, package=pkg_ver)
         rmtree(work / 'tmp')
         say(f'done: {out_ipa} ({tree_size(out_ipa)[1] / 2**30:.1f} GB); '
             f'open it from Finder. Its save is in ~/Library/Application Support/nxnative/{app:016X}/, its log in ~/Library/Logs/nxnative/{app:016X}.log')

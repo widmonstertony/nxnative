@@ -3,12 +3,13 @@
 // players 2..8 are full-key controllers on No2..No8 (ids 1..7), in either mode. A controller on No1..No8 is shown as a dual Joy-Con pair instead when the game supports JoyDual but not
 // full-key (pad_style); the Handheld npad stays Handheld. Players 2..8 are on No2..No8 while the front end reports a controller for them (dm_pad_players; the Mac gives each physical controller a player
 // of its own, front_mac.m). A player whose npad the game does not support (SetSupportedNpadIdType) is not reported: in a one-player game it feeds player 1, otherwise it is not used.
-// Six-axis sensor: one per connected controller (two for handheld), at rest lying flat, player 1's shaken side to side while the front end holds DM_BTN_SHAKE (see the six-axis section below).
+// Six-axis sensor: physical motion when supplied by the front end, otherwise at rest lying flat; DM_BTN_SHAKE provides the existing synthetic gesture (see below).
 // Vibration follows the player assignments through hle_haptics.c. Mouse and keyboard: not connected; the controller applet reports the connected players with player 1 selected, and leaves out those past the game's maximum.
 #include "hle.h"
 #include "hle_haptics.h"
 #include "dm_input.h"
 #include "input_map.h"
+#include "stick_deadzone.h"
 #include "front.h"
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -55,33 +56,49 @@ static void pad_swap_init(void) {
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
-// Shake (DM_BTN_SHAKE on any player 1 path): whole side-to-side cycles on the guest clock, so the controller always comes back to rest. A press starts a shake (or continues one still
-// finishing), holding keeps shaking, and a release lets the current cycle finish: a tap of one frame is still one whole shake
+// Shake (DM_BTN_SHAKE on any input path): whole side-to-side cycles on the guest clock, so the controller always comes back to rest. A press starts a shake (or continues one still
+// finishing), holding keeps shaking, and a release lets the current cycle finish: a tap of one frame is still one whole shake. Track each controller slot separately; slot 0
+// also includes keyboard / touch and scripted input. Sensor reads route these sources with the same player assignments as buttons and physical motion.
 #define SHAKE_HZ 6.0
 static const uint64_t SHAKE_CYCLE_NS = (uint64_t)(1e9 / SHAKE_HZ);
-static _Atomic uint64_t g_shake_t0, g_shake_end;   // the current shake's start and end; end = UINT64_MAX while held
-static _Atomic int g_shake_on;
-static void shake_note(void) {
-    int on = ((atomic_load(&g_btn) | atomic_load(&g_sc_btn) | atomic_load(&g_pad_btn[0])) & DM_BTN_SHAKE) != 0;
-    if (atomic_exchange(&g_shake_on, on) == on) return;
+static _Atomic uint64_t g_shake_t0[DM_PLAYERS], g_shake_end[DM_PLAYERS];   // each shake's start and end; end = UINT64_MAX while held
+static _Atomic int g_shake_on[DM_PLAYERS];
+static void shake_note(int p) {
+    uint64_t buttons = atomic_load(&g_pad_btn[p]); if (!p) buttons |= atomic_load(&g_btn) | atomic_load(&g_sc_btn);
+    int on = (buttons & DM_BTN_SHAKE) != 0;
+    if (atomic_exchange(&g_shake_on[p], on) == on) return;
     uint64_t t = guest_ns();
-    if (on) { if (t >= atomic_load(&g_shake_end)) atomic_store(&g_shake_t0, t); atomic_store(&g_shake_end, UINT64_MAX); }
-    else { uint64_t t0 = atomic_load(&g_shake_t0); atomic_store(&g_shake_end, t0 + ((t - t0) / SHAKE_CYCLE_NS + 1) * SHAKE_CYCLE_NS); }
+    if (on) { if (t >= atomic_load(&g_shake_end[p])) atomic_store(&g_shake_t0[p], t); atomic_store(&g_shake_end[p], UINT64_MAX); }
+    else { uint64_t t0 = atomic_load(&g_shake_t0[p]); atomic_store(&g_shake_end[p], t0 + ((t - t0) / SHAKE_CYCLE_NS + 1) * SHAKE_CYCLE_NS); }
 }
 void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_btn, buttons); atomic_fetch_or(&g_latch, buttons & ~old); atomic_fetch_or(&g_peek_latch, buttons & ~old); atomic_store(&g_axes, pack(lx, ly, rx, ry));
-    shake_note();
+    shake_note(0);
+}
+// The front end's per-stick deadzones (stick_deadzone.h), read once: the environment is fixed at launch. Physical controllers pass through
+// dm_pad_set_player and Joy-Cons through dm_joy_set, so the same deadzone holds across controller modes on the Mac and the iPhone.
+static _Atomic int g_stick_dz[2] = {-1, -1};
+static int stick_dz(int right) {
+    int d = atomic_load_explicit(&g_stick_dz[right], memory_order_relaxed);
+    if (d < 0) {
+        d = stick_deadzone_percent(getenv(right ? "DM_STICK_DEADZONE_R" : "DM_STICK_DEADZONE_L"));
+        atomic_store_explicit(&g_stick_dz[right], d, memory_order_relaxed);
+    }
+    return d;
 }
 void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     if (p < 0 || p >= DM_PLAYERS) return;
     pthread_once(&g_pad_swap_once, pad_swap_init);
+#if !TARGET_OS_OSX
     buttons = pad_map_apply(&g_button_map, buttons);
+#endif
     // All physical controller paths publish Switch button positions here. Swap before latching presses,
     // keeping simultaneous buttons, other controls, keyboard input and scripted input intact.
     uint64_t face = buttons & g_pad_swap_mask;
     buttons = (buttons & ~g_pad_swap_mask) | ((face & (DM_BTN_A | DM_BTN_X)) << 1) | ((face & (DM_BTN_B | DM_BTN_Y)) >> 1);
+    stick_deadzone_apply(&lx, &ly, stick_dz(0)); stick_deadzone_apply(&rx, &ry, stick_dz(1));
     uint64_t old = atomic_exchange(&g_pad_btn[p], buttons); atomic_fetch_or(&g_pad_latch[p], buttons & ~old); atomic_fetch_or(&g_peek_latch, buttons & ~old); atomic_store(&g_pad_axes[p], pack(lx, ly, rx, ry));
-    if (!p) shake_note();
+    shake_note(p);
 }
 static int32_t pick(int32_t a, int32_t b);
 static int32_t ax(uint64_t v, int i);
@@ -98,7 +115,7 @@ void dm_input_peek(uint64_t *buttons, int32_t axes[4]) {
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
 static void script_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_sc_btn, buttons); atomic_fetch_or(&g_sc_latch, buttons & ~old); atomic_fetch_or(&g_peek_latch, buttons & ~old); atomic_store(&g_sc_axes, pack(lx, ly, rx, ry));
-    shake_note();
+    shake_note(0);
 }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,
@@ -432,11 +449,16 @@ void dm_joy_attach(int p, uint32_t sides) {
     sides &= 3;
     if (sides == 3 || !sides) atomic_store(&g_joy_paired[p], sides == 3);
     atomic_fetch_and(&g_joy_reported[p], sides);   // a Joy-Con taken away has reported nothing yet when it comes back
-    if (atomic_exchange(&g_joy_sides[p], sides) != sides && !sides) for (int s = 0; s < 2; s++) { atomic_store(&g_joy_btn[p][s], 0); atomic_store(&g_joy_axes[p][s], 0); }
+    uint32_t old = atomic_exchange(&g_joy_sides[p], sides);
+    if (old != sides) {
+        if (sides == 3 && old != 0) atomic_fetch_and(&g_single_mask, ~(1u << p));
+        if (!sides) for (int s = 0; s < 2; s++) { atomic_store(&g_joy_btn[p][s], 0); atomic_store(&g_joy_axes[p][s], 0); }
+    }
     styles_sync();
 }
 void dm_joy_set(int p, int side, uint64_t buttons, int32_t sx, int32_t sy) {
     if (p < 0 || p >= DM_PLAYERS || (side != 0 && side != 1)) return;
+    stick_deadzone_apply(&sx, &sy, stick_dz(side));
     uint64_t old = atomic_exchange(&g_joy_btn[p][side], buttons); atomic_fetch_or(&g_joy_latch[p][side], buttons & ~old);
     atomic_store(&g_joy_axes[p][side], pack(sx, sy, 0, 0));
 }
@@ -453,7 +475,10 @@ void dm_pad_players(uint32_t mask) {
     mask = (mask | 1u) & ((1u << DM_PLAYERS) - 1);
     uint32_t old = atomic_exchange(&g_players, mask);
     atomic_fetch_and(&g_benched, mask);   // a controller that went away is no longer left out: the next one on its slot is a player until the applet says otherwise
-    for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1 && !(mask >> p & 1)) dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
+    for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1 && !(mask >> p & 1)) {
+        dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
+        atomic_store(&g_shake_end[p], 0);   // discard its finishing cycle and history before the slot can be reused
+    }
     styles_sync();
     note_merged();
 }
@@ -787,7 +812,6 @@ _Static_assert(sizeof(SixAxisState) == 0x60, "SixAxisState");
 enum { SIX_PERIOD_NS = 5000000 };
 #define SHAKE_G 3.0
 #define SHAKE_REV 1.5
-static int shaking(uint64_t t) { return t >= atomic_load(&g_shake_t0) && t < atomic_load(&g_shake_end); }
 // Live motion (dm_motion_set: a controller's gyro and accelerometer, front_mac.m / DmGamepad.m through motion_apple.h; dm_motion_set_switch: the iPhone's own, already in the
 // Switch frame, DmGamepad.m): while a player's samples keep arriving (within
 // MOTION_STALE_NS on the host clock) their six-axis sensor reports them (motion_fusion.h) instead of lying flat; a shake (DM_BTN_SHAKE) still adds its side-to-side acceleration.
@@ -808,6 +832,7 @@ typedef struct { pthread_mutex_t mu; motion_state st; uint64_t last_ns, received
 static live_motion g_motion[DM_PLAYERS] = {[0 ... DM_PLAYERS - 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}};
 static live_motion g_hid_motion[DM_PLAYERS] = {[0 ... DM_PLAYERS - 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}};
 static live_motion g_joy_motion[DM_PLAYERS][2] = {[0 ... DM_PLAYERS - 1] = {[0 ... 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}}};   // each Joy-Con's own sensor (dm_motion_set_joy)
+static live_motion g_direct_motion[DM_PLAYERS] = {[0 ... DM_PLAYERS - 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}};
 static live_motion g_phone_motion = {.mu = PTHREAD_MUTEX_INITIALIZER};
 static pthread_once_t g_motion_once = PTHREAD_ONCE_INIT;
 static motion_map g_motion_map; static float g_motion_gain = 0.5f; static int g_motion_off, g_motion_log, g_phone_mode;
@@ -889,7 +914,44 @@ void dm_motion_clear(int p) {
 }
 void dm_motion_clear_hid(int p) {
     if (p < 0 || p >= DM_PLAYERS) return;
-    pthread_mutex_lock(&g_hid_motion[p].mu); g_hid_motion[p].last_ns = 0; pthread_mutex_unlock(&g_hid_motion[p].mu);
+    pthread_mutex_lock(&g_hid_motion[p].mu); g_hid_motion[p].last_ns = 0; g_hid_motion[p].count = 0; pthread_mutex_unlock(&g_hid_motion[p].mu);
+}
+// Direct transports may supply their own device-clock integration into the shared LIVE_RING
+// so six_states, GetNpadImuSamples and fallback selection share one policy.
+void dm_pad_motion(int p, const dm_motion *s) {
+    if (p < 0 || p >= DM_PLAYERS) return;
+    live_motion *m = &g_direct_motion[p];
+    if (!s) {
+        pthread_mutex_lock(&m->mu);
+        m->last_ns = 0; m->count = 0; motion_lag_reset(&m->lag);
+        pthread_mutex_unlock(&m->mu);
+        return;
+    }
+    pthread_once(&g_motion_once, motion_env); if (g_motion_off) return;
+    uint64_t now = now_ns();
+    pthread_mutex_lock(&m->mu);
+    if (!m->last_ns || now - m->received_ns > MOTION_STALE_NS) {
+        m->last_ns = 0; m->count = 0; m->head = 0; motion_lag_reset(&m->lag);
+    }
+    if (m->last_ns && now > m->last_ns) motion_lag_add(&m->lag, now - m->last_ns);
+    if (!m->count) m->head = 0;
+    motion_sample *r = &m->ring[(m->head + m->count) % LIVE_RING];
+    r->t = now;
+    memcpy(r->acc, s->acc, sizeof r->acc); memcpy(r->gyro, s->gyro, sizeof r->gyro);
+    memcpy(r->angle, s->angle, sizeof r->angle); memcpy(r->dir, s->dir, sizeof r->dir);
+    if (m->count < LIVE_RING) m->count++; else m->head = (m->head + 1) % LIVE_RING;
+    m->last_ns = m->received_ns = now;
+    pthread_mutex_unlock(&m->mu);
+}
+static uint64_t direct_ready(live_motion *m, uint64_t upto_guest_ns) {
+    int pinned = guest_clock_pinned();
+    uint64_t t = 0;
+    pthread_mutex_lock(&m->mu);
+    if (m->last_ns && now_ns() - m->received_ns <= MOTION_STALE_NS && m->count > 0) {
+        if (pinned || guest_ns_at_host_time(m->ring[m->head].t) <= upto_guest_ns) t = m->last_ns;
+    }
+    pthread_mutex_unlock(&m->mu);
+    return t;
 }
 static uint64_t motion_copy(live_motion *m, motion_state *out) {   // a source's timestamp while it is fresh (0 when not), and a copy of its state when out is given
     uint64_t t;
@@ -899,24 +961,28 @@ static uint64_t motion_copy(live_motion *m, motion_state *out) {   // a source's
     pthread_mutex_unlock(&m->mu);
     return t;
 }
-// The live stream behind player p (its controller's GameController stream, else its HID one; in a one-player game the freshest of every merged player's; player 1 the phone as
+// The live stream behind player p (its controller's GameController stream, else its HID / direct one; in a one-player game the freshest of every merged player's; player 1 the phone as
 // DM_PHONE_MOTION says), with a copy of its state when out is given; NULL while none is fresh
-static live_motion *motion_pick(int p, motion_state *out) {
+static live_motion *motion_pick(int p, uint64_t upto_guest_ns, motion_state *out) {
     if (p < 0 || p >= DM_PLAYERS) return NULL;
-    pthread_once(&g_motion_once, motion_env);
+    pthread_once(&g_motion_once, motion_env); if (g_motion_off) return NULL;
     if (!p && g_phone_mode > 0) return motion_copy(&g_phone_motion, out) ? &g_phone_motion : NULL;
     // Match the button path: in a one-player game, a controller in another slot also drives player 1.
     uint32_t src = p ? 1u << p : 1u | merged_players(); uint64_t newest = 0; live_motion *best = NULL;
     for (int i = 0; i < DM_PLAYERS; i++) if (src >> i & 1) {
         live_motion *m = &g_motion[i]; uint64_t t = motion_copy(m, NULL);
-        if (!t) { m = &g_hid_motion[i]; t = motion_copy(m, NULL); }
+        if (!t) {
+            m = &g_hid_motion[i]; t = motion_copy(m, NULL);
+            uint64_t d = direct_ready(&g_direct_motion[i], upto_guest_ns);
+            if (d && d >= t) { t = d; m = &g_direct_motion[i]; }
+        }
         if (t > newest) { newest = t; best = m; }
     }
     if (!best && !p && g_phone_mode < 0 && motion_copy(&g_phone_motion, NULL)) best = &g_phone_motion;
     if (best && out && !motion_copy(best, out)) best = NULL;   // gone stale since: none
     return best;
 }
-static int motion_live(int p, motion_state *out) { return motion_pick(p, out) != NULL; }
+static int motion_live(int p, motion_state *out) { return motion_pick(p, guest_ns(), out) != NULL; }
 // One Joy-Con's sensor: its own stream while fresh; NULL (the host's flat sensor) once it has reported its own motion and is still attached but its stream went quiet (a
 // Joy-Con 2 skipping reports, for any length of time), as the pad's merged stream holds the controller in another frame (a sideways Joy-Con's, a quarter turn away); else
 // the pad's merged one (a controller that reports no per-Joy-Con motion, or a Joy-Con not attached)
@@ -925,11 +991,11 @@ static int joy_own(int p, int side) {   // 1: its own stream is fresh, 0: it wen
     if (motion_copy(&g_joy_motion[p][side], NULL)) return 1;
     return atomic_load(&g_joy_reported[p]) >> side & atomic_load(&g_joy_sides[p]) >> side & 1 ? 0 : -1;
 }
-static live_motion *motion_joy_pick(int p, int side, motion_state *out) {
-    if (p < 0 || p >= DM_PLAYERS || (side != 0 && side != 1)) return motion_pick(p, out);
+static live_motion *motion_joy_pick(int p, int side, uint64_t upto_guest_ns, motion_state *out) {
+    if (p < 0 || p >= DM_PLAYERS || (side != 0 && side != 1)) return motion_pick(p, upto_guest_ns, out);
     int own = joy_own(p, side);
     if (own > 0 && (!out || motion_copy(&g_joy_motion[p][side], out))) return &g_joy_motion[p][side];
-    return own == 0 ? NULL : motion_pick(p, out);
+    return own == 0 ? NULL : motion_pick(p, upto_guest_ns, out);
 }
 // A stream's history from guest time `from` on, copied under its lock while the stream is still fresh (the input thread holds that lock only to add a sample): the newest samples
 // back to the first at or before `from` (one before the window, for interpolating its start), oldest first, their times turned into guest ns with the guest clock's lag now;
@@ -1024,21 +1090,27 @@ static uint64_t answer_delay(tick_hwm *w, uint32_t h, uint64_t target, uint64_t 
     atomic_store(&w->delay[at], d); atomic_store(&w->delay_at[at], now ? now : 1);
     return d;
 }
-static void six_sample_live(SixAxisState *s, int64_t samp, const motion_sample *ms, int shakes) {
+static void six_sample_live(SixAxisState *s, int64_t samp, const motion_sample *ms, int shake) {
     memset(s, 0, sizeof *s);
     uint64_t t = (uint64_t)samp * SIX_PERIOD_NS;
     s->delta_ns = SIX_PERIOD_NS; s->sampling = samp; s->attributes = 1;
     memcpy(s->acc, ms->acc, sizeof s->acc); memcpy(s->gyro, ms->gyro, sizeof s->gyro); memcpy(s->angle, ms->angle, sizeof s->angle); memcpy(s->dir, ms->dir, sizeof s->dir);
-    if (shakes && shaking(t)) s->acc[0] += (float)(SHAKE_G * sin(2 * M_PI * SHAKE_HZ * (double)(t - atomic_load(&g_shake_t0)) / 1e9));
+    if (shake >= 0) s->acc[0] += (float)(SHAKE_G * sin(2 * M_PI * SHAKE_HZ * (double)(t - atomic_load(&g_shake_t0[shake])) / 1e9));
 }
-static void six_sample(SixAxisState *s, int64_t samp, int shakes) {
+static int shake_source(int p, uint64_t t) {
+    if (p < 0) return -1;
+    uint32_t candidates = 1u << p; if (!p) candidates |= merged_players();
+    for (int j = 0; j < DM_PLAYERS; j++) if ((candidates >> j & 1) && t >= atomic_load(&g_shake_t0[j]) && t < atomic_load(&g_shake_end[j])) return j;
+    return -1;
+}
+static void six_sample(SixAxisState *s, int64_t samp, int shake) {
     memset(s, 0, sizeof *s);
     uint64_t t = (uint64_t)samp * SIX_PERIOD_NS;
     s->delta_ns = SIX_PERIOD_NS; s->sampling = samp; s->attributes = 1;   // IsConnected
     s->acc[2] = -1;
     double yaw = 0;
-    if (shakes && shaking(t)) {
-        double ph = 2 * M_PI * SHAKE_HZ * (double)(t - atomic_load(&g_shake_t0)) / 1e9;
+    if (shake >= 0) {
+        double ph = 2 * M_PI * SHAKE_HZ * (double)(t - atomic_load(&g_shake_t0[shake])) / 1e9;
         s->acc[0] = (float)(SHAKE_G * sin(ph));
         s->gyro[2] = (float)(SHAKE_REV * sin(ph));
         yaw = SHAKE_REV / (2 * M_PI * SHAKE_HZ) * (1 - cos(ph)); s->angle[2] = (float)yaw;
@@ -1046,19 +1118,10 @@ static void six_sample(SixAxisState *s, int64_t samp, int shakes) {
     float c = (float)cos(2 * M_PI * yaw), sn = (float)sin(2 * M_PI * yaw);
     s->dir[0] = c; s->dir[1] = sn; s->dir[3] = -sn; s->dir[4] = c; s->dir[8] = 1;
 }
-// SixAxisSensorHandle, as the console's SDK makes it (nn::hid::utility::GetSixAxisSensorHandle, sdk+0x6d8490 in Nintendo Switch Sports Resort's SDK 22; its GetSixAxisSensorHandles,
-// GetNpadImuHandles and GetSensorFusionHandles all call it): byte 0 the NpadStyleIndex (3 full key or GameCube, 4 handheld, 5 Joy-Con pair, 6 left Joy-Con, 7 right Joy-Con), byte 1
-// the npad id, byte 2 the device (0 the left and 1 the right sensor of two; SDK 22 gives a full-key or handheld controller's single sensor device 2). The host's own handles
-// (GetSixAxisSensorHandles below) use the same numbering, so a handle from either reads the same everywhere. They used to carry the style's bit number in byte 0, and the SDK's IMU
-// handles that the fusion passes to GetNpadImuSamples (0x5 / 0x10005 for a pair on No1) read as style bit 5, never connected: no samples, and Nintendo Switch Sports Resort's
-// fusion never ran. six_style_bit: the style bit of a handle's style index, -1 for an index the host has no style for or a device past 2 (any style takes devices 0 to 2, as the
-// host's check always did: SDKs differ in which device they give a style, and six_source picks a pair's side from bit 0 of the device). The styles made of two Joy-Cons (handheld, dual) have two sensors in the host's handles, the others one. A handle reads as connected while its controller is connected
-// in that style; otherwise its entries are zero (not connected) and the count 0. Only player 1's controller shakes (DM_BTN_SHAKE comes from the keyboard, the iPhone and DM_KEYS,
-// all player 1)
 enum { SIX_IDX_FULLKEY = 3, SIX_IDX_HANDHELD = 4, SIX_IDX_JOYDUAL = 5, SIX_IDX_JOYLEFT = 6, SIX_IDX_JOYRIGHT = 7 };
 static int six_style_bit(uint32_t h) {
     uint32_t idx = h & 0xff, dev = h >> 16 & 0xff;
-    if (idx < SIX_IDX_FULLKEY || idx > SIX_IDX_JOYRIGHT || dev > 2) return -1;
+    if (h >> 24 || idx < SIX_IDX_FULLKEY || idx > SIX_IDX_JOYRIGHT || dev > 2) return -1;
     return (int)(idx - SIX_IDX_FULLKEY);   // FullKey .. JoyRight are style bits 0 .. 4
 }
 static int six_connected(uint32_t h) { int b = six_style_bit(h); return b >= 0 && (style_of(h >> 8 & 0xff) >> b & 1); }
@@ -1074,7 +1137,7 @@ static uint32_t six_style_index(uint32_t style) {
 }
 // The motion behind a handle: a Joy-Con npad's own Joy-Con, else its player's controller. Fills src with that stream's history (live_ring_copy) and returns its count: 0 when no
 // live stream is fresh (the sensor lies flat). Also whether it shakes
-typedef struct { motion_sample r[LIVE_RING]; unsigned n; uint64_t delay; } live_hist;   // delay: the playout delay its times carry (six_source)
+typedef struct { motion_sample r[LIVE_RING]; unsigned n; uint64_t delay; int is_direct; } live_hist;   // delay: the playout delay its times carry (six_source)
 static pthread_once_t g_imu_once; static void imu_env_read(void);   // DM_IMU_DELAY and the rest (below, at the IMU state)
 // The stream behind a handle (NULL: the host's flat sensor). A Joy-Con npad reads its own Joy-Con, a real L + R pair the game takes as a pair (KIND_DUAL) each handle its own
 // half. A whole controller reads its player's merged stream, except Joy-Cons the game is shown as a pair (pad_style: a game such as Nintendo Switch Sports Resort supports JoyDual
@@ -1083,12 +1146,12 @@ static pthread_once_t g_imu_once; static void imu_env_read(void);   // DM_IMU_DE
 // handle its own half. A single Joy-Con from the start: both handles read it, not one of them a flat sensor, as Switch Sports Resort read device 0 (the left half's) 50 times as
 // often as device 1 with a right Joy-Con alone, so a flat device 0 would leave its racket still. A pair that lost a half: the missing half's handle lies flat, as its sensor is
 // gone, rather than taking the other half's stream mid-game (a jump to another controller's frame)
-static live_motion *six_stream(uint32_t h, npad_ref ref, int pl) {
+static live_motion *six_stream(uint32_t h, npad_ref ref, int pl, uint64_t upto_guest_ns) {
     int dev = (int)(h >> 16 & 1);
-    if (ref.kind >= KIND_DUAL) return motion_joy_pick(ref.pad, ref.kind == KIND_LEFT ? 0 : ref.kind == KIND_RIGHT ? 1 : dev, NULL);
+    if (ref.kind >= KIND_DUAL) return motion_joy_pick(ref.pad, ref.kind == KIND_LEFT ? 0 : ref.kind == KIND_RIGHT ? 1 : dev, upto_guest_ns, NULL);
     if (pl >= 0 && pl < DM_PLAYERS && kind_style(ref, h >> 8 & 0xff) == STYLE_JOYDUAL) {
         uint32_t src = 1u << pl | (pl ? 0 : merged_players());
-        pthread_once(&g_motion_once, motion_env);
+        pthread_once(&g_motion_once, motion_env); if (g_motion_off) return NULL;
         for (int q = 0; q < DM_PLAYERS; q++) if (src >> q & 1 && joy_active(q)) {
             uint32_t sides = atomic_load(&g_joy_sides[q]); int side = sides == 3 ? dev : sides == 2;
             if (sides != 3 && side != dev && atomic_load(&g_joy_paired[q])) return NULL;
@@ -1097,16 +1160,18 @@ static live_motion *six_stream(uint32_t h, npad_ref ref, int pl) {
             if (!own) return NULL;   // it went quiet: flat, not the merged stream's frame
         }
     }
-    return motion_pick(pl, NULL);
+    return motion_pick(pl, upto_guest_ns, NULL);
 }
 // The history behind a handle for an answer (w: g_hwm_states or g_hwm_imu, whose handle slots keep the delay), played back late by the path's delay (answer_delay): every
 // time moved d later, so a tick at the present lies between two samples that have arrived. None on a pinned guest clock (live_ring_copy keeps only the newest sample)
-static unsigned six_source(uint32_t h, uint64_t from, live_hist *src, int *shakes, tick_hwm *w) {   // from: the oldest tick's guest time the answer needs
+static unsigned six_source(uint32_t h, uint64_t from, live_hist *src, int *shake_pl, tick_hwm *w) {   // from: the oldest tick's guest time the answer needs
     npad_ref ref = npad_resolve(h >> 8 & 0xff);
     int pl = ref.kind >= KIND_DUAL ? ref.pad : player_of(h >> 8 & 0xff);
-    *shakes = pl == 0 && ref.kind < KIND_DUAL;
-    live_motion *m = six_stream(h, ref, pl);
+    *shake_pl = ref.kind < KIND_DUAL ? pl : -1;
+    uint64_t now = (uint64_t)(guest_ns() / SIX_PERIOD_NS) * SIX_PERIOD_NS;
+    live_motion *m = six_stream(h, ref, pl, now);
     src->n = 0; src->delay = 0;
+    src->is_direct = m >= g_direct_motion && m < g_direct_motion + DM_PLAYERS;
     if (!m) return 0;
     pthread_once(&g_imu_once, imu_env_read);
     uint64_t lag; live_ring_copy(m, from > LIVE_DELAY_MAX_NS ? from - LIVE_DELAY_MAX_NS : 0, src->r, &src->n, &lag);
@@ -1124,24 +1189,52 @@ static unsigned six_source(uint32_t h, uint64_t from, live_hist *src, int *shake
 static int six_offset_known(uint32_t h) {
     npad_ref ref = npad_resolve(h >> 8 & 0xff);
     int pl = ref.kind >= KIND_DUAL ? ref.pad : player_of(h >> 8 & 0xff);
-    live_motion *m = six_stream(h, ref, pl);
+    live_motion *m = six_stream(h, ref, pl, guest_ns());
     if (!m || m < g_motion || m >= g_motion + DM_PLAYERS) return 1;
     pthread_mutex_lock(&m->mu); int have = m->rest.have; pthread_mutex_unlock(&m->mu);
     return have;
 }
 // The state at a tick: from the live history (live_at) while there is one, else the host's own (flat or shaken)
-static int six_at(SixAxisState *s, int64_t samp, const live_hist *src, int shakes) {   // returns live_at's "no change of its own" (0 for the host's own samples)
-    if (src->n) { motion_sample ms; int held = live_at(src->r, src->n, (uint64_t)samp * SIX_PERIOD_NS, &ms); six_sample_live(s, samp, &ms, shakes); return held; }
-    six_sample(s, samp, shakes); return 0;
+static int six_at(SixAxisState *s, int64_t samp, const live_hist *src, int shake_pl) {   // returns live_at's "no change of its own" (0 for the host's own samples)
+    uint64_t t = (uint64_t)samp * SIX_PERIOD_NS;
+    int shake = shake_pl >= 0 ? shake_source(shake_pl, t) : -1;
+    if (src->n && !(src->is_direct && shake >= 0)) { motion_sample ms; int held = live_at(src->r, src->n, t, &ms); six_sample_live(s, samp, &ms, shake); return held; }
+    six_sample(s, samp, shake); return 0;
 }
 static int six_states(SixAxisState *out, int n, uint32_t h) {
     if (n <= 0) return 0;
     if (!six_connected(h)) { memset(out, 0, sizeof *out * (size_t)n); return 0; }
     static _Thread_local live_hist src;   // 10 KB: off the guest thread's stack
     int64_t samp = answer_tick(&g_hwm_states, h, (int64_t)(guest_ns() / SIX_PERIOD_NS)), first = samp - n + 1;
-    int shakes; six_source(h, first > 0 ? (uint64_t)first * SIX_PERIOD_NS : 0, &src, &shakes, &g_hwm_states);
-    for (int i = 0; i < n; i++) six_at(&out[i], samp - i, &src, shakes);
+    int shake_pl; six_source(h, first > 0 ? (uint64_t)first * SIX_PERIOD_NS : 0, &src, &shake_pl, &g_hwm_states);
+    int sb = six_style_bit(h), split = sb >= 0 && ((1u << sb) & (STYLE_JOYDUAL | STYLE_JOYLEFT | STYLE_JOYRIGHT)) != 0;
+    for (int i = 0; i < n; i++) {
+        six_at(&out[i], samp - i, &src, shake_pl);
+        // Super Mario Party (main+0x57a72c, main+0x57ce38) discards any Joy-Con SixAxisSensorState whose
+        // acceleration has an exact 0.0f component (fcmp s0/s1/s2, #0.0; b.eq) and falls back to (0, 0, 0).
+        if (split) {
+            for (int k = 0; k < 3; k++) if (out[i].acc[k] == 0.0f) out[i].acc[k] = 1e-6f;
+        }
+    }
     return n;
+}
+static unsigned six_rest(uint32_t h) {
+    if (!six_connected(h)) return 1;
+    npad_ref ref = npad_resolve(h >> 8 & 0xff);
+    int pl = ref.kind >= KIND_DUAL ? ref.pad : player_of(h >> 8 & 0xff);
+    uint64_t now = guest_ns();
+    if (ref.kind < KIND_DUAL && shake_source(pl, now) >= 0) return 0;
+    live_motion *m = six_stream(h, ref, pl, now);
+    if (!m) return 1;
+    motion_sample ms; int ok = 0;
+    pthread_mutex_lock(&m->mu);
+    if (m->last_ns && now_ns() - m->received_ns <= MOTION_STALE_NS && m->count) {
+        ms = m->ring[(m->head + m->count - 1) % LIVE_RING]; ok = 1;
+    }
+    pthread_mutex_unlock(&m->mu);
+    if (!ok) return 1;
+    float speed = ms.gyro[0] * ms.gyro[0] + ms.gyro[1] * ms.gyro[1] + ms.gyro[2] * ms.gyro[2];
+    return speed < 0.0001f;
 }
 // A style set of several styles (FullKey | JoyDual, as a game that takes either passes) gets the style the npad's controller is shown in, when it is one of them (else the first, as
 // the SDK's utility); two handles when the set holds a style made of two Joy-Cons (handheld, dual), as the host always answered; none for a set with no style that has a sensor
@@ -1527,7 +1620,7 @@ HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_1
 // Vibration handles: byte 0 = SDK style index (FullKey 3, Handheld 4), byte 1 = npad id, byte 2 = motor.
 // See libnx hid.c _hidGetVibrationDeviceHandles. Only the styles this host connects are exposed.
 // A Joy-Con style's handle (type 5 JoyDual, 6 JoyLeft, 7 JoyRight) reaches the pad's motor of its Joy-Con: the left one's is motor 0, the right one's motor 1, whichever npad the right one is on
-static uint32_t vib_targets(uint32_t h, int *motor) {
+static uint32_t vib_players(uint32_t h, int *motor) {
     unsigned type = h & 0xff, id = h >> 8 & 0xff, dev = h >> 16 & 0xff;
     *motor = (int)(dev & 1);
     if (h >> 24 || dev > 1 || type < 3 || type > 7) return 0;
@@ -1535,10 +1628,10 @@ static uint32_t vib_targets(uint32_t h, int *motor) {
     int p = player_of(id);
     uint32_t pad_players = p == 0 ? 1u | merged_players() : p > 0 ? 1u << p : 0;   // a whole controller's motors: player 1's merged controllers too
     if (type >= 5) {
-        if (type == 5 && r.kind == KIND_PAD && kind_style(r, id) == STYLE_JOYDUAL) return dm_haptics_available() & pad_players;   // a controller shown as a pair (pad_style)
+        if (type == 5 && r.kind == KIND_PAD && kind_style(r, id) == STYLE_JOYDUAL) return pad_players;   // a controller shown as a pair (pad_style)
         if (r.kind != (type == 5 ? KIND_DUAL : type == 6 ? KIND_LEFT : KIND_RIGHT) || (type != 5 && dev)) return 0;
         if (type != 5) *motor = type == 7;
-        return dm_haptics_available() & (1u << r.pad);
+        return 1u << r.pad;
     }
     if (type > 4) return 0;
     // A full-key handle on an npad that now holds Joy-Cons still reaches them: a game keeps the handles it got before the Joy-Cons connected (Super Mario Odyssey asks for the
@@ -1546,12 +1639,15 @@ static uint32_t vib_targets(uint32_t h, int *motor) {
     if (p >= 0 && r.kind >= KIND_DUAL && type == 3 && id != NPAD_HANDHELD) {
         if (r.kind == KIND_LEFT && dev) return 0;
         if (r.kind == KIND_RIGHT && !dev) return 0;
-        return dm_haptics_available() & (1u << r.pad);
+        return 1u << r.pad;
     }
     // A controller shown as a pair because the game supports no full-key style keeps the full-key handles it got before the game changed its styles, as a pair's Joy-Cons do
     uint32_t st = kind_style(r, id);
     if (p < 0 || r.kind != KIND_PAD || (st != (1u << (type - 3)) && !(type == 3 && st == STYLE_JOYDUAL))) return 0;
-    return dm_haptics_available() & pad_players;
+    return pad_players;
+}
+static uint32_t vib_targets(uint32_t h, int *motor) {
+    return dm_haptics_available() & vib_players(h, motor);
 }
 static void vib_send(const uint32_t *handles, const dm_vibration *values, int n) {
     if (!handles || !values || n <= 0) return;
@@ -1580,6 +1676,16 @@ static void vib_send(const uint32_t *handles, const dm_vibration *values, int n)
     dm_haptics_send(updates, count);
 }
 HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission: enabled and an output available", unsigned, h_hid_VibPermit, void) { return dm_haptics_available() != 0; }
+// Super Mario Party calls EndForcedVibrationSession at startup (main+0x5d503c) and BeginForcedVibrationSession for controller-find rumble; the SDK's own calls reach the hid service
+// (a null read in hid::detail::EndPermitVibrationSession, sdk+0x3526bc). Vibration permission on the host follows dm_haptics_available(), so the session hooks succeed as no-ops
+HLE_FORCE("_ZN2nn3hid27BeginForcedVibrationSessionEv", "forced vibration session: permitted while the host has haptics", void, h_hid_BeginForcedVib, void) {}
+HLE_FORCE("_ZN2nn3hid25EndForcedVibrationSessionEv", "forced vibration session: nothing to release", void, h_hid_EndForcedVib, void) {}
+HLE_FORCE("_ZN2nn3hid6detail27BeginPermitVibrationSessionEv", "permit vibration session: permitted while the host has haptics", Result, h_hid_DetailBeginPermitVib, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail25EndPermitVibrationSessionEv", "permit vibration session: nothing to release", Result, h_hid_DetailEndPermitVib, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail15PermitVibrationEb", "permit vibration: controlled by the host's haptics setting", Result, h_hid_DetailPermitVib, unsigned on) { (void)on; return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6system27BeginPermitVibrationSessionEv", "system permit vibration session: permitted while the host has haptics", void, h_hid_SysBeginPermitVib, void) {}
+HLE_FORCE("_ZN2nn3hid6system25EndPermitVibrationSessionEv", "system permit vibration session: nothing to release", void, h_hid_SysEndPermitVib, void) {}
+HLE_FORCE("_ZN2nn3hid6system15PermitVibrationEb", "system permit vibration: controlled by the host's haptics setting", void, h_hid_SysPermitVib, unsigned on) { (void)on; }
 // Games can cache handles once at startup, before GameController routes the pad's haptics (Unicorn Overlord kept an empty answer and sent every value to handle 0).
 // On Horizon handles are computed from npad id and style (libnx _hidGetVibrationDeviceHandles); vib_send checks for an output at each send. With rumble off they are handed out too,
 // as on a Switch whose vibration setting is off (IsVibrationPermitted answers false and nothing is felt), so turning it on while the game runs works in a game that asked only once.
@@ -1701,11 +1807,7 @@ HLE_FORCE("_ZN2nn3hid16GetGestureStatesEPNS0_12GestureStateEi", "gesture states,
 // Six-axis details: the current state, at rest unless shaking, fusion off
 HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStop, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "six-axis sensor current state", void, h_hid_SixState, SixAxisState *s, const uint32_t *h) { six_states(s, 1, *h); }
-HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless player 1's is shaking or a live controller is turning", unsigned, h_hid_SixRest, const uint32_t *h) {
-    int pl = player_of(*h >> 8 & 0xff); motion_state ms;
-    if (motion_live(pl, &ms)) return fabsf(ms.gyro[0]) + fabsf(ms.gyro[1]) + fabsf(ms.gyro[2]) < 0.01f && !(pl == 0 && shaking(guest_ns()));
-    return pl != 0 || !shaking(guest_ns());
-}
+HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "physical motion or the simulated shake determines rest", unsigned, h_hid_SixRest, const uint32_t *h) { return six_rest(*h); }
 // The console's own six-axis sensor (SevenSixAxisSensor, the body's orientation in handheld mode; The Legend of Zelda: Breath of the Wild): takes a work buffer and is switched through the hid service. The host provides none: switching succeeds, 0 states
 HLE_FORCE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", "console six-axis sensor initialization; not provided by the host", Result, h_hid_SevenInit, void *buf, size_t n) { (void)buf; (void)n; return RES_OK; }
 HLE_FORCE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", "console six-axis sensor", Result, h_hid_SevenFini, void) { return RES_OK; }
@@ -1733,8 +1835,10 @@ HLE_FORCE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHan
 HLE_FORCE("_ZN2nn3hid34ResetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleE", "six-axis sensor fusion parameters; ignored by the host", void, h_hid_FusionReset, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid41IsFirmwareUpdateAvailableForSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor firmware update: none", unsigned, h_hid_SixFw, const uint32_t *h) { (void)h; return 0; }
 // GetActual returns the sanitized guest value accepted by the host, before output-device adaptation.
+// GetVibrationDeviceInfo is queried right after GetVibrationDeviceHandles at startup, before a physical controller's
+// haptics route is registered, so it follows handle validity and sink presence rather than active route availability.
 HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "vibration: linear resonant actuator, left or right", void, h_hid_VibInfo, uint32_t *info, const uint32_t *h) {
-    int m = 0, on = h && vib_targets(*h, &m) != 0; info[0] = on ? 1 : 0; info[1] = on ? 1 + m : 0;
+    int m = 0, on = h && dm_haptics_has_output() && vib_players(*h, &m) != 0; info[0] = on ? 1 : 0; info[1] = on ? 1 + m : 0;
 }
 // The SDK's own call reaches the hid service (a null read in hid::detail::IsVibrationDeviceMounted; Super Mario Odyssey asks for each handle of a controller).
 // On Horizon a device is mounted when the npad's connected controller has that style and an actuator on that side: here, when the channel has an output, as GetVibrationDeviceInfo reports it

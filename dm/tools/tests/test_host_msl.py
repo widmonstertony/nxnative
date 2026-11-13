@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -72,6 +73,22 @@ class HostMSL(unittest.TestCase):
     def host_dirs(self, dirs):
         for d in dirs: (self.root / d).mkdir(parents=True, exist_ok=True)
         (self.root / 'dm/games/game.py').touch()
+
+    def test_host_make_uses_the_explicit_versioned_python_with_spaces(self):
+        # The app's driver can use a new Python while PATH still names an older installation.
+        old = self.root / 'bin/python3'
+        old.write_text('#!/bin/sh\necho unexpected-PATH-python >&2\nexit 71\n')
+        old.chmod(0o755)
+        selected = self.root / 'Bundled Python/bin/python3.13'
+        selected.parent.mkdir(parents=True)
+        marker = self.root / 'selected-python'
+        selected.write_text('#!/bin/sh\necho selected > ' + shlex.quote(str(marker)) + '\nexec '
+                            + shlex.quote(sys.executable) + ' "$@"\n')
+        selected.chmod(0o755)
+        self.make('PYTHON=' + str(selected))
+        self.assertEqual(marker.read_text().strip(), 'selected')
+        self.assertTrue(self.header.is_file())
+        self.assertEqual(len(self.compiles()), 1)
 
     def test_mac_and_ios_use_their_deployment_targets(self):
         self.make()
@@ -163,11 +180,13 @@ class HostMSL(unittest.TestCase):
         logs = self.root / 'logs'
         logs.mkdir()
         builds = []
+        makes = []
 
         def run(cmd, log, env=None, cwd=None):
             if cmd[0] == 'make':
+                makes.append(cmd)
                 self.assertIn('host_msl', cmd)
-                p = real_run(['make', '-s', f'GAME={GAME}', 'host_msl'], cwd=cwd, env=env, capture_output=True, text=True)
+                p = real_run(['make', '-s', f'GAME={GAME}', 'host_msl', *[a for a in cmd if a.startswith('PYTHON=')]], cwd=cwd, env=env, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
             else:
                 self.assertTrue(self.header.is_file(), 'direct clang needs the header before its first compile')
@@ -175,6 +194,7 @@ class HostMSL(unittest.TestCase):
                 out.write_bytes(b'host executable')
 
         def command(cmd, **kw):
+            if cmd[0] == 'make': makes.append(cmd)
             return NS(returncode=0, stdout='clang -o dmhost main.c\n' if cmd[0] == 'make' else 'test toolchain', stderr='')
 
         with patch.object(nsp, 'apple_silicon', return_value=True), patch.object(nsp, 'run', side_effect=run), patch.object(nsp.subprocess, 'run', side_effect=command):
@@ -188,6 +208,11 @@ class HostMSL(unittest.TestCase):
             self.source.write_text('kernel void changed() {}\n')
             nsp.build_mac_host(self.root, out, self.env, logs, NS(id=GAME))
             self.assertEqual(len(builds), 3)
+
+        self.assertTrue(any('-n' in cmd for cmd in makes), 'the dry run must use the same interpreter')
+        self.assertTrue(any('host_msl' in cmd for cmd in makes), 'the generation run must use the same interpreter')
+        for cmd in makes:
+            self.assertIn('PYTHON=' + sys.executable, cmd)
 
     def test_decoder_identity_normalizes_only_chain_and_verifies_executable(self):
         nsp = script('build_ipa_from_nsp')

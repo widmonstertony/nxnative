@@ -766,7 +766,7 @@ HLE_FORCE("_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll", "fsp-srv; extend sav
 HLE_FORCE("_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", "fsp-srv; the save directory is created at mount time", Result, h_fs_EnsureSave, const void *uid) { (void)uid; return RES_OK; }
 // Another application's save data (Tears of the Kingdom asks by application ID and would mount it read-only): the host keeps only this game's own save, which exists once mounted
 HLE_FORCE("_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", "fsp-srv; only this game's own save data exists", int, h_fs_SaveExisting, uint64_t app, const void *uid) {
-    (void)uid; LOG("fs asks whether save data exists: program %016llx → %s", (unsigned long long)app, app == DM_GAME_PROGRAM_ID ? "this game, yes" : "another program, no"); return app == DM_GAME_PROGRAM_ID;
+    (void)uid; LOG("fs asks whether save data exists: program %016llx → %s", (unsigned long long)app, app == dm_profile()->program_id ? "this game, yes" : "another program, no"); return app == dm_profile()->program_id;
 }
 // A read-only mount of an application's save data. Another program's: the host has none. This game's own: its committed account save, read-only, as Horizon mounts the save
 // data of that application and user (IsSaveDataExisting above says it exists, and on the console the system creates it at the first launch). Nintendo Switch Sports Resort mounts
@@ -777,7 +777,7 @@ HLE_FORCE("_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE",
 // commit and send, a save that is neither this device's nor the cloud's. What this device's save is made of stays where the log's [save-sync] lines say, and the next
 // start tries again
 static void save_sync_or_stop(const char *dd) {
-    if (save_sync_mount(dd, DM_GAME_ID)) die("this game's save %s is not whole after a pull of the cloud's save that could not be undone: not mounted (the [save-sync] lines above say where this device's save is kept; the next start tries again)", dd);
+    if (save_sync_mount(dd, dm_profile()->id)) die("this game's save %s is not whole after a pull of the cloud's save that could not be undone: not mounted (the [save-sync] lines above say where this device's save is kept; the next start tries again)", dd);
 }
 static Result mount_own_save_ro(const char *name) {
     const char *d = getenv("DM_SAVE");
@@ -792,10 +792,10 @@ static Result mount_own_save_ro(const char *name) {
 }
 HLE_FORCE("_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", "fsp-srv; this game's own save data read-only (the committed save); another program's: none", Result, h_fs_MountSaveRO, const char *name, uint64_t app, const void *uid) { dm_thread_service_request();
     (void)uid;
-    if (app == DM_GAME_PROGRAM_ID) return mount_own_save_ro(name);
+    if (app == dm_profile()->program_id) return mount_own_save_ro(name);
     LOG("[RED] fs read-only mount of another program's save data %s: program %016llx, the host has none", name, (unsigned long long)app); return 0x7d402u;   // fs ResultTargetNotFound
 }
-const char *dm_save_title(void) { return DM_GAME_ID; }   // save_sync.h: the iPhone launcher names the cloud file with it before the game runs
+const char *dm_save_title(void) { return dm_profile()->id; }   // save_sync.h: the iPhone launcher names the cloud file with it before the game runs
 HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv; save data → host directory (single user)", Result, h_fs_MountSave, const char *name, const void *uid) { dm_thread_service_request();
     (void)uid;
     // No default directory: silently landing on a directory with no characters distorts the "character select" measurement (this once caused a misjudgment). Runs always use a fresh copy of save_ref

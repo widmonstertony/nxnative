@@ -26,7 +26,8 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; int origin_ll
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 // A virtual pool (flags 0x200) keeps its sparse state in vp (hle_nvn.c struct vpool, NULL for an aliased one); vmode: 0 not mapped yet, 1 aliased onto one physical pool, 2 sparse
-typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; struct vpool *vp; int vmode; } pool_t;   FITS(pool_t, NVNmemoryPool);
+typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; struct vpool *vp; int vmode; uint32_t host_flags; } pool_t;   FITS(pool_t, NVNmemoryPool);
+static inline uint32_t pool_host_flags(const pool_t *p) { return p->vmode == 1 ? p->host_flags : p->flags; }
 
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);

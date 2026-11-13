@@ -114,7 +114,7 @@ class PackReuse(unittest.TestCase):
         for d in ('patched', 'romfs/empty', 'msl', 'profile', 'font', 'aoc/1', 'pso', 'bin', 'sdk', 'source', 'host', 'tools', 'ios/Sources'):
             (t / d).mkdir(parents=True)
         files = {
-            'dmhost': b'host', 'patched/main.patched.bin': b'code', 'patched/main.fixups.tsv': b'fixups',
+            'control.nacp': bytes(0x4000), 'dmhost': b'host', 'patched/main.patched.bin': b'code', 'patched/main.fixups.tsv': b'fixups',
             'patched/main.gates.tsv': b'gates', 'patched/main.cuts.tsv': b'cuts', 'patched/main.obs.tsv': b'obs', 'patched/nro.tsv': b'nro',
             'romfs/marker': b'game', 'msl/k.metallib': b'lib', 'msl/k.json': b'{}', 'msl/inputs.tsv': b'stamp',
             'font/nintendo_ext.ttf': b'font', 'aoc/1/data': b'dlc', 'pso/gpu.mtl4a': b'archive',
@@ -122,7 +122,7 @@ class PackReuse(unittest.TestCase):
             'pso/gpu-prewarm-00.mtl4a': b'bases', 'pso/gpu-prewarm-00.keys': b'DMPSOIX1', 'pso/prewarm.tsv': b'stamp',   # --prebake's files and their index
             'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
             'host/romfs_image.h': b'validator', 'host/romfs_identity.h': b'identity validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'host/save_cloudkit.m': b'private sync',
-            'tools/romfs.py': b'reader', 'tools/romfs_image.py': b'identity writer',
+            'tools/romfs.py': b'reader', 'tools/romfs_image.py': b'identity writer', 'tools/nacp.py': b'names reader',
             'ios/Sources/SaveSyncReport.swift': b'report', 'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
             'source/ControllerMap.swift': b'mapping parser', 'source/DesktopControls.swift': b'mapping editor',
             'source/DesktopControlsNotices.txt': b'MIT notices', 'host/input_map.h': b'input mapping', 'host/dm_input.h': b'input API',
@@ -134,7 +134,7 @@ class PackReuse(unittest.TestCase):
         self.args = pack_app.parse([str(t / 'Game.app'), '--host', str(t / 'dmhost'), '--patched', str(t / 'patched'),
                                    '--romfs', str(t / 'romfs'), '--msl', str(t / 'msl'), '--tables', str(t / 'profile'), '--font', str(t / 'font'),
                                    '--aoc', str(t / 'aoc'), '--pso', str(t / 'pso'), '--pso-pairs', str(t / 'split.tsv'), '--env-file', str(t / 'env.txt'),
-                                   '--title-id', TID, '--name', 'Test Game', '--marker', 'marker', '--icon', str(t / 'icon.jpg')])
+                                   '--title-id', TID, '--name', 'Test Game', '--marker', 'marker', '--icon', str(t / 'icon.jpg'), '--control', str(t / 'control.nacp')])
         self.commands = []
         self.clang_version, self.swiftc_version, self.sdk_version = 'clang fixture 1', 'swiftc fixture 1', '27.0'
         self.clang, self.swiftc, self.sdk = t / 'bin/clang', t / 'bin/swiftc', t / 'sdk'
@@ -232,6 +232,12 @@ class PackReuse(unittest.TestCase):
             self.assert_reused()
             profile_path.write_bytes(b'renewed fixture profile')
             self.assert_repacked()
+    def test_controller_mapping_capability_without_settings(self):
+        self.args.settings = None
+        info = pack_app.info_plist(self.args, '26.6', False)
+        self.assertNotIn('DMSettings', info)
+        self.assertIs(type(info['DMControllerMappings']), int)
+        self.assertEqual(info['DMControllerMappings'], 1)
 
     def test_retargeted_input_symlink_repacks(self):
         msl = self.tmp / 'msl'
@@ -252,11 +258,7 @@ class PackReuse(unittest.TestCase):
 
     def test_each_selected_file_content_invalidates_even_with_same_stat(self):
         self.pack()
-        names = ['dmhost', 'patched/main.patched.bin', 'patched/main.fixups.tsv', 'patched/main.gates.tsv', 'patched/main.cuts.tsv',
-                 'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf',
-                 'pso/gpu-prewarm-00.mtl4a', 'pso/gpu-prewarm-00.keys', 'pso/prewarm.tsv', 'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c',
-                 'ios/Sources/SaveSyncReport.swift', 'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift',   # the settings window's sources
-                 'host/save_sync.c', 'host/save_sync.h', 'host/save_cloudkit.m']   # the cloud-save code the launcher links (its send after the host exits)
+        names = ['dmhost', 'patched/main.patched.bin', 'patched/main.fixups.tsv', 'patched/main.gates.tsv', 'patched/main.cuts.tsv', 'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf', 'pso/gpu-prewarm-00.mtl4a', 'pso/gpu-prewarm-00.keys', 'pso/prewarm.tsv', 'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c', 'ios/Sources/SaveSyncReport.swift', 'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift', 'host/save_sync.c', 'host/save_sync.h', 'host/save_cloudkit.m', 'host/input_map.h', 'host/dm_input.h', 'control.nacp', 'tools/nacp.py']
         names += ['profile/' + n for n in pack_app.TABLES]
         for name in names:
             with self.subTest(name=name):
@@ -283,6 +285,18 @@ class PackReuse(unittest.TestCase):
         self.assertFalse((resources / 'romfs').exists())
         (source / 'marker').write_text('new bytes'); romfs_image.pack(source, image)
         self.assert_repacked()
+
+    def test_image_identity_goes_with_the_image(self):   # an iPhone build of the game reuses the app's image when the identity beside it matches (LNPANDY/NX2Apple#708)
+        import romfs_image
+        image = self.tmp / 'RomFS.img'
+        romfs_image.pack(self.tmp / 'romfs', image); self.args.romfs = str(image)
+        self.pack()
+        resources = Path(self.args.out) / 'Contents/Resources'
+        self.assertFalse((resources / 'romfs.img.id').exists())
+        Path(f'{image}.id').write_text('{"version": "v0"}\n')
+        self.assert_repacked()
+        self.assertEqual((resources / 'romfs.img.id').read_text(), '{"version": "v0"}\n')
+        self.assert_reused()
 
     def test_all_metadata_sign_identity_and_selected_paths_invalidate(self):
         self.pack()
@@ -498,6 +512,9 @@ class App(unittest.TestCase):
         (t / 'pso').mkdir(); (t / 'pso/applegpu_g14s.mtl4a').write_bytes(b'arch'); (t / 'pso/prebuilt.tsv').write_text('chain\t0123456789ab\n'); (t / 'pso/key.x').write_text('not for the app')
         (t / 'env.txt').write_text('# baked in\nDM_BAKED=1\nDM_BOTH=bundle\n')
         (t / 'launcher.json').write_text('{"game": "x", "settings": []}\n')
+        titles = bytearray(0x4000)
+        for i, n in ((0, b'Game: Test'), (2, 'ゲーム'.encode()), (14, '游戏'.encode())): titles[i * 0x300:i * 0x300 + len(n)] = n   # American English, Japanese, Simplified Chinese
+        (t / 'control.nacp').write_bytes(titles)
         subprocess.run(['sips', '-s', 'format', 'jpeg', '-z', '256', '256', '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns',
                         '--out', t / 'icon.jpg'], check=True, capture_output=True)
         (t / 'bin/osascript').write_text('#!/bin/sh\necho "$@" > "$HOME/alert.txt"\nprintf "%s\\0" "$@" > "$HOME/alert.args"\n'
@@ -506,8 +523,8 @@ class App(unittest.TestCase):
         cls.app = t / 'Game - Test.app'
         cls.args = pack_app.parse([str(cls.app), '--host', str(t / 'dmhost'), '--patched', str(t / 'patched'), '--romfs', str(t / 'romfs'), '--msl', str(t / 'cache/b-0123456789ab'),
                                    '--tables', str(t / 'profile'), '--font', str(t / 'font'), '--aoc', str(t / 'aoc'), '--pso', str(t / 'pso'), '--env-file', str(t / 'env.txt'), '--settings', str(t / 'launcher.json'), '--title-id', TID.lower(),
-                                   '--name', 'Game: Test', '--version', '1.0.1', '--lang', 'fr', '--marker', 'region_common/audio/edward.bfsar', '--icon', str(t / 'icon.jpg'),
-                                   '--category', 'public.app-category.games'])
+                                   '--name', 'Game: Test', '--version', '1.0.1', '--package-version', 'v65536', '--lang', 'fr', '--marker', 'region_common/audio/edward.bfsar', '--icon', str(t / 'icon.jpg'),
+                                   '--category', 'public.app-category.games', '--control', str(t / 'control.nacp')])
         with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(cls.args)
 
     @classmethod
@@ -556,14 +573,31 @@ class App(unittest.TestCase):
             a.out = str(self.tmp / 'Own.app'); a.tables = self.args.tables; pack_app.pack(a)
             self.assertEqual((self.tmp / 'Own.app/Contents/Resources/dm/pso_pairs.tsv').read_text(), 'other-vertex\tother-pixel\n')
 
+    def test_info_plist_of_an_update_without_its_display_version(self):   # #953: a dump's update has no control data; the front ends show DMPackageVersion
+        a = types.SimpleNamespace(**{**vars(self.args), 'version': None, 'package_version': 'v458752', 'settings': None})
+        p = pack_app.info_plist(a, '14.0', None)
+        self.assertEqual((p['CFBundleShortVersionString'], p['DMPackageVersion']), ('1.0', 'v458752'))
+        self.assertNotIn('DMDisplayVersion', p)
+        a.package_version = None
+        self.assertNotIn('DMPackageVersion', pack_app.info_plist(a, '14.0', None))   # an older NSP script passes neither
+
     def test_info_plist(self):
         p = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
         self.assertEqual((p['CFBundleExecutable'], p['CFBundleName'], p['CFBundleIdentifier'], p['CFBundleShortVersionString']), ('nxnative', 'Game: Test', 'org.nxnative.01008cf01baac000', '1.0.1'))
         self.assertEqual((p['DMTitleID'], p['DMLanguage'], p['DMRomfsMarker'], p['CFBundleIconFile']), (TID, 'fr', 'region_common/audio/edward.bfsar', 'AppIcon'))
         self.assertIs(p['LSSupportsGameMode'], False)   # macOS's Game Mode holds the GPU at its lowest clock (frame-rate.md)
+        self.assertEqual((p['DMDisplayVersion'], p['DMPackageVersion']), ('1.0.1', 'v65536'))
+        self.assertEqual(p['DMControllerMappings'], 1)
         self.assertEqual(p['DMSettings'], [])   # launcher.json's settings, as the saved choices they accept: none here
         self.assertRegex(p['DMCommit'], r'^[0-9a-f]{12}(\+dirty)?$')   # the packing checkout (scripts/bug_report.py, the host's start line)
         self.assertEqual(p['DMChain'], '0123456789ab')   # the chain of the libraries packed (msl/b-<chain>)
+        self.assertEqual(p['DMTitleNames'], {'en-US': 'Game: Test', 'ja': 'ゲーム', 'zh-Hans': '游戏'})   # the game's name in each of its languages: Mac front ends show their own language's
+
+    def test_no_title_names_without_control_data(self):   # no --control, or control data with no names: no DMTitleNames, the front ends show CFBundleDisplayName
+        a = types.SimpleNamespace(**vars(self.args)); a.control = None; a.settings = None
+        self.assertNotIn('DMTitleNames', pack_app.info_plist(a, '26.0', False))
+        a.control = str(self.tmp / 'missing.nacp')
+        self.assertNotIn('DMTitleNames', pack_app.info_plist(a, '26.0', False))
 
     def test_packed_language_is_the_lists(self):   # --lang a game lacks: the Game language row's default (settings.py: the game's first), with or without the window
         with tempfile.TemporaryDirectory(dir=TEST_ROOT) as d:
@@ -649,6 +683,104 @@ class App(unittest.TestCase):
         finally:
             subprocess.run(['defaults', 'delete', domain], capture_output=True)
             Path(os.path.expanduser(f'~/Library/Preferences/{domain}.plist')).unlink(missing_ok=True)
+
+    def test_saved_controls(self):
+        """launcher.DM_KEYMAP and launcher.DM_PAD_MAP: saved choices that are no launcher.json rows, checked by the host's own parser (input_map.h) instead of DMSettings;
+        same order as the other saved choices (the environment and the env files win) and the same DM_SAVED_CHOICES=0"""
+        domain = f'org.nxnative.test.{uuid.uuid4().hex}'   # never a real game's domain
+        a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / 'Controls.app'); a.icon = None; a.bundle_id = domain
+        with mock.patch.object(pack_app, 'sign', lambda *x: None), mock.patch('sys.stdout'): pack_app.pack(a)   # launcher.json has no settings: only the controls are saved choices here
+        app = Path(a.out); log = self.tmp / f'home/Library/Logs/nxnative/{TID}.log'
+
+        def run(**env):
+            p = self.launch(app=app, **env); out = p.communicate(timeout=30)[0].decode()
+            self.assertEqual(p.returncode, 7, out)
+            return self.host_run(), log.read_text()
+
+        def save(key, *value): subprocess.run(['defaults', 'write', domain, f'launcher.{key}', *value], check=True)
+        sup_env = self.tmp / f'home/Library/Application Support/nxnative/{TID}/env.txt'
+        try:
+            r, text = run()
+            self.assertEqual((r.get('DM_KEYMAP'), r.get('DM_PAD_MAP')), (None, None))   # nothing saved: the host's own defaults
+            save('DM_KEYMAP', '-string', 'A=40,B=38,RUp=126'); save('DM_PAD_MAP', '-string', 'A=B,B=A')
+            r, text = run()
+            self.assertEqual((r['DM_KEYMAP'], r['DM_PAD_MAP']), ('A=40,B=38,RUp=126', 'A=B,B=A'))   # a valid saved keymap and pad map are applied
+            self.assertIn('launcher: env DM_KEYMAP=A=40,B=38,RUp=126 (saved choice)', text)
+            r, text = run(DM_KEYMAP='X=7')   # a front end's launch override wins for that start
+            self.assertEqual((r['DM_KEYMAP'], r['DM_PAD_MAP']), ('X=7', 'A=B,B=A'))
+            self.assertIn('saved choice DM_KEYMAP=A=40,B=38,RUp=126 not used: DM_KEYMAP=X=7 is set', text)
+            sup_env.parent.mkdir(parents=True, exist_ok=True); sup_env.write_text('DM_PAD_MAP=Y=X\n')   # the player's env.txt wins too
+            try:
+                r, text = run()
+                self.assertEqual((r['DM_KEYMAP'], r['DM_PAD_MAP']), ('A=40,B=38,RUp=126', 'Y=X'))
+                self.assertIn('saved choice DM_PAD_MAP=A=B,B=A not used', text)
+            finally: sup_env.unlink()
+            r, text = run(DM_SAVED_CHOICES='0')   # the tested defaults; the saved values stay saved
+            self.assertEqual((r.get('DM_KEYMAP'), r.get('DM_PAD_MAP')), (None, None))
+            self.assertIn('saved choices ignored (DM_SAVED_CHOICES=0)', text)
+            self.assertEqual(subprocess.run(['defaults', 'read', domain, 'launcher.DM_KEYMAP'], capture_output=True, text=True).stdout.strip(), 'A=40,B=38,RUp=126')
+            for bad in ('Q=1', 'A=40,Q=1', 'A=131', 'A=abc', 'A=LUp'):   # a value the host would not take whole: ignored, logged, the rest still apply
+                with self.subTest(bad=bad):
+                    save('DM_KEYMAP', '-string', bad)
+                    r, text = run()
+                    self.assertNotIn('DM_KEYMAP', r)
+                    self.assertEqual(r['DM_PAD_MAP'], 'A=B,B=A')
+                    self.assertIn(f'saved choice DM_KEYMAP={bad} ignored: the host does not take it', text)
+            save('DM_PAD_MAP', '-string', 'A=40')   # a key code is no button; a keymap value is no pad map
+            r, text = run(); self.assertNotIn('DM_PAD_MAP', r); self.assertIn('saved choice DM_PAD_MAP=A=40 ignored', text)
+            save('DM_PAD_MAP', '-string', '')   # empty: nothing to apply
+            r, text = run(); self.assertNotIn('DM_PAD_MAP', r); self.assertIn('saved choice DM_PAD_MAP= ignored', text)
+            save('DM_PAD_MAP', '-float', '1.5')   # not a string
+            r, text = run(); self.assertNotIn('DM_PAD_MAP', r); self.assertIn('saved choice for DM_PAD_MAP ignored: not a string', text)
+        finally:
+            subprocess.run(['defaults', 'delete', domain], capture_output=True)
+            Path(os.path.expanduser(f'~/Library/Preferences/{domain}.plist')).unlink(missing_ok=True)
+
+    def test_host_controls_share_bundle_domain(self):
+        """The host child and launcher use the custom bundle domain, including override provenance."""
+        domain = f'org.nxnative.test.{uuid.uuid4().hex}'
+        source = self.tmp / 'controls_probe.m'; host = self.tmp / 'controls_probe'
+        fake_id = 'TEST-' + uuid.uuid4().hex.upper()
+        fallback = 'org.nxnative.' + fake_id.lower()
+        (self.tmp / 'game_profile.h').write_text('#define DM_GAME_ID "' + fake_id + '"\n')
+        source.write_text(r'''#include "input_preferences_mac.h"
+int main(void) { @autoreleasepool {
+    NSString *domain=input_preferences_domain();
+    NSString *value=input_preference_map(domain,"DM_PAD_MAP",1);
+    NSString *out=[NSString stringWithFormat:@"domain=%@\nvalue=%@\nfixed=%d\n",domain,value ?: @"none",input_map_fixed("DM_PAD_MAP")];
+    [out writeToFile:[@(getenv("HOME")) stringByAppendingPathComponent:@"host_run.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if(!input_map_fixed("DM_PAD_MAP") && !input_preference_write(domain,@"launcher.DM_PAD_MAP",@"A=Y")) return 9;
+    return 7;
+} }
+''')
+        subprocess.run(['xcrun', 'clang', '-arch', 'arm64', '-fobjc-arc', '-I', str(self.tmp), '-I', str(REPO / 'dm/host'),
+                        '-framework', 'Foundation', '-o', str(host), str(source)], check=True, capture_output=True)
+        a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / 'ControlsProbe.app'); a.icon = None; a.bundle_id = domain; a.host = str(host)
+        with mock.patch.object(pack_app, 'sign', lambda *x: None), mock.patch('sys.stdout'): pack_app.pack(a)
+
+        def run(**env):
+            p = self.launch(app=Path(a.out), **env); out = p.communicate(timeout=30)[0].decode()
+            self.assertEqual(p.returncode, 7, out)
+            return self.host_run()
+
+        def saved():
+            return subprocess.run(['defaults', 'read', domain, 'launcher.DM_PAD_MAP'], check=True, capture_output=True, text=True).stdout.strip()
+
+        try:
+            standalone = subprocess.run([str(host)], env={'HOME': str(self.tmp / 'home')}, capture_output=True)
+            self.assertEqual(standalone.returncode, 7, standalone.stderr)
+            self.assertEqual(self.host_run()['domain'], fallback)
+            subprocess.run(['defaults', 'write', domain, 'launcher.DM_PAD_MAP', '-string', 'A=B'], check=True)
+            self.assertEqual(run(), {'domain': domain, 'value': 'A=B', 'fixed': '0'})
+            self.assertEqual(saved(), 'A=Y')  # host's panel-facing write is visible to the next launcher
+            self.assertEqual(run(DM_PAD_MAP='A=X'), {'domain': domain, 'value': 'A=X', 'fixed': '1'})
+            self.assertEqual(saved(), 'A=Y')  # a launch override never leaks into saved choices
+            self.assertEqual(run(DM_SAVED_CHOICES='0'), {'domain': domain, 'value': 'none', 'fixed': '0'})
+            self.assertEqual(saved(), 'A=Y')
+        finally:
+            for cleanup in (domain, fallback, 'org.nxnative.' + fake_id):
+                subprocess.run(['defaults', 'delete', cleanup], capture_output=True)
+                Path(os.path.expanduser(f'~/Library/Preferences/{cleanup}.plist')).unlink(missing_ok=True)
 
     def test_signed(self):   # ad-hoc, both the host and the bundle, never the hardened runtime (it refuses the executable memory the host makes for the game's code)
         for target in (self.app, self.app / 'Contents/MacOS/dmhost'):
@@ -757,6 +889,50 @@ class App(unittest.TestCase):
         p = self.launch(); p.communicate(timeout=30)
         self.assertIn('standin host output', (logs / f'{TID}.prev.log').read_text())
         self.assertEqual(self.host_run()['DM_LANG'], 'fr')   # Info.plist DMLanguage
+
+    def run_in_library(self, lib, home):   # the app in a game library folder (the .nx2apple-library marker beside it), as the Mac front end lays it out
+        app = lib / self.app.name
+        if not app.exists(): subprocess.run(['ditto', self.app, app], check=True)
+        (home / 'alert.txt').unlink(missing_ok=True)
+        p = subprocess.run([app / 'Contents/MacOS/nxnative'], env=dict(HOME=str(home), PATH=f'{self.tmp / "bin"}:/usr/bin:/bin', DM_LAUNCHER='0'), capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        return self.host_run_in(home)
+
+    def host_run_in(self, home):
+        return dict(ln.partition('=')[::2] for ln in (home / 'host_run.txt').read_text().splitlines())
+
+    def test_library_folder_on_apfs(self):   # saves and log beside the app
+        lib, home = self.tmp / 'library-apfs', self.tmp / 'home-library-apfs'
+        lib.mkdir(); home.mkdir(); (lib / '.nx2apple-library').touch()
+        r = self.run_in_library(lib, home)
+        if r['DM_SAVE'] != str(lib / 'save' / TID): self.skipTest(f'{self.tmp} is not on APFS')
+        self.assertIn('standin host output', (lib / f'log/{TID}.log').read_text())
+        self.assertFalse((home / 'alert.txt').exists())
+
+    @unittest.skipUnless(shutil.which('hdiutil'), 'needs hdiutil for an exFAT volume')
+    def test_library_folder_not_on_apfs(self):   # exFAT cannot clone or swap folders, which a save transaction needs: the host mounted the save read-only and every save was lost
+        home, image, mnt = self.tmp / 'home-library-exfat', self.tmp / 'library.dmg', self.tmp / 'mnt'
+        home.mkdir(); mnt.mkdir()
+        made = subprocess.run(['hdiutil', 'create', '-size', '32m', '-fs', 'ExFAT', '-volname', 'NXLIB', '-type', 'UDIF', image], capture_output=True)
+        if made.returncode: self.skipTest('hdiutil cannot make an exFAT image here: ' + made.stderr.decode(errors='replace'))
+        if subprocess.run(['hdiutil', 'attach', '-nobrowse', '-mountpoint', mnt, image], capture_output=True).returncode: self.skipTest('hdiutil cannot attach an image here')
+        try:
+            lib = mnt / 'Games'; (lib / 'save' / TID).mkdir(parents=True); (lib / '.nx2apple-library').touch()
+            (lib / 'save' / TID / 'savedata0.bin').write_bytes(b'save from an earlier build')   # its ._savedata0.bin is made by macOS on exFAT
+            sup = home / f'Library/Application Support/nxnative/{TID}'
+            r = self.run_in_library(lib, home)
+            self.assertEqual(r['DM_SAVE'], str(sup / 'save'))   # on the Mac's own APFS disk, not the library folder
+            self.assertEqual(sorted(p.name for p in (sup / 'save').iterdir()), ['savedata0.bin'])   # the earlier save copied in, without the AppleDouble file
+            self.assertEqual((sup / 'save/savedata0.bin').read_bytes(), b'save from an earlier build')
+            log = (lib / f'log/{TID}.log').read_text()   # the log still goes with the game
+            self.assertIn('standin host output', log)
+            self.assertIn(f'[RED] launcher: the game library {lib} is not on an APFS volume', log)
+            self.assertIn('is on a drive that is not formatted as APFS', (home / 'alert.txt').read_text())   # said once
+            self.run_in_library(lib, home)
+            self.assertFalse((home / 'alert.txt').exists())
+            self.assertIn('is not on an APFS volume', (lib / f'log/{TID}.log').read_text())   # the log line at every start
+        finally:
+            subprocess.run(['hdiutil', 'detach', '-force', mnt], capture_output=True)
 
     def test_sigterm(self):   # forwarded to the host, whose exit code comes back
         p = self.launch(wait=True)
@@ -948,6 +1124,7 @@ class Script(unittest.TestCase):
         self.assertNotIn('--aoc', o); self.assertNotIn('--icon', o)
         self.assertNotIn('--pso', o)   # no shader pairs: no pipeline archive
         self.assertEqual(o['--settings'], str(tmp / 'app/launcher.json'))   # the launcher settings the Mac front end reads, without the iPhone's own switches
+        self.assertEqual(o['--control'], str(tmp / 'ex/control.nacp'))   # the game's names in each language (DMTitleNames), from the control data that lists its languages
         self.assertEqual(self.settings_cmd[2:], ['01008CF01BAAC000', str(tmp / 'patched'), str(tmp / 'ex/control.nacp'), str(tmp / 'app/launcher.json')])
         self.assertEqual((self.settings_env['SETTINGS_PLATFORM'], self.settings_env['GFXAPI'], self.settings_env['DM_LANG']), ('mac', 'nvn', 'en-US'))
         o, tmp = self.pack_cmd('vulkan', aoc=Path('/x/aoc'), sign='Developer ID Application: X (T)')

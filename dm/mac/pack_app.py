@@ -5,7 +5,8 @@
 # aoc/<index>/ (DLC), pso/ (an NVN game's pipeline archive made offline for this Mac's GPU, dm/gfx/tools/pso_offline.py: the launcher hands it to the host as DM_PSO_BUNDLE),
 # and dm/ (the rewritten modules and their rewriter tables, nro.tsv, the profile's shader_map.tsv / pso_manifest.tsv / c1_full.tsv / cb_extent.tsv / shader_pairs.tsv / pso_pairs.tsv, font/, env.txt,
 # launcher.json: the game's launcher settings, dm/games/settings.py, which the settings window and Mac front ends show),
-# plus AppIcon.icns from the game's icon (sips, iconutil) and the Info.plist keys the launcher reads (DMTitleID, DMRomfsMarker, DMLanguage).
+# plus AppIcon.icns from the game's icon (sips, iconutil) and the Info.plist keys the launcher reads (DMTitleID, DMRomfsMarker, DMLanguage, DMTitleNames: the game's name in each of its languages,
+# from --control, which Mac front ends show in their own language).
 # The large folders are APFS clones (cp -c) when the app is on the same APFS volume as the build, so they take no space; plain copies otherwise.
 # Signing: the inner host first, then the bundle (codesign --force --sign <identity>; '-' = ad-hoc), without the hardened runtime: the host maps the game's code executable, which the hardened
 # runtime refuses without entitlements, and so the app cannot be notarized. The bundle is stripped of its "._name" files first: on exFAT (an external drive for the build or the app) every
@@ -18,6 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'tools'))
 import cloudkit_signing
+import nacp
 import romfs as rfs
 import romfs_image
 import shader_lib
@@ -136,19 +138,32 @@ def settings_rules(listed):   # DMSettings: what the launcher accepts as each se
     return rules
 
 
+def fork_patches():
+    """The fork's patches this build carries (dm/fork_patches.txt, written by scripts/patches.py), comma-separated: DMForkPatches in Info.plist, and the first line of the log"""
+    try: return ','.join(l.strip() for l in (Path(__file__).resolve().parents[1] / 'fork_patches.txt').read_text().splitlines() if l.strip())
+    except OSError: return ''
+
+
 def info_plist(a, minos, icon):
     # LSSupportsGameMode off: macOS's Game Mode holds the GPU at its lowest clock while it is busy (docs/reference/frame-rate.md, macOS Game Mode holds the GPU at its lowest clock)
     p = {'CFBundleName': a.name, 'CFBundleDisplayName': a.name, 'CFBundleIdentifier': a.bundle_id or f'org.nxnative.{a.title_id.lower()}',
          'CFBundleVersion': a.version or '1.0', 'CFBundleShortVersionString': a.version or '1.0', 'CFBundlePackageType': 'APPL', 'CFBundleExecutable': EXE,
          'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleDevelopmentRegion': 'en', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
          'NSBluetoothAlwaysUsageDescription': 'Connect Switch 2 Joy-Con and Pro Controllers over Bluetooth.',
-         'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1}
+         'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1,
+         'DMForkPatches': fork_patches(), 'DMControllerMappings': 1}
+    # the front ends show DMDisplayVersion, else DMPackageVersion: CFBundleShortVersionString is 1.0 when the packed update has no display version of its own (#953)
+    if a.version: p['DMDisplayVersion'] = a.version
+    if a.package_version: p['DMPackageVersion'] = a.package_version
     if icon: p['CFBundleIconFile'] = 'AppIcon'
     if a.settings:
         listed = json.loads(Path(a.settings).read_text(encoding='utf-8'))['settings']
         p['DMSettings'] = settings_rules(listed)
         lang = next((s['default'] for s in listed if s['env'] == 'DM_LANG'), None)
         if lang: p['DMLanguage'] = lang   # the Game language row's default: --lang, or the game's first language when it lacks that one (settings.py), with or without the window
+    if getattr(a, 'control', None):
+        names = nacp.names(a.control)   # the title in each language the control data names it in: a front end shows the one of its own language (the bundle name is the base game's first)
+        if names: p['DMTitleNames'] = names
     return p
 
 
@@ -293,7 +308,7 @@ def pack(a):
     except (OSError, ValueError): previous = None
     try:
         a = argparse.Namespace(**vars(a))
-        for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html'):
+        for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html', 'control'):
             if getattr(a, name): setattr(a, name, str(Path(getattr(a, name)).resolve()))
         profile_path = getattr(a, 'cloudkit_profile', None)
         cloudkit = None
@@ -323,6 +338,7 @@ def pack(a):
             pmods, pmsls, _, ptables, _, _, pfiles = selected_inputs(pa)
             programs.append((n, Path(prom), Path(pmsl), Path(phtml), pmods, pmsls, ptables)); files += pfiles
         if profile_path: files += [profile_path, Path(cloudkit_signing.__file__)]
+        if a.control and Path(a.control).is_file(): files.append(Path(a.control))   # its names go into Info.plist
         clang = Path(run(['xcrun', '--find', 'clang']).strip()).resolve()
         swiftc = Path(run(['xcrun', '--find', 'swiftc']).strip())   # not resolved: the driver is a link to swift-frontend, which acts by its name
         sdk = Path(run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()).resolve()
@@ -332,10 +348,10 @@ def pack(a):
         codesign = Path(codesign).resolve()
         minos = min_os(a.host)
         sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/romfs_identity.h',
-                   HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources() + launcher_localizations()
+                   HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/nacp.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources() + launcher_localizations()
         if (HERE / 'DesktopControlsNotices.txt').is_file(): sources.append(HERE / 'DesktopControlsNotices.txt')
         inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + sources],
-                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
+                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.romfs and f'{a.romfs}.id', a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
                             str(sdk), run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
                             str(codesign), codesign.stat().st_mode, digest(codesign), minos]}
@@ -389,6 +405,8 @@ def pack(a):
     if pso: step('pipeline archive'); (res / 'pso').mkdir(); copy(pso, res / 'pso', clone['pso'])
     if not a.external_romfs:
         step('game files'); copy([romfs], res / ('romfs.img' if romfs.is_file() else 'romfs'), clone['romfs'])
+    image_id = Path(f'{romfs}.id')   # the image's identity (build_ipa_from_nsp.py write_image_id): an iPhone build of this game reuses the image from the app instead of extracting it again (LNPANDY/NX2Apple#708)
+    if romfs.is_file() and image_id.is_file(): shutil.copyfile(image_id, res / 'romfs.img.id')
     if a.html and Path(a.html).is_dir(): copy([Path(a.html)], res / 'html', False)   # the offline pages, beside the RomFS where the host looks for them (hle_web.c)
     # The other programs: p<N>/ (RomFS, offline pages), msl/p<N>/<library>, dm/p<N>/ (modules, tables), and the table of them all, which the launcher makes DM_PROGRAMS (launcher.c, hle_oe.c): @R@ Resources, @C@ Contents, @S@ the app's Application Support folder
     if programs:
@@ -467,8 +485,11 @@ def parse(argv):
     ap.add_argument('--env-file', help='environment switches baked in (Resources/dm/env.txt)')
     ap.add_argument('--settings', help='the game\'s launcher settings (dm/games/settings.py output; Resources/dm/launcher.json, which the Mac front end reads)')
     ap.add_argument('--title-id', required=True); ap.add_argument('--name', required=True)
-    ap.add_argument('--version'); ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
+    ap.add_argument('--version', help='the game\'s display version (CFBundleShortVersionString and DMDisplayVersion; 1.0 and no DMDisplayVersion without it)')
+    ap.add_argument('--package-version', help='the packed version (v458752): DMPackageVersion, which names an update packed without its display version')
+    ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
     ap.add_argument('--icon', help='the game icon (icon.jpg from the control data)')
+    ap.add_argument('--control', help='the game\'s control data (control.nacp): its title in each language goes into Info.plist as DMTitleNames')
     ap.add_argument('--sign', default='-', help='codesign identity (default: - = ad-hoc)')
     ap.add_argument('--cloudkit-profile', type=Path, help='Apple provisioning profile for this existing Mac app')
     ap.add_argument('--cloudkit-app-identifier', help='exact app identifier, including its App ID prefix')

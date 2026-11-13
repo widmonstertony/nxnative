@@ -2,6 +2,13 @@
 
 ## Game packages
 
+### An iOS build stops when the profile has no prewarm seed list
+
+- **Symptom:** after the shader build, `build_ipa.sh` stops at `copy shader tables` because `pso_manifest.tsv` does not exist. This also stops the shell's game-framework build.
+- **Cause:** a profile may have no recorded pipeline prewarm seeds yet. The host supports that state and still reads the device's own list, but the iOS packager required the optional seed file alongside the required shader tables.
+- **Fix:** copy a recorded seed list when present and report its absence otherwise. Required shader tables and a failed copy of an existing seed list still stop the build. No seed records are invented, and shader cache inputs are unchanged. This does not change shader rebuild or resume decisions.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md), [NX2Apple issue #922](https://github.com/LNPANDY/NX2Apple/issues/922). The separate report of repeated shader compilation remains open.
+
 ### PFS0 file-name table missing its final NUL
 
 - **Symptom:** package identification stops with `ValueError: subsection not found` in `pfs0_names`, or LibHac reports `ResultFsPathNotFound` opening the last file of an NSP.
@@ -75,6 +82,13 @@
 - **Cause:** the arm64 slice committed with the [native tools](#building-needed-net-and-finding-its-runtime-kept-failing) imported `pipe2` weakly: its minimum macOS is 12.0, and `pipe2` is declared from the macOS 27 SDK on. The .NET runtime's `SystemNative_Pipe`, which opens the signal pipe at start, was compiled to call it without a check, so on a Mac without it the import binds to 0 and the call jumps there. Microsoft's NativeAOT runtime pack (10.0.14, built against the macOS 15.5 SDK) has no such call: a build with it on the same sources has no `pipe2` import. So that slice was linked with another `libSystem.Native.a`, one configured against the 27.2 SDK; which .NET gave it is open (a source-built one, such as Homebrew's formula, builds its host architecture's pack against the installed SDK, which would also explain the clean x86_64 slice).
 - **Fix:** the translator is rebuilt with Microsoft's .NET SDK. `native_tools.sh` refuses a slice with a weak import before it joins the slices, and `test_native_tools.py` (`test_no_weak_imports`) reads the symbol tables of both committed tools, so a function newer than the minimum macOS cannot be committed again from any Mac. `nx_extract` had none. Measured: over the translator jobs of a full Cuphead shader build, the new arm64 slice wrote the same files as the old one, byte for byte. Not run on macOS 26 here.
 - **Found on:** every game's build on macOS 26 ([GitHub issue #2190](https://github.com/seedds/nxnative/issues/2190), [#2239](https://github.com/seedds/nxnative/issues/2239), [#2227](https://github.com/seedds/nxnative/issues/2227)).
+
+### The Mac host build starts an older Python than the pipeline
+
+- **Symptom:** the Mac host step fails in `host_msl.py` with `TypeError: __init__() got an unexpected keyword argument 'capture_output'`, although the launcher reports a recent bundled Python.
+- **Cause:** the pipeline runs under the selected interpreter, but the host Makefile started `python3` by name. The pipeline's tool folders could put an older installation before the bundled interpreter on `PATH`.
+- **Fix:** `build_mac_host` passes its exact `sys.executable` to both Make invocations as `PYTHON`. The host Makefile quotes that setting for its shader and profile generators, including parse-time profile lookup. Direct Make builds default to `python3` and can set `PYTHON` explicitly. `PATH` is unchanged. Synthetic tests execute the real shader-header target with an unusable `python3` on `PATH` and an explicitly selected versioned interpreter in a path with spaces.
+- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md), version 3.0.0, reported with bundled Python 3.13 and a child Python 3.6 in [NX2Apple issue #711](https://github.com/LNPANDY/NX2Apple/issues/711). The interpreter failure was reproduced synthetically, without game files or a gameplay check.
 
 ### Homebrew .NET is on PATH but apphosts cannot find the runtime
 

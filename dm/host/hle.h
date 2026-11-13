@@ -64,6 +64,9 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
     static ret cname(__VA_ARGS__);                                                                \
     __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
     static ret cname(__VA_ARGS__)
+// Classic units used the explicit big-stack spelling before it became the default.
+#define HLE_FORCE_BIG HLE_FORCE
+
 // Programs that do not link hle_bigstack.c (unit tests, whose stacks are host stacks) get this pass-through: the implementation runs on the caller's stack, as dm.h's weak dm_log
 // writes there. The host's entry (hle_bigstack.c) replaces it at link time
 __attribute__((weak, naked, visibility("hidden"))) void dm_bigstack_enter(void) { __asm__ volatile("br x16"); }

@@ -13,6 +13,7 @@ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME
 $(B)/t_fs $(B)/t_fs_case $(B)/t_fs_commit_list $(B)/t_fs_commit_list_tsan: ../romfs_image.h
 GAME_H = ../gen/$(GAME)/game_profile.h
 run: $(B)/t_input_map $(B)/t_desktop_input $(B)/t_mii $(B)/t_net_eventfd $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_output_stream $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pollwait $(B)/t_clockwait $(B)/t_pause $(B)/t_pause_stress $(B)/t_pctl $(B)/t_sf $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple $(B)/t_cheats $(B)/t_pad_hid $(B)/t_switch2
+run: $(B)/t_launcher_contract $(B)/t_profile_runtime
 	$(B)/t_language
 	$(B)/t_input_map
 	$(B)/t_desktop_input
@@ -53,6 +54,7 @@ run: $(B)/t_input_map $(B)/t_desktop_input $(B)/t_mii $(B)/t_net_eventfd $(B)/t_
 	$(B)/t_time
 	$(B)/t_sync_wait
 	$(B)/t_shared_font
+	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
 	$(B)/t_system_event
 	$(B)/t_vorbis
 	$(B)/t_vorbis_divides
@@ -79,21 +81,27 @@ run: $(B)/t_input_map $(B)/t_desktop_input $(B)/t_mii $(B)/t_net_eventfd $(B)/t_
 	$(B)/t_pad_hid_mac
 	$(B)/t_pad_pro
 	$(B)/t_switch2
+	$(B)/t_input_map
+	$(B)/t_launcher_contract
 	$(B)/t_haptics
 	$(B)/t_haptics_apple
 	TMPDIR="$(abspath $(B))" $(B)/t_cheats $(QUIET)
 	$(B)/t_nro
 	$(B)/t_symbols
+	$(B)/t_pad_map
+	$(B)/t_pad_motion
+	$(B)/t_controllers_mac
+	$(B)/t_stick_deadzone
 run: $(B)/t_nro
 run: $(B)/t_sync_wait
-$(B)/t_sync_wait: t_sync_wait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_sync_wait.c t_condvar_stub.c
+$(B)/t_sync_wait: t_sync_wait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_sync_wait.c t_condvar_stub.c ../hle_profile.c
 sync-wait: $(B)/t_sync_wait
 	$(B)/t_sync_wait
 .PHONY: sync-wait
 run: $(B)/t_symbols
 $(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c ../hle_profile.c
 .PHONY: symbols
 symbols: $(B)/t_symbols
 	$(B)/t_symbols
@@ -111,18 +119,18 @@ $(B)/t_audren_layout: t_audren_layout.c ../hle_audren.c ../hle.h ../dm.h $(GAME_
 audren-layout: $(B)/t_audren_layout
 	$(B)/t_audren_layout
 $(B)/t_system_event: t_system_event.c ../hle_thread.c ../hle_sdk16.c ../hle_misc.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_system_event.c ../hle_misc.c ../hle_bigstack.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_system_event.c ../hle_misc.c ../hle_bigstack.c ../hle_profile.c
 .PHONY: system-event
 system-event: $(B)/t_system_event
 	$(B)/t_system_event
 $(B)/t_nro: t_nro.c ../loader.c ../hle_ro.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_nro.c
+	$(CLANG) -O1 -g -Wall -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_nro.c ../hle_profile.c
 .PHONY: nro
 nro: $(B)/t_nro
 	$(B)/t_nro
 # the cheat engine (hle_cheats.c, compiled into the test with stubs for the loader, the heap and the keys)
 $(B)/t_cheats: t_cheats.c ../hle_cheats.c ../dm.h ../dm_input.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_cheats.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_cheats.c ../hle_profile.c
 .PHONY: cheats
 cheats: $(B)/t_cheats
 	TMPDIR="$(abspath $(B))" $(B)/t_cheats
@@ -130,7 +138,7 @@ cheats: $(B)/t_cheats
 $(GAME_H): FORCE
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_heap_size: t_heap_size.c ../hle_svc.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_heap_size.c -framework CoreFoundation
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_heap_size.c ../hle_profile.c -framework CoreFoundation
 .PHONY: heap_size
 heap_size: $(B)/t_heap_size
 	$(B)/t_heap_size
@@ -140,27 +148,27 @@ $(B)/t_gesture: t_gesture.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_gesture.c ../hle_touch.c
 $(B)/t_thread_leak: t_thread_leak.c ../thread.c ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_thread_leak.c
-$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c
+$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
 # Inject only the folder handle allocation; directory I/O remains real.
-$(B)/t_fs_directory: t_fs_directory.c t_fs_stub.c ../hle_fs.c ../romfs_image.h ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_fs_directory.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c
+$(B)/t_fs_directory: t_fs_directory.c t_fs_stub.c ../hle_fs.c ../romfs_image.h ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_fs_directory.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
 .PHONY: fs-directory
 fs-directory: $(B)/t_fs_directory
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_directory
 run: fs-directory
-$(B)/t_fs_commit_list: t_fs_commit_list.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_fs_commit_list.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c
-$(B)/t_fs_commit_list_tsan: t_fs_commit_list.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -fsanitize=thread -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_fs_commit_list.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c
+$(B)/t_fs_commit_list: t_fs_commit_list.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_fs_commit_list.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
+$(B)/t_fs_commit_list_tsan: t_fs_commit_list.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -g -fsanitize=thread -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_fs_commit_list.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
 .PHONY: fs-tsan
 fs-tsan: $(B)/t_fs_commit_list_tsan
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_commit_list_tsan
-$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c ../save_sync.c
+$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
 run: $(B)/t_save_sync $(B)/t_save_sync_metadata
-$(B)/t_save_sync: t_save_sync.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_save_sync.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c
+$(B)/t_save_sync: t_save_sync.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_save_sync.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
 $(B)/t_save_sync_metadata: t_save_sync_metadata.c ../save_sync.c ../save_sync.h | $(B)
 	$(CLANG) -O1 -Wall -Wno-unused-function -I.. -o $@ t_save_sync_metadata.c
 .PHONY: save-sync
@@ -188,13 +196,13 @@ $(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle_bigstack.c ../hle.h
 	$(CLANG) -O1 -g -O1 -fsanitize=thread -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c ../hle_bigstack.c -framework AudioToolbox
 run: $(B)/t_fpslock
 $(B)/t_fpslock: t_fpslock.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wno-unused-function $(GINC) -o $@ t_fpslock.c
+	$(CLANG) -O1 -g -Wno-unused-function $(GINC) -o $@ t_fpslock.c ../hle_profile.c
 run: $(B)/t_ue_heap_span
 $(B)/t_ue_heap_span: t_ue_heap_span.c ../hle_uemalloc.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function $(GINC) -o $@ t_ue_heap_span.c
 run: $(B)/t_uecvar
 $(B)/t_uecvar: t_uecvar.c ../hle_uecvar.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wno-unused-function $(GINC) -o $@ t_uecvar.c
+	$(CLANG) -O1 -g -Wno-unused-function $(GINC) -o $@ t_uecvar.c ../hle_profile.c
 $(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_swkbd.c ../hle_swkbd.c
 run: $(B)/t_bigstack
@@ -222,7 +230,7 @@ $(B)/t_pctl: t_pctl.c ../hle_misc.c ../hle.h ../dm.h $(GAME_H) | $(B)
 $(B)/t_sf: t_sf.c ../hle_sf.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_sf.c
 $(B)/t_shared_font: t_shared_font.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_shared_font.c
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_shared_font.c ../hle_profile.c
 # nn::vi::ListFrameHistory: the SDK's FrameInfo, newest first, from the present queue's progress
 run: $(B)/t_vi_history
 $(B)/t_vi_history: t_vi_history.c ../../gfx/hle_vi.c ../hle.h ../dm.h $(GAME_H) | $(B)
@@ -232,13 +240,13 @@ $(B)/t_nv: t_nv.c ../../gfx/hle_nv.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_nv.c
 # nn::nfc answered without nfc:user (NFC disabled), beside the nfp no-tag answers
 run: $(B)/t_nfc
-$(B)/t_nfc: t_nfc.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_nfc.c
+$(B)/t_nfc: t_nfc.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_nfc.c ../hle_profile.c
 .PHONY: nfc
 nfc: $(B)/t_nfc
 	$(B)/t_nfc
 $(B)/t_language: t_language.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -fsanitize=address,undefined -I.. $(GINC) -o $@ t_language.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -fsanitize=address,undefined -I.. $(GINC) -o $@ t_language.c ../hle_profile.c
 $(B)/t_motion: t_motion.c ../motion_fusion.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -o $@ t_motion.c -lm
 run: $(B)/t_motion_apple
@@ -262,6 +270,10 @@ $(B)/t_pad_hid_mac: t_pad_hid_mac.m ../pad_hid_mac.h ../pad_hid.h ../pad_pro.h .
 	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_pad_hid_mac.m -framework Foundation -framework GameController -framework IOKit
 $(B)/t_motion_pro_mac: t_motion_pro_mac.m ../motion_pro_mac.h ../motion_pro.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_motion_pro_mac.m -framework Foundation -framework GameController -framework IOKit
+$(B)/t_input_map: t_input_map.c ../input_map.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. -o $@ t_input_map.c
+$(B)/t_launcher_contract: t_launcher_contract.c ../input_map.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. -o $@ t_launcher_contract.c
 $(B)/t_hid: t_hid.c ../hle_hid.c ../motion_fusion.h ../hle_haptics.c ../hle_haptics.h ../pad_slots.h ../dm_input.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_hid.c ../hle_haptics.c ../hle_bigstack.c
 $(B)/t_hid_tsan: t_hid.c ../hle_hid.c ../motion_fusion.h ../hle_haptics.c ../hle_haptics.h ../pad_slots.h ../dm_input.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
@@ -273,22 +285,22 @@ $(B)/t_haptics_apple: t_haptics_apple.m ../haptics_apple.m ../haptics_apple.h ..
 $(B)/t_time: t_time.c ../hle_time.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_time.c
 $(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_oe.c
+	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_oe.c ../hle_profile.c
 $(B)/t_condvar: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
+	$(CLANG) -O1 -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c ../hle_profile.c
 $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -Wno-unused-function -DDM_TEST_HOOKS -DDM_TEST_CV_OLD_ORDER -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
+	$(CLANG) -O1 -Wno-unused-function -DDM_TEST_HOOKS -DDM_TEST_CV_OLD_ORDER -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c ../hle_profile.c
 $(B)/t_pollwait: t_pollwait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_pollwait.c t_condvar_stub.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_pollwait.c t_condvar_stub.c ../hle_profile.c
 $(B)/t_clockwait: t_clockwait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_clockwait.c t_condvar_stub.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_clockwait.c t_condvar_stub.c ../hle_profile.c
 $(B)/t_preempt: t_preempt.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_preempt.c t_condvar_stub.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_preempt.c t_condvar_stub.c ../hle_profile.c
 # the pause tests supply module_of (the stub's reports no guest code) through DM_TEST_MODULE_OF
 $(B)/t_pause: t_pause.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -DDM_TEST_MODULE_OF -I.. $(GINC) -o $@ t_pause.c t_condvar_stub.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -DDM_TEST_MODULE_OF -I.. $(GINC) -o $@ t_pause.c t_condvar_stub.c ../hle_profile.c
 $(B)/t_pause_stress: t_pause_stress.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -DDM_TEST_MODULE_OF -I.. $(GINC) -o $@ t_pause_stress.c t_condvar_stub.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -DDM_TEST_MODULE_OF -I.. $(GINC) -o $@ t_pause_stress.c t_condvar_stub.c ../hle_profile.c
 .PHONY: preempt
 preempt: $(B)/t_preempt
 	$(B)/t_preempt
@@ -325,7 +337,7 @@ $(B):
 	mkdir -p $@
 .PHONY: run tsan
 $(B)/t_resolution: t_resolution.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	clang -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_resolution.c
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_resolution.c ../hle_profile.c
 .PHONY: resolution
 run: resolution
 resolution: $(B)/t_resolution
@@ -338,17 +350,17 @@ tsan: $(B)/t_audio_spsc_tsan $(B)/t_hid_tsan
 	TMPDIR="$(abspath $(B))" $(B)/t_hid_tsan
 
 MEM_FLAGS = -O1 -Wall -Werror -Wno-unused-function -Imemory_profile -I.. -framework CoreFoundation
-MEM_DEPS = t_svc_memory.c memory_profile/game_profile.h ../hle_svc.c ../hle_guestthread.c ../hle.h ../dm.h
+MEM_DEPS = t_svc_memory.c memory_profile/game_profile.h ../hle_svc.c ../hle_guestthread.c ../hle.h ../dm.h ../hle_profile.c ../hle_profile.h
 $(B)/t_svc_memory: $(MEM_DEPS) | $(B)
-	$(CLANG) $(MEM_FLAGS) -fsanitize=undefined -o $@ t_svc_memory.c
+	$(CLANG) $(MEM_FLAGS) -fsanitize=undefined -o $@ t_svc_memory.c ../hle_profile.c
 $(B)/t_svc_memory_unlimited: $(MEM_DEPS) | $(B)
-	$(CLANG) $(MEM_FLAGS) -fsanitize=undefined -DDM_GAME_MEM_MAP_LIMIT=0 -o $@ t_svc_memory.c
+	$(CLANG) $(MEM_FLAGS) -fsanitize=undefined -DDM_GAME_MEM_MAP_LIMIT=0 -o $@ t_svc_memory.c ../hle_profile.c
 $(B)/t_svc_memory_16k: $(MEM_DEPS) | $(B)
-	$(CLANG) $(MEM_FLAGS) -fsanitize=address,undefined -DTEST_PAGE_16K -o $@ t_svc_memory.c
+	$(CLANG) $(MEM_FLAGS) -fsanitize=address,undefined -DTEST_PAGE_16K -o $@ t_svc_memory.c ../hle_profile.c
 $(B)/t_svc_memory_tsan: $(MEM_DEPS) | $(B)
-	$(CLANG) $(MEM_FLAGS) -fsanitize=thread -o $@ t_svc_memory.c
+	$(CLANG) $(MEM_FLAGS) -fsanitize=thread -o $@ t_svc_memory.c ../hle_profile.c
 $(B)/t_svc_memory_dirty: $(MEM_DEPS) ../../gfx/nvn/nvn_dirty.c ../../gfx/nvn/nvn_dirty.h | $(B)
-	$(CLANG) $(MEM_FLAGS) -DTEST_REAL_DIRTY -o $@ t_svc_memory.c ../../gfx/nvn/nvn_dirty.c
+	$(CLANG) $(MEM_FLAGS) -DTEST_REAL_DIRTY -o $@ t_svc_memory.c ../../gfx/nvn/nvn_dirty.c ../hle_profile.c
 .PHONY: memory memory-tsan memory-dirty memory-profile
 memory: $(B)/t_svc_memory $(B)/t_svc_memory_unlimited $(B)/t_svc_memory_16k
 	$(B)/t_svc_memory
@@ -372,7 +384,7 @@ run: memory memory-dirty memory-profile memory-file
 
 # A native blocking notification wait must release the thread's guest core.
 $(B)/t_notify_sched: t_notify_sched.c t_condvar_stub.c ../hle_thread.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -DDM_TEST_THREAD_ENTER -I.. $(GINC) -o $@ t_notify_sched.c t_condvar_stub.c
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -DDM_TEST_THREAD_ENTER -I.. $(GINC) -o $@ t_notify_sched.c t_condvar_stub.c ../hle_profile.c
 .PHONY: notify-scheduler
 notify-scheduler: $(B)/t_notify_sched
 	$(B)/t_notify_sched
@@ -410,7 +422,7 @@ tsan-threads-run: $(addprefix $(B)/,$(TSAN_T))
 	$(B)/t_sync_wait
 	DM_QOS_MAP=1 $(B)/t_notify_sched
 	DM_QOS_MAP=1 $(B)/t_notify_sched --all-peers
-$(B)/t_pad_hid: t_pad_hid.c ../pad_hid.h ../dm_input.h | $(B)
+$(B)/t_pad_hid: t_pad_hid.c ../pad_hid.h ../pad_joycon.h ../motion_pro.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_pad_hid.c
 run: $(B)/t_pad_pro
 $(B)/t_pad_pro: t_pad_pro.c ../pad_pro.h ../dm_input.h | $(B)
@@ -431,8 +443,22 @@ coverage:
 $(B)/t_desktop_input: t_desktop_input.c ../desktop_input.h ../input_map.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -o $@ t_desktop_input.c
 
-$(B)/t_input_map: t_input_map.c ../input_map.h ../dm_input.h | $(B)
-	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -o $@ t_input_map.c
 
 $(B)/t_pokemon_desktop: t_pokemon_desktop.c ../desktop_input.h ../input_map.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -Wall -Wextra -Werror -Wno-unused-function -I.. -o $@ t_pokemon_desktop.c
+# the runtime profile (hle_profile.c): a DM_PROFILE file, DM_PROF_* variables and the compiled fallback
+$(B)/t_profile_runtime: t_profile_runtime.c ../hle_profile.c ../hle_profile.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_profile_runtime.c ../hle_profile.c
+.PHONY: profile-runtime
+profile-runtime: $(B)/t_profile_runtime
+	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
+
+run: $(B)/t_pad_map $(B)/t_pad_motion $(B)/t_controllers_mac $(B)/t_stick_deadzone
+$(B)/t_stick_deadzone: t_stick_deadzone.c ../stick_deadzone.h ../hle_hid.c ../motion_fusion.h ../hle_haptics.c ../hle_haptics.h ../hle_bigstack.c ../dm_input.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_stick_deadzone.c ../hle_haptics.c ../hle_bigstack.c
+$(B)/t_pad_motion: t_pad_motion.c ../pad_motion.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_motion.c
+$(B)/t_pad_map: t_pad_map.c ../pad_map.h ../steam_input.h ../dm_input.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_map.c
+$(B)/t_controllers_mac: t_controllers_mac.m ../home_quit.h ../pad_hid.h ../pad_hid_mac.h ../pad_apple.h ../input_map.h ../input_preferences_mac.h ../controllers_mac.m ../controllers_mac.h ../pad_joycon.h ../pad_joycon_mac.h ../pad_map.h ../pad_motion.h ../steam_input.h ../pad_slots.h ../front.h ../dm_input.h ../haptics_apple.h ../hle_haptics.h ../dm.h ../motion_apple.h ../motion_pro_mac.h ../motion_pro.h $(GAME_H) | $(B)
+	$(CLANG) $(GINC) -O1 -fobjc-arc -Wall -Werror -Wno-unused-function -o $@ t_controllers_mac.m -framework Cocoa -framework GameController -framework IOKit

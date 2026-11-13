@@ -146,15 +146,14 @@ static const jit_req *jit_find(const char *key) { for (int i = 0; i < g_nreq; i+
 // The image at the layout's base: the Mac maps jit.img read + execute, iOS remaps the executable's signed __TEXT,__dm<tag>_jit pages there (as loader.c remaps the modules)
 #if TARGET_OS_IPHONE
 #include <mach/mach.h>
-#include <mach-o/getsect.h>
-#include <mach-o/ldsyms.h>
+#include "host_image.h"
 #endif
 static void jit_map_image(uint8_t *at, const char *dir) {
     if (!g_img_size) return;
 #if TARGET_OS_IPHONE
     (void)dir; unsigned long z = 0; char sn[17]; const char *tg = getenv("DM_EMBED_TAG");   // an app of several programs tags each one's sections (gen_embed.py --tag)
     snprintf(sn, sizeof sn, "__dm%s_jit", tg ? tg : "");
-    const uint8_t *sec = getsectiondata(&_mh_execute_header, "__TEXT", sn, &z);
+    const uint8_t *sec = getsectiondata(DM_HOST_IMAGE, "__TEXT", sn, &z);
     if (!sec || z < g_img_size || ((uintptr_t)sec & 0x3fff)) die("jit: the image is not in the executable (__TEXT,%s), or smaller than jit.tsv says", sn);
     vm_address_t a = (vm_address_t)at; vm_prot_t cur = 0, max = 0;
     if (vm_remap(mach_task_self(), &a, g_img_size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)sec, FALSE, &cur, &max, VM_INHERIT_NONE) != KERN_SUCCESS || a != (vm_address_t)at || !(cur & VM_PROT_EXECUTE))
