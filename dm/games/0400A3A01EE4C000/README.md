@@ -107,9 +107,32 @@ all-scene audio fix or a new default for other games.
 The next per-game comparison enables existing `DM_PRESENT_SNAP=2`, absent
 from the measured launch, to release swapchain textures after a queued copy
 rather than the display tick ([frame buffering](../../../docs/settings.md#frame-buffering)).
-It retains the audio bands, 540p cap and MetalFX; device config readback is
-confirmed, gameplay effect is pending. Upstream's frame-buffering phone
-measurements are for Breath of the Wild, not proof of a Pokopia gain. The
+It retains the audio bands, 540p cap and MetalFX. The next launch confirmed
+snapshot buffering; the player reported only a slight improvement. Later
+scene windows still had frame p50 22.1–23.2 ms and p95 33.0–56.8 ms, with
+GPU p50 near 10 ms and submit/present near 17 ms. No audio underrun was
+logged through 42,000 callbacks. This did not meet the smoothness target.
+
+A subsequent `DM_QOS_EDGES=39,44` comparison keeps the priority-39 graphics
+dispatcher interactive alongside priority-30 audio, while priority-44 workers
+remain user-initiated. Its launch confirmed those bands. The player reported
+normal sound but continued severe stutter. The last three scene windows ran
+at 47.6–48.6 fps, frame p50 19.46–19.95 ms and p95 27.14–29.77 ms,
+submit/present p50 13.53–13.71 ms, GPU p50 12.26–12.59 ms. The run logged
+zero underruns through 30,000 callbacks and thermal state 2. These are
+successive manually reproduced runs, not a controlled matched-state speedup.
+The bands are retained provisionally; sustained 60 fps remains open.
+
+The retained host already has the texture-view cache, serial-hashed
+CPU-written-texture membership, binary-search memory-pool lookup and
+main-thread QoS initialization. Reapplying those upstream changes is not an
+identified missing fix. Existing `DM_NVN_CPUPROF=1` and `DM_NVN_WAITS=1`
+diagnostics were enabled for Pokopia alone and read back, awaiting a new
+representative scene capture; nested CPU phase timings overlap. No new host,
+shader rebuild or game launch was performed for this diagnostic step.
+
+Upstream's frame-buffering phone measurements are for Breath of the Wild,
+not proof of a Pokopia gain. The
 [iPhone-specific Pokopia Native guide](https://pokopia-native.vercel.app/iphone)
 reports a default 30 fps target and serious thermal state after about six
 minutes, with render-scale reduction as its mitigation. Its custom scaling
