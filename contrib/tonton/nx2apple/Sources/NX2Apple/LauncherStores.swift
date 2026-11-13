@@ -154,6 +154,7 @@ import NXModel
             p.canChooseFiles = true
             p.allowsMultipleSelection = pick.allowsMultiple
             p.allowedFileTypes = pick.fileTypes
+            if pick.fileTypes == ["keys"] { p.allowsOtherFileTypes = true }
             if let message = pick.message { p.message = message }
             if let prompt = pick.prompt { p.prompt = prompt }
             guard p.runModal() == .OK, !p.urls.isEmpty else { return [] }

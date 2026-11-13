@@ -17,7 +17,7 @@ enum ControllerMap {
             let target = String(pair[1])
             if target.lowercased() == "none" { result.append((name, "none")); continue }
             if pad {
-                guard let to = buttons.first(where: { $0.lowercased() == target.lowercased() }) else { return nil }
+                guard let to = (buttons + ["Shake"]).first(where: { $0.lowercased() == target.lowercased() }) else { return nil }
                 result.append((name, to))
             } else {
                 guard !target.isEmpty, target.utf8.count < 8, target.utf8.allSatisfy({ (48...57).contains($0) }), let code = Int(target), code < 131 else { return nil }

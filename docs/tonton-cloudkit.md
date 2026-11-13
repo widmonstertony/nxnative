@@ -7,6 +7,24 @@ for progress from another device. The game sends committed progress while
 playing and tries to flush when the app goes to the background. Sign in to
 the same Apple Account on each device. No folder selection is needed.
 
+The Mac frontend displays the original private-container account and existing
+backup count separately from upstream's optional iCloud Drive / folder sync.
+Both features remain available: a selected folder owns that game's session,
+and the broker leaves the original container unchanged. With the optional
+folder channel off, the original backups remain the default. The read-only
+check requests `digest` metadata, never downloads a save asset or uploads data.
+The same native `DMSYNC1` folder format can be used with upstream NX2Apple;
+an upstream app without this container's entitlement cannot read the private
+CloudKit database directly.
+
+On the Mac, the signed TonTon broker accepts installed game bundles in
+subfolders of the local Applications directories, resolving compatibility
+links before validation. Moving a bundle does not choose a new save: the
+broker passes the existing `~/Library/Application Support/nxnative/<id>/save`
+to the game unless a player explicitly chose another location. TonTon builds
+do not create the upstream portable-library marker. Changing transports or
+organizing apps does not move or overwrite the player's saves.
+
 This covers games using the native host save mounts; a third-party engine
 needs its own integration. A title's normal and device saves are transferred
 together. The sender does

@@ -33,6 +33,44 @@ enum GameboxCloud {
     }
     static var enabled: Bool { container != nil }
 
+    static func usesOriginalBackups(overrides: [String: String], settings: [String: String]) -> Bool {
+        // A folder transport or a different player's save owns this launch.
+        // Exactly one transport may write the save during a session.
+        !["DM_SAVE", "DM_ROOT", "DM_SAVE_SYNC"].contains { overrides[$0] != nil || settings[$0] != nil }
+    }
+
+    /// Read only: account identity and existing record metadata, never save assets.
+    static func inspectBackups(titles: [String]) async throws -> Int {
+        guard let name = container else { throw NSError(domain: "TonTonCloud", code: 2) }
+        let ck = CKContainer(identifier: name)
+        guard try await ck.accountStatus() == .available else { throw NSError(domain: "TonTonCloud", code: 3) }
+        let user = try await ck.userRecordID()
+        let hash = SHA256.hash(data: Data("\(name):\(user.recordName)".utf8))
+        let scope = hash.prefix(16).map { String(format: "%02x", $0) }.joined()
+        var transportScope = [CChar](repeating: 0, count: 33)
+        let matches = transportScope.withUnsafeMutableBufferPointer {
+            syncAccount($0.baseAddress!) != 0 && String(cString: $0.baseAddress!) == scope
+        }
+        guard matches else { throw NSError(domain: "TonTonCloud", code: 5) }
+        let ids = Set(titles.filter(valid)).sorted().map { CKRecord.ID(recordName: "save1-\(scope)-\($0)") }
+        if ids.isEmpty { return 0 }
+        let records = try await ck.privateCloudDatabase.records(for: ids, desiredKeys: ["digest"])
+        var count = 0
+        for id in ids {
+            guard let result = records[id] else { throw NSError(domain: "TonTonCloud", code: 6) }
+            switch result {
+            case .success(let record):
+                guard record.recordType == "TonTonSaveV1", record["digest"] is String else {
+                    throw NSError(domain: "TonTonCloud", code: 7)
+                }
+                count += 1
+            case .failure(let error):
+                if (error as? CKError)?.code != .unknownItem { throw error }
+            }
+        }
+        return count
+    }
+
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
     private static func valid(_ title: String) -> Bool {
         title.range(of: "^[0-9A-F]{16}$", options: .regularExpression) != nil
@@ -96,10 +134,10 @@ enum GameboxCloud {
     @MainActor static func run(_ args: [String]) async {
         guard enabled, args.count == 4, valid(args[1]), ["0", "1"].contains(args[3]) else { return }
         let title = args[1]
-        let app = URL(fileURLWithPath: args[2]).standardizedFileURL
+        let app = URL(fileURLWithPath: args[2]).standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
         let roots = fm.urls(for: .applicationDirectory, in: [.localDomainMask, .userDomainMask])
-        guard roots.contains(where: { $0.standardizedFileURL.path == app.deletingLastPathComponent().path }),
+        guard roots.contains(where: { app.path.hasPrefix($0.standardizedFileURL.resolvingSymlinksInPath().path + "/") }),
               let bundle = Bundle(url: app), let id = bundle.bundleIdentifier,
               (bundle.object(forInfoDictionaryKey: "DMTitleID") as? String)?.uppercased() == title else { return }
         if let game = running(id) { game.activate(); return }
@@ -129,10 +167,7 @@ enum GameboxCloud {
             let overrides = launchData.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
             // Custom player saves and explicit folder transports retain their own location.
             // The managed path and the standalone launcher must agree on the save location.
-            let useCloud = overrides["DM_SAVE"] == nil && overrides["DM_ROOT"] == nil
-                && overrides["DM_SAVE_SYNC"] == nil
-                && settings["DM_SAVE"] == nil && settings["DM_ROOT"] == nil
-                && settings["DM_SAVE_SYNC"] != "0"
+            let useCloud = usesOriginalBackups(overrides: overrides, settings: settings)
             let save = support.appendingPathComponent("save").path
             var compared = false
             if useCloud {
@@ -150,7 +185,15 @@ enum GameboxCloud {
             if let data = ProcessInfo.processInfo.environment["TONTON_GAME_ENV"]?.data(using: .utf8) {
                 launchEnvironment = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
             }
-            if useCloud { launchEnvironment["DM_SAVE_SYNC"] = "0" }
+            if useCloud {
+                launchEnvironment["DM_SAVE_SYNC"] = "0"
+            }
+            // Both transports use the existing local save. An explicit custom
+            // player/root remains authoritative. Never migrate saves on app moves.
+            if launchEnvironment["DM_SAVE"] == nil, settings["DM_SAVE"] == nil,
+               launchEnvironment["DM_ROOT"] == nil, settings["DM_ROOT"] == nil {
+                launchEnvironment["DM_SAVE"] = save
+            }
             configuration.environment = launchEnvironment
             if let game = running(id) { game.activate(); return }
             let game = try await NSWorkspace.shared.openApplication(at: app, configuration: configuration)

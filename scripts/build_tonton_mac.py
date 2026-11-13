@@ -53,6 +53,7 @@ def main():
                 TonTonFrontendCommit=json.loads((FRONT / 'UPSTREAM.json').read_text())['commit'],
                 TonTonEngineSource=str(REPO),
                 TonTonUpdateReport=str(args.app.absolute().parent / 'games-progress.json'),
+                TonTonBuildConfig=str(Path.home() / 'Library/Application Support/TonTon Gamebox/local-mac-builds.json'),
                 TonTonPython=str(REPO.parent / 'nxnative-mac-builds/toolchain/python/bin/python3'),
                 TonTonXcode='/Applications/Xcode.app/Contents/Developer',
                 CFBundleLocalizations=['en', 'zh-Hans', 'zh-Hant'])
@@ -62,6 +63,12 @@ def main():
         shutil.copytree(FRONT / name, resources / name, dirs_exist_ok=True)
     for locale in ['zh-Hans', 'zh-Hant']:
         shutil.copytree(REPO / 'dm/mac/Localizations' / (locale + '.lproj'), resources / (locale + '.lproj'), dirs_exist_ok=True)
+    tools = resources / 'tools'
+    (tools / 'bin').mkdir(parents=True, exist_ok=True)
+    cross = REPO / 'dm/gfx/tools/spirv_cross_bin'
+    shutil.copy2(cross / 'spirv-cross', tools / 'bin/spirv-cross')
+    shutil.copytree(cross / 'LICENSES', tools / 'licenses/spirv-cross', dirs_exist_ok=True)
+    shutil.copy2(cross / 'LICENSE', tools / 'licenses/spirv-cross/LICENSE')
     shutil.copyfile(FRONT / 'LICENSE', resources / 'NX2Apple-LICENSE.txt')
     shutil.copyfile(FRONT / 'NOTICE', resources / 'NX2Apple-NOTICE.txt')
     print(app)

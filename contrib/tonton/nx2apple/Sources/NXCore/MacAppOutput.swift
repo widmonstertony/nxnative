@@ -7,10 +7,12 @@ package struct MacAppOutput {
     package let workDirectoryURL: URL
     private let directory: URL
     private let rebuilding: Bool
+    private let portableSaves: Bool
 
-    package init(workDir: URL, key: String, titleID: String?, preferred: String) {
+    package init(workDir: URL, key: String, titleID: String?, preferred: String, outputDirectory: URL? = nil, portableSaves: Bool = true) {
+        self.portableSaves = portableSaves
         workDirectoryURL = workDir
-        directory = workDir.deletingLastPathComponent()
+        directory = outputDirectory ?? workDir.deletingLastPathComponent()
         let prior = Self.existing(in: directory, titleID: titleID, preferred: preferred)
         rebuilding = prior != nil
         builderURL = prior ?? workDir.appendingPathComponent(key + ".app")
@@ -57,7 +59,7 @@ package struct MacAppOutput {
                 result = try place(packed, title: Self.filename(info.displayName, fallback: info.titleID), titleID: info.titleID)
             }
             // Saves and logs follow this output folder when the library moves.
-            try? Data().write(to: directory.appendingPathComponent(".nx2apple-library"))
+            if portableSaves { try? Data().write(to: directory.appendingPathComponent(".nx2apple-library")) }
             return result
         } catch {
             guard fm.fileExists(atPath: packed.path) else { throw FinishError.missingApp }

@@ -37,7 +37,7 @@ struct Setting: Decodable, Identifiable {
                 let pair = item.split(separator: "=", omittingEmptySubsequences: false)
                 guard pair.count == 2, (kind == "padmap" ? buttons : functions).contains(pair[0].lowercased()) else { return false }
                 if pair[1].lowercased() == "none" { return true }
-                if kind == "padmap" { return buttons.contains(pair[1].lowercased()) }
+                if kind == "padmap" { return (buttons + ["shake"]).contains(pair[1].lowercased()) }
                 return pair[1].utf8.count < 8 && !pair[1].isEmpty && pair[1].utf8.allSatisfy { (48...57).contains($0) } && (Int(pair[1]) ?? 131) < 131
             }
         default: return true

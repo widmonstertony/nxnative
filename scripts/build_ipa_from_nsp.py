@@ -1862,6 +1862,9 @@ def build_mac_host(repo, out, env, logs, g):
     if out.is_file() and reused(kf, key) is not None and decoder_host_key(out) == decoder: return out
     rmtree(kf); out.parent.mkdir(parents=True, exist_ok=True)
     run(cmd, logs / 'mac_host_build.log', env=env, cwd=host)
+    main_source = repo / 'dm/host/main.c'
+    if main_source.is_file() and '--validate-forced-takeovers' in main_source.read_text():
+        run([out, '--validate-forced-takeovers'], logs / 'mac_host_contract.log', env=env)
     record = out.with_name(out.name + '.decoder.json')
     part = record.with_suffix('.json.partial')
     part.write_text(json.dumps({'format': 1, 'binary': fingerprint(('files', [out])), 'inputs': decoder}) + '\n')
@@ -3557,6 +3560,10 @@ def main(args=None):
     game = dirs[pkg_ver]
     # how the shaders are got follows from the packed version's files (profile_guess.py shader_sources): the graphics API, and the shaders made only at run time
     src = pg.build_sources(game / 'ExeFS', rfs.source(game), g.modules_in(game / 'ExeFS'))
+    selected_api = g.get('graphics_api', '')
+    if selected_api:
+        if selected_api not in ('nvn', 'vulkan', 'gl'): raise BuildError(f'profile graphics_api is invalid: {selected_api}')
+        src['graphics'] = (selected_api, 'the verified game profile selects its renderer for this ambiguous import table')
     gfx = src['graphics'][0]   # nvn, vulkan (Hades: the host's Vulkan layer, SPIR-V shaders) or gl (Digimon Story Cyber Sleuth: the host's GL layer, GLSL sources)
     if args.mac_external_shaders and (gfx != 'nvn' or g.get('programs', '')):
         raise BuildError('--mac-external-shaders requires a single-program NVN game')

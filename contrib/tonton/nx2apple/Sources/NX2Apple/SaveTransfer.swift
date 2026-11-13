@@ -52,7 +52,7 @@ struct SaveTransfer {
     static func macSave(titleID: String, appPath: String,
                         support: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]) -> (save: URL, legacy: URL?) {
         let legacy = legacyMacSave(titleID: titleID, support: support)
-        guard !appPath.isEmpty else { return (legacy, nil) }
+        guard !GameboxCloud.enabled, !appPath.isEmpty else { return (legacy, nil) }
         let folder = URL(fileURLWithPath: appPath).deletingLastPathComponent()
         guard FileManager.default.fileExists(atPath: folder.appendingPathComponent(GameLog.marker).path) else { return (legacy, nil) }
         return (folder.appendingPathComponent("save").appendingPathComponent(titleID), legacy)

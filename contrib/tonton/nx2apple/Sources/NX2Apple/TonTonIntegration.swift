@@ -6,7 +6,10 @@ enum TonTonBootstrap {
     static func configure() {
         let info = Bundle.main.infoDictionary ?? [:]
         var defaults: [String: Any] = ["onboarding.completed": true, "onboarding.platform": "mac", "autoUpdateApp": false]
+        if GameboxCloud.enabled { setenv("TONTON_MANAGED_SAVES", "1", 1) }
         if let repo = info["TonTonEngineSource"] as? String { defaults["repoPath"] = repo }
+        if let config = info["TonTonBuildConfig"] as? String { setenv("TONTON_BUILD_CONFIG", config, 1) }
+        if let report = info["TonTonUpdateReport"] as? String { setenv("TONTON_UPDATE_REPORT", report, 1) }
         if let developer = info["TonTonXcode"] as? String {
             setenv("DEVELOPER_DIR", developer, 1)
             defaults["launcherXcodeApp"] = URL(fileURLWithPath: developer).deletingLastPathComponent().deletingLastPathComponent().path
@@ -31,7 +34,8 @@ enum TonTonBootstrap {
         let names = Dictionary(catalog.compactMap { row -> (String, String)? in
             guard let id = row["id"], let name = row["name"] else { return nil }; return (id, name)
         }, uniquingKeysWith: { a, _ in a })
-        for app in GameLibrary.installedApps(in: [URL(fileURLWithPath: "/Applications"), fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]) {
+        for found in GameLibrary.installedApps(in: [URL(fileURLWithPath: "/Applications"), fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]) {
+            let app = found.resolvingSymlinksInPath()
             guard let info = try? MacGameBundle.read(app) else { continue }
             if let index = games.firstIndex(where: { $0["titleID"] as? String == info.titleID }) {
                 games[index]["appPath"] = app.path
@@ -43,6 +47,19 @@ enum TonTonBootstrap {
         for entry in catalog {
             guard let title = entry["id"], let name = entry["name"], !games.contains(where: { $0["titleID"] as? String == title }) else { continue }
             games.append(["id": UUID().uuidString, "titleID": title, "name": name, "lastTarget": "mac", "defaultsApplied": true])
+        }
+        if let path = Bundle.main.object(forInfoDictionaryKey: "TonTonBuildConfig") as? String,
+           let data = fm.contents(atPath: path),
+           let builds = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] {
+            for index in games.indices {
+                guard let title = games[index]["titleID"] as? String, let build = builds[title],
+                      let source = build["sourceDirectory"] as? String, fm.fileExists(atPath: source) else { continue }
+                var inputs = games[index]["inputs"] as? [String: [String]] ?? [:]
+                if inputs.isEmpty { inputs["folder"] = [source]; games[index]["inputs"] = inputs }
+                if (games[index]["sourceFolder"] as? String ?? "").isEmpty { games[index]["sourceFolder"] = source }
+                if (games[index]["outputDirectory"] as? String ?? "").isEmpty { games[index]["outputDirectory"] = build["outputDirectory"] }
+                games[index]["lastTarget"] = "mac"
+            }
         }
         snapshot["games"] = games
         if snapshot["folder"] == nil { snapshot["folder"] = "" }
