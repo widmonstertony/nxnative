@@ -184,6 +184,7 @@ static void pads_start(void);   // Physical controllers, below
     DmLayout _layout;
     DmPadOptions _opts;                            // the player's options from the environment (DM_TOUCH_SIZE, DM_TOUCH_STICK, DM_TOUCH_LAYOUT)
     DmPadLayout _arrangement;                      // DM_TOUCH_LAYOUT, which _opts.layout points to
+    pad_map _touchFaceMap;
     DmPadGeo _geo; CGRect _geoBounds; UIEdgeInsets _geoInsets; BOOL _geoFull, _geoValid;   // where the controls are, and what it was computed for
     unsigned _loggedDropped;                       // the moved controls that kept their place, as last logged
     UITouch *_game[16];                           // touches on the game's touch screen by finger slot
@@ -216,6 +217,9 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         if (!dm_pad_layout_parse(arrangement, &_arrangement)) LOG("front end: DM_TOUCH_LAYOUT ignored (not a layout the engine reads, %zu characters): every control keeps its place", strlen(arrangement));
         else if (dm_pad_layout_count(&_arrangement)) LOG("front end: touch controls arranged by the player (DM_TOUCH_LAYOUT, %d moved over every layout)", dm_pad_layout_count(&_arrangement));
         _opts.layout = &_arrangement;
+        pad_map_default(&_touchFaceMap);
+        const char *faceMap = getenv("DM_TOUCH_FACE_MAP");
+        if (faceMap && *faceMap) pad_map_parse(&_touchFaceMap, faceMap);
         [self registerForTraitChanges:@[UITraitDisplayScale.class] withHandler:^(id<UITraitEnvironment> environment, UITraitCollection *previous) {
             [(UIView *)environment setNeedsLayout];
         }];
@@ -240,7 +244,9 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−"};
         for (int b = 0; b < B_N; b++) {
             _key[b] = shape(_controls);
-            if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
+            int mapped = b < B_LS ? _touchFaceMap.to[b] : b;
+            if (mapped >= 0 && mapped < B_N && names[mapped])
+                _label[b] = label(_key[b], names[mapped]);   // the D-pad arms carry no label
         }
         _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
         _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
@@ -394,7 +400,8 @@ static int lockedKey(int c) {   // DmPadGeometry.h's control → the key it pres
     _hapticSticks = gripping;
     _faceBits = face; _dpadBits = dpad; _btnBits = btn;
     pthread_mutex_lock(&g_mu);
-    g_touch_btn = face | dpad | btn; g_touch_lx = ax[0]; g_touch_ly = ax[1]; g_touch_rx = ax[2]; g_touch_ry = ax[3];
+    g_touch_btn = pad_map_apply(&_touchFaceMap, face) | dpad | btn;
+    g_touch_lx = ax[0]; g_touch_ly = ax[1]; g_touch_rx = ax[2]; g_touch_ry = ax[3];
     pthread_mutex_unlock(&g_mu);
     publish();
     BOOL stick = _stick[0] != nil;   // only the left stick is drawn: the right one needs no refresh

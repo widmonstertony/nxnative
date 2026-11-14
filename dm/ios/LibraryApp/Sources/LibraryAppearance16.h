@@ -27,18 +27,22 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
 }
 
 @interface TTBannerCard16 : CoverCard
-@property(nonatomic,strong) UIImageView *backdrop;
 @property(nonatomic,strong) UIView *selectionLine;
 @end
 @implementation TTBannerCard16
+- (void)layoutSubviews {
+    // The banner owns its own rounded rectangular mask; the old cartridge
+    // view's outline should never clip the artwork.
+    [super layoutSubviews];
+    self.caseView.layer.mask=nil;
+}
 - (instancetype)initWithFrame:(CGRect)frame {
     if(!(self=[super initWithFrame:frame]))return nil;
     for(UIView *view in self.contentView.subviews.copy)[view removeFromSuperview];
     self.caseView=[UIView new];self.caseView.layer.cornerRadius=16;self.caseView.clipsToBounds=YES;
     self.caseView.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
-    self.backdrop=[UIImageView new];self.backdrop.contentMode=UIViewContentModeScaleAspectFill;self.backdrop.clipsToBounds=YES;
-    UIVisualEffectView *blur=[[UIVisualEffectView alloc]initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
-    self.art=[UIImageView new];self.art.contentMode=UIViewContentModeScaleAspectFit;
+    self.art=[UIImageView new];self.art.contentMode=UIViewContentModeScaleAspectFill;self.art.clipsToBounds=YES;
+    self.art.layer.minificationFilter=kCAFilterTrilinear;
     self.placeholder=[UILabel new];self.placeholder.textColor=UIColor.labelColor;self.placeholder.numberOfLines=3;
     self.placeholder.textAlignment=NSTextAlignmentCenter;self.placeholder.font=[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     self.title=TTShelfLabel(UIFontTextStyleSubheadline,14,UIFontWeightSemibold);self.title.numberOfLines=1;
@@ -47,9 +51,9 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     self.selectionLine.hidden=YES;
     self.badge=[UILabel new];self.badge.textAlignment=NSTextAlignmentCenter;self.badge.font=[UIFont boldSystemFontOfSize:15];self.badge.layer.cornerRadius=14;self.badge.clipsToBounds=YES;
     for(UIView *v in @[self.caseView,self.title,self.sizeLabel,self.selectionLine]){v.translatesAutoresizingMaskIntoConstraints=NO;[self.contentView addSubview:v];}
-    for(UIView *v in @[self.backdrop,blur,self.art,self.placeholder,self.badge]){v.translatesAutoresizingMaskIntoConstraints=NO;[self.caseView addSubview:v];}
+    for(UIView *v in @[self.art,self.placeholder,self.badge]){v.translatesAutoresizingMaskIntoConstraints=NO;[self.caseView addSubview:v];}
     NSMutableArray *constraints=[NSMutableArray array];
-    for(UIView *v in @[self.backdrop,blur,self.art]) [constraints addObjectsFromArray:@[[v.topAnchor constraintEqualToAnchor:self.caseView.topAnchor],[v.bottomAnchor constraintEqualToAnchor:self.caseView.bottomAnchor],[v.leadingAnchor constraintEqualToAnchor:self.caseView.leadingAnchor],[v.trailingAnchor constraintEqualToAnchor:self.caseView.trailingAnchor]]];
+    [constraints addObjectsFromArray:@[[self.art.topAnchor constraintEqualToAnchor:self.caseView.topAnchor],[self.art.bottomAnchor constraintEqualToAnchor:self.caseView.bottomAnchor],[self.art.leadingAnchor constraintEqualToAnchor:self.caseView.leadingAnchor],[self.art.trailingAnchor constraintEqualToAnchor:self.caseView.trailingAnchor]]];
     [constraints addObjectsFromArray:@[[self.caseView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],[self.caseView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[self.caseView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],[self.caseView.heightAnchor constraintEqualToAnchor:self.caseView.widthAnchor multiplier:9.0/16.0],
         [self.title.topAnchor constraintEqualToAnchor:self.caseView.bottomAnchor constant:8],[self.title.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[self.title.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
         [self.sizeLabel.topAnchor constraintEqualToAnchor:self.title.bottomAnchor constant:3],[self.sizeLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],[self.sizeLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
@@ -58,13 +62,6 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
         [self.selectionLine.topAnchor constraintEqualToAnchor:self.sizeLabel.bottomAnchor constant:6],[self.selectionLine.heightAnchor constraintEqualToConstant:2],
         [self.badge.trailingAnchor constraintEqualToAnchor:self.caseView.trailingAnchor constant:-10],[self.badge.bottomAnchor constraintEqualToAnchor:self.caseView.bottomAnchor constant:-10],[self.badge.widthAnchor constraintEqualToConstant:28],[self.badge.heightAnchor constraintEqualToConstant:28]]];
     [NSLayoutConstraint activateConstraints:constraints];return self;
-}
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    UIImage *image=self.art.image;
-    BOOL banner=image.size.width>=image.size.height*1.55&&image!=nil;
-    self.art.contentMode=banner?UIViewContentModeScaleAspectFill:UIViewContentModeScaleAspectFit;
-    self.backdrop.image=banner?nil:image;
 }
 - (void)applyLibrarySelection:(BOOL)selected {
     UIAccessibilityTraits traits=UIAccessibilityTraitButton|(selected?UIAccessibilityTraitSelected:0);
@@ -104,6 +101,7 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     self.view.backgroundColor=TTShelfBackground();
     self.heroPanel=[UIView new];self.heroPanel.clipsToBounds=YES;self.heroPanel.userInteractionEnabled=NO;
     self.hero=[UIImageView new];self.hero.contentMode=UIViewContentModeScaleAspectFill;self.hero.clipsToBounds=YES;
+    self.hero.layer.minificationFilter=kCAFilterTrilinear;
     [self.heroPanel addSubview:self.hero];
     self.heroShade=[CAGradientLayer layer];self.heroTopShade=[CAGradientLayer layer];self.heroEdge=[CAGradientLayer layer];
     for(CAGradientLayer *shade in @[self.heroShade,self.heroTopShade,self.heroEdge])[self.heroPanel.layer addSublayer:shade];
@@ -252,9 +250,9 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     self.play.frame=CGRectMake(x,footerY,MAX(1,detailsW-64),51);
     self.gameSettings.frame=CGRectMake(x+detailsW-51,footerY,51,51);
     UICollectionViewFlowLayout *flow=(UICollectionViewFlowLayout *)self.grid.collectionViewLayout;
-    BOOL rail=!self.wideLayout&&self.traitCollection.horizontalSizeClass==UIUserInterfaceSizeClassCompact;
-    UICollectionViewScrollDirection direction=rail?UICollectionViewScrollDirectionHorizontal:UICollectionViewScrollDirectionVertical;
-    if(flow.scrollDirection!=direction){flow.scrollDirection=direction;[flow invalidateLayout];}
+    flow.scrollDirection=UICollectionViewScrollDirectionVertical;
+    self.grid.alwaysBounceHorizontal=NO;
+    self.grid.alwaysBounceVertical=YES;
     flow.minimumLineSpacing=15;flow.minimumInteritemSpacing=12;flow.sectionInset=UIEdgeInsetsMake(0,0,0,0);
     if(!CGSizeEqualToSize(self.lastGridSize,self.grid.bounds.size)){
         self.lastGridSize=self.grid.bounds.size;[flow invalidateLayout];
@@ -263,14 +261,7 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
 }
 - (CGSize)collectionView:(UICollectionView *)view layout:(UICollectionViewLayout *)layout sizeForItemAtIndexPath:(NSIndexPath *)path {
     CGFloat area=MAX(1,view.bounds.size.width);
-    BOOL rail=((UICollectionViewFlowLayout *)layout).scrollDirection==UICollectionViewScrollDirectionHorizontal;
-    if(rail){
-        // Fit two rows on tall phones; keep an obvious sliver of the next column.
-        CGFloat width=MIN(212,MAX(123,floor(area*0.48)));
-        CGFloat ideal=width*9/16+53;
-        CGFloat h=view.bounds.size.height;
-        return CGSizeMake(width,MAX(1,h>=2*ideal+12?ideal:h));
-    }
+    (void)layout;(void)path;
     NSInteger columns=MAX(1,MIN(4,(NSInteger)((area+12)/156)));
     CGFloat width=floor((area-12*(columns-1))/columns);
     return CGSizeMake(width,width*9/16+64);
@@ -329,7 +320,7 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     if(![self.paintedGame isEqual:idValue]||![self.paintedVersion isEqual:version]||self.paintedCatalogue!=catalogue){
         BOOL animate=self.paintedGame!=nil&&![self.paintedGame isEqual:idValue]&&!UIAccessibilityIsReduceMotionEnabled()&&self.view.window;
         self.paintedGame=idValue;self.paintedVersion=version;self.paintedCatalogue=catalogue;
-        UIImage *image=game?coverForGame(game):nil;
+        UIImage *image=game?(TTLibraryPreferredArtwork(idValue,YES) ?: coverForGame(game)):nil;
         void (^change)(void)=^{self.hero.image=image;};
         if(animate)[UIView transitionWithView:self.hero duration:0.20 options:UIViewAnimationOptionTransitionCrossDissolve|UIViewAnimationOptionBeginFromCurrentState animations:change completion:nil];
         else change();
@@ -347,8 +338,7 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     (void)path; [self playSelected];
 }
 - (UICollectionViewScrollPosition)controllerScrollPosition {
-    return ((UICollectionViewFlowLayout *)self.grid.collectionViewLayout).scrollDirection==UICollectionViewScrollDirectionHorizontal?
-        UICollectionViewScrollPositionCenteredHorizontally:UICollectionViewScrollPositionCenteredVertically;
+    return UICollectionViewScrollPositionCenteredVertically;
 }
 - (void)playSelected {
     if(!self.displayGames.count){[self addGame];return;}

@@ -57,3 +57,38 @@ extension GameLibrary {
         artworkURLs(for: game, slot: slot, repo: repo, banners: banners).lazy.compactMap { ArtworkImages.shared.image(at: $0, maxPixel: maxPixel) }.first
     }
 }
+
+/// Deliver the very same files the Mac shelf resolved, without sending a
+/// framework or touching any game or save directory on the device.
+enum LibraryArtworkDelivery {
+    private static let work = DispatchQueue(label: "tonton.library-artwork-delivery", qos: .utility)
+
+    static func enqueue(game: LibraryGame, repo: String, banners: URL, xcrun: String) {
+        let id = game.titleID.lowercased()
+        guard id.range(of: "^[0-9a-f]{16}$", options: .regularExpression) != nil, !game.installedDevice.isEmpty,
+              let bundle = Bundle(path: game.iosAppPath)?.bundleIdentifier,
+              ["com.tonytan.nxgamelibrary", "com.tonytan.nxgamelibrary.paid"].contains(bundle) else { return }
+        let slots: [ArtworkSlot] = [.hero, .thumbnail]
+        let urls = slots.map { GameLibrary.artworkURLs(for: game, slot: $0, repo: repo, banners: banners) }
+        work.async {
+            let fm = FileManager.default
+            let temporary = fm.temporaryDirectory.appendingPathComponent("tonton-artwork-" + UUID().uuidString)
+            guard (try? fm.createDirectory(at: temporary, withIntermediateDirectories: true)) != nil else { return }
+            defer { try? fm.removeItem(at: temporary) }
+            let ctl = DeviceControl.xcrun(xcrun, copyTimeout: 30)
+            for (slot, files) in zip(slots, urls) {
+                let limit = slot == .hero ? ArtworkImages.heroPixels : ArtworkImages.cardPixels
+                guard let image = files.lazy.compactMap({ ArtworkImages.shared.image(at: $0, maxPixel: limit) }).first,
+                      let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+                      let jpg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) else { continue }
+                let name = slot.rawValue + ".jpg"
+                let file = temporary.appendingPathComponent(name)
+                guard (try? jpg.write(to: file, options: .atomic)) != nil else { continue }
+                let result = ctl.run(["device", "copy", "to", "--device", game.installedDevice, "--source", file.path,
+                                      "--destination", "Documents/LibraryArtwork/\(id)/\(name)",
+                                      "--domain-type", "appDataContainer", "--domain-identifier", bundle])
+                if !result.ok { fputs("artwork: \(id) \(slot.rawValue) could not be copied to its paired device\n", stderr); break }
+            }
+        }
+    }
+}

@@ -154,6 +154,18 @@ The Air 60.78 installation preserves all existing frameworks and 27 game
 directories; the new Fate card is ready. The new quit/relaunch path has not
 been player-tested. M2 60.102 separately installs the classic Fate host with all matched resources and 58 DLC; its card is ready. Classic M2 hosts do not advertise this lifecycle capability yet.
 
+Air Fate's pinned engine also needs `fate-extella-ios-touch-preferences.patch`
+on top of its teardown queue (`553db40` in the prepared engine checkout). It
+reads version 2 layout coordinates while retaining version 1 presets and
+honors the shelf's `DM_TOUCH_FACE_MAP` for touch labels and input, independently
+of the physical controller. Rebuild the affected frontend object and relink
+the existing framework; no shader or game data rebuild is required.
+
+The experimental Red Alert WebKit runtime has a separate return callback in
+source. It stops the web view and local loopback server and preserves the
+persistent store. This does not add in-process teardown to the shipped native
+Red Alert frameworks.
+
 The November 14 shell restores its library environment before the shelf is
 interactive and waits for the framework callback to unwind before restoring
 its static data. For a framework with the capability, the ellipsis menu's

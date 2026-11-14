@@ -122,12 +122,40 @@ BOOL TonTonWebRuntimeAvailable(NSString *title, NSString *slot) {
 @property(strong) WKWebView *web;
 @property(strong) NSFileHandle *log;
 @property(strong) UILabel *failureLabel;
+@property(copy) void (^returnToLibrary)(void);
+@property(assign) BOOL leaving;
 @end
 @implementation TTWebRuntimeController
+- (void)stopRuntime {
+    WKWebView *web=self.web;self.web=nil;
+    web.navigationDelegate=nil;
+    [web.configuration.userContentController removeScriptMessageHandlerForName:@"tontonRuntime"];
+    [web stopLoading];[web removeFromSuperview];
+    [self.server stop];self.server=nil;
+    [self.log closeFile];self.log=nil;
+}
 - (void)dealloc {
     [self.web.configuration.userContentController removeScriptMessageHandlerForName:@"tontonRuntime"];
     [self.server stop];
     [self.log closeFile];
+}
+- (void)confirmReturn {
+    if(self.leaving||self.presentedViewController)return;
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"\u8FD4\u56DE\u6E38\u620F\u5323"
+        message:@"\u8BF7\u5148\u5728\u6E38\u620F\u4E2D\u4FDD\u5B58\u3002\u672A\u4FDD\u5B58\u7684\u8FDB\u5EA6\u5C06\u4E22\u5931\u3002"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"\u53D6\u6D88" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf=self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"\u9000\u51FA\u6E38\u620F" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        typeof(self) owner=weakSelf;
+        if(!owner||owner.leaving)return;
+        owner.leaving=YES;
+        [owner writeLog:@"Returning to TonTon after the player's confirmation."];
+        [owner stopRuntime];
+        void (^returned)(void)=owner.returnToLibrary;owner.returnToLibrary=nil;
+        if(returned)returned();
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -162,6 +190,19 @@ BOOL TonTonWebRuntimeAvailable(NSString *title, NSString *slot) {
     self.web=[[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
     self.web.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;self.web.navigationDelegate=self;
     [self.view addSubview:self.web];
+    if(self.returnToLibrary){
+        UIButton *back=[UIButton buttonWithType:UIButtonTypeSystem];
+        back.configuration=[UIButtonConfiguration tintedButtonConfiguration];
+        back.configuration.image=[UIImage systemImageNamed:@"rectangle.portrait.and.arrow.right"];
+        back.accessibilityLabel=@"\u8FD4\u56DE\u6E38\u620F\u5323";
+        [back addTarget:self action:@selector(confirmReturn) forControlEvents:UIControlEventTouchUpInside];
+        back.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:back];
+        UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [back.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+            [back.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+            [back.widthAnchor constraintEqualToConstant:44],[back.heightAnchor constraintEqualToConstant:44]]];
+    }
     NSURLComponents *url=[NSURLComponents componentsWithString:[NSString stringWithFormat:@"http://127.0.0.1:%u/boxedwine.html",self.server.port]];
     NSMutableArray *query=[NSMutableArray new];
     // The owned ZIP is mounted as C:\\files. Register its COM server in Wine's
@@ -198,6 +239,9 @@ BOOL TonTonWebRuntimeAvailable(NSString *title, NSString *slot) {
 }
 @end
 UIViewController *TonTonWebRuntimeController(NSString *title,NSString *slot) {
+    return TonTonWebRuntimeControllerWithReturn(title,slot,nil);
+}
+UIViewController *TonTonWebRuntimeControllerWithReturn(NSString *title,NSString *slot,void (^returnToLibrary)(void)) {
     if(!TonTonWebRuntimeAvailable(title,slot))return nil;
-    TTWebRuntimeController *controller=[TTWebRuntimeController new];controller.slot=slot;return controller;
+    TTWebRuntimeController *controller=[TTWebRuntimeController new];controller.slot=slot;controller.returnToLibrary=returnToLibrary;return controller;
 }
