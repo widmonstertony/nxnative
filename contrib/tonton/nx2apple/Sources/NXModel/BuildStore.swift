@@ -180,6 +180,27 @@ func hop(_ body: @escaping @MainActor () -> Void) {
     /// (A15/A16 and older): on a device that has it the GPU path is always better, so the switch
     /// is a compatibility option and defaults off. Passed as DM_PROF_TEX_BC_CPU through --env-file,
     /// which the host reads at start-up — no rebuild of the host needed.
+    @Published package var iosLegacyGPU: String {
+        didSet {
+            defaults.set(iosLegacyGPU, forKey: "tontonIOSLegacyGPU")
+            if oldValue != iosLegacyGPU { targetChanged() }
+        }
+    }
+    @Published package var iosMinimum: String {
+        didSet {
+            defaults.set(iosMinimum, forKey: "tontonIOSMinimum")
+            if oldValue != iosMinimum { targetChanged() }
+        }
+    }
+    package var iosBuildTarget: IOSBuildTarget { .normalized(iosMinimum) }
+    package var hasTonTonIOSBuilder: Bool {
+        FileManager.default.fileExists(atPath: EngineLayout.root(repo.path) + "/scripts/build_tonton_ios.py")
+    }
+    /// The 16/17 compatibility runtime exports complete single-game IPAs. It does
+    /// not pass a modern shell-framework ABI to the classic renderer.
+    package var requiresCompatibilityIPA: Bool {
+        target != BuildTarget.mac && hasTonTonIOSBuilder && (iosBuildTarget.compatibility || !RepoLayout.supportsShellFramework(repo.path))
+    }
     @Published package var bcOnCPU: Bool {
         didSet { defaults.set(bcOnCPU, forKey: Self.bcOnCPUKey) }
     }
@@ -346,6 +367,8 @@ func hop(_ body: @escaping @MainActor () -> Void) {
         let savedTarget = BuildTarget.saved(defaults)
         target = savedTarget
         runningTarget = savedTarget
+        iosMinimum = IOSBuildTarget.normalized(defaults.string(forKey: "tontonIOSMinimum")).rawValue
+        iosLegacyGPU = defaults.string(forKey: "tontonIOSLegacyGPU") == "m2" ? "m2" : "a10x"
         bcOnCPU = defaults.bool(forKey: Self.bcOnCPUKey)
         experimentalBuilder = ExperimentalBuilder.featureEnabled && defaults.bool(forKey: Self.experimentalBuilderKey)
         experimentalBuilderPath = defaults.string(forKey: Self.experimentalBuilderPathKey) ?? ""
@@ -358,9 +381,9 @@ func hop(_ body: @escaping @MainActor () -> Void) {
 
     /// This iPhone build goes straight to a device.
     /// An iPhone or iPad build that makes the shared app as an unsigned IPA (#416): no device, no team.
-    package var exportsShell: Bool { target != BuildTarget.mac && (queuedExportIPA ?? devices.exportIPA) }
+    package var exportsShell: Bool { target != BuildTarget.mac && (requiresCompatibilityIPA || (queuedExportIPA ?? devices.exportIPA)) }
     /// An export of one game's own IPA with the game data inside (#540): the engine's one-game app, no shared app, nothing to send.
-    package var exportsOneGame: Bool { exportsShell && (queuedExportOneGame ?? devices.exportOneGame) }
+    package var exportsOneGame: Bool { exportsShell && (requiresCompatibilityIPA || (queuedExportOneGame ?? devices.exportOneGame)) }
     package var installsDirectly: Bool { target != BuildTarget.mac && !devices.installDevice.isEmpty && !devices.signingTeam.isEmpty }
 
     /// Home shown as ~ (shorter in a one-line row, and it keeps the account name out of screenshots).

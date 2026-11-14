@@ -1,10 +1,47 @@
 # Build and install on iOS 16 / iOS 17
 
-This guide is for the `ios16-ios17-compat` branch of
-[widmonstertony/nxnative](https://github.com/widmonstertony/nxnative).
-The legacy deployment target is **iOS/iPadOS 16.1**, including iPadOS 17;
-iOS 16.0 is not a supported build target. Game and device compatibility are
-separate: check the [device status](fork-status.md) before building.
+The TonTon build page on `main` supports explicit **iOS/iPadOS 16.1** and
+**17.0** classic targets. iOS 16.0 is not supported. The historical
+`ios16-ios17-compat` branch records the standalone legacy port. Game and device
+compatibility are separate: check the [device status](fork-status.md) before building.
+
+## Build in TonTon Gamebox on Mac
+
+Use **Build → iPhone / iPad → Minimum iOS / iPadOS**. For iPadOS 16.1,
+choose 16.1+; choose 17+ only if the device has been updated. Select **M2 iPad**
+for the validated M2 capability rules, or **Conservative (A10X)** for older
+hardware. Choose a game and its matching update and DLC, then set **Save to**
+to a volume with room for the build and exported IPA. Encrypted packages
+require your own keys; a supported extracted game folder does not.
+
+**Build & export** uses the existing progress view, log and build queue. The
+queued job stores its OS and GPU choice. Repeating the same choice reuses that
+job's checkpoints; a different choice has its own work directory and output
+name. A classic toolchain snapshot is shared per output folder. The tool checks
+the IPA's `MinimumOSVersion` and the linked iOS arm64 binaries before reporting
+success and writes a `.build-report.json` beside it. Classic exports use the
+pinned engine, shader translator and ABI together; new modern builds use the
+current engine. The experimental Rust builder is not used for the validated
+classic export contract.
+
+These exports contain a single game's runtime, shaders, base data and selected
+add-ons, for external signing and sideloading. They do not replace an existing
+multi-game Gamebox or give legacy engines an in-process return to the library.
+Very large IPAs may exceed a sideloader's extraction limit. The compile/link
+fixtures for 16.1 and 17 were verified with Xcode; they do not constitute
+per-game or on-device gameplay tests.
+
+To build the same Mac application from the repository:
+
+```sh
+python3 scripts/build_tonton_mac.py 'build/TonTon Gamebox.app' \
+  --build-path build/mac-builder --python /path/to/venv/bin/python3
+```
+
+A fresh app is signed locally and uses the existing TonTon application identity.
+Use `--existing` to preserve an existing bundle's metadata and resources and
+`--sign` with the authorized Mac identity when repackaging a provisioned app.
+The fresh local build does not acquire CloudKit entitlements on its own.
 
 ## Get the compatibility source
 
@@ -22,8 +59,8 @@ git fetch origin
 git branch --set-upstream-to=origin/ios16-ios17-compat ios16-ios17-compat
 ```
 
-The rename retains history. The fork's `main` branch remains the upstream
-baseline; it is not the older-device branch. Community launchers must actually
+The rename retains history. The fork's `main` now also carries the integrated
+Mac build UI and explicit classic target selection. Community launchers must actually
 use this fork and branch to pick up its compatibility code. A link in a
 launcher's README does not mean its current binary includes this backend.
 

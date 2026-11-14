@@ -33,7 +33,9 @@ if [ "${1:-}" != --prepare-xcode ] && [ "${DM_IOS_BUILD_LOCK_OWNER:-}" != "$$" ]
 fi
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
 case "${DM_IOS_RENDERER:-legacy}" in
-  legacy) export DM_IOS_DEPLOYMENT_TARGET=16.1 ;;
+  legacy)
+    case "${DM_IOS_DEPLOYMENT_TARGET:-16.1}" in 16.1|17.0) ;; *) die "classic renderer supports deployment target 16.1 or 17.0" ;; esac
+    export DM_IOS_DEPLOYMENT_TARGET=${DM_IOS_DEPLOYMENT_TARGET:-16.1} ;;
   metal4) export DM_IOS_DEPLOYMENT_TARGET=26.0 ;;
   *) die "DM_IOS_RENDERER must be legacy or metal4" ;;
 esac

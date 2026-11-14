@@ -92,6 +92,20 @@ MetalFX dynamic-resolution output (21 checks with encoding off and 21 on), and
 the three tessellation fixture cases. These synthetic checks do not replace the
 missing five-game/device gameplay regression described above.
 
+## Ocarina of Time and M1/M2 renderer work
+
+The requested upstream changes [2577](https://github.com/seedds/nxnative/pull/2577), [2574](https://github.com/seedds/nxnative/pull/2574), [2573](https://github.com/seedds/nxnative/pull/2573), [2525](https://github.com/seedds/nxnative/pull/2525), [2561](https://github.com/seedds/nxnative/pull/2561), [2560](https://github.com/seedds/nxnative/pull/2560), [2559](https://github.com/seedds/nxnative/pull/2559), [2526](https://github.com/seedds/nxnative/pull/2526), [2413](https://github.com/seedds/nxnative/pull/2413), [2441](https://github.com/seedds/nxnative/pull/2441), [2593](https://github.com/seedds/nxnative/pull/2593) are integrated in the **modern source**.
+They cover mesh/task scheduling and mesh compute fallback, occlusion work,
+texture compression and aliasing, lazy clears, encoder sizing, render-pass
+merging and direct MetalFX output. The matching modern shader chain is
+`7c872e590610`. The classic engine retains its existing versioned ABI and
+resources. None of this relabels or forces a rebuild of installed games.
+
+Local Metal tests passed for mesh geometry, MetalFX, texture clears, deferred
+encoders and GPU counter overlap. Kokiri Forest, Hyrule Castle, and M2 iPad frame
+rate were not measured with this integration, so upstream performance numbers
+are not TonTon device results.
+
 ## iOS shell functions (November 13)
 
 NX2Apple was checked at [`d0adbda8`](https://github.com/LNPANDY/NX2Apple/commit/d0adbda8f505a137ef254e4b7e7e58744244255c), with engine base `0c078130f6db7d0d32c1dc28146feaf97713f008` and its 44-patch queue. The exact patch hashes are recorded in [the independent-runtime lock](../dm/ios/Engines/NxNative/nx2apple-independent-runtime.lock.json). This modern engine is independent of the running classic shader jobs. The subsequent main merge retains the other computer's Mac integration and upstream engine snapshot through `32faef7c`. Later seedds commits through `fb510cce` were inspected but are not claimed as integrated. The deployed iOS engine remains at the explicit lock below.
@@ -105,7 +119,7 @@ NX2Apple was checked at [`d0adbda8`](https://github.com/LNPANDY/NX2Apple/commit/
 | Single-file shader resources | Each new Fate shader set is delivered as a mapped image with matching tables and stamp. | 1,488 discovered stages are not evidence of complete game coverage. |
 | File-backed virtual memory | Modern independent engine retains its upstream file-mapping path. | Does not remove iOS physical-memory limits or establish a Mario Kart race pass. |
 | Automatic iCloud saves | TonTon private CloudKit transport remains in the fork. Quit flushes before teardown. | Live save exchange among iPhone, iPad, Mac and Apple TV remains unverified. No original saves were changed for these delivery checks. |
-| Cover Flow / console shell / iPhone Duo | Upstream feature identified. | Full TonTon UI integration is not yet deployed; do not label it complete. |
+| Cover art, appearance, console shell / iPhone Duo | The iOS 16.1 library source carries adaptable UIKit cards and system/light/dark appearance, retaining the existing catalogue and controls. | Source compiled; device installation and the upstream iOS 26 glass, console and Duo-specific experience are separate. |
 
 M2 60.101 reached a real Mario Bros. Circuit 50cc race with an isolated save, 960x540 scene attachments and MetalFX. The final composite remains 1920x1080 before scaling to 2732x1536; this is not a direct 540p MetalFX input claim. Sampled race rate is 48–49 FPS at thermal state 0. Disabling the learned warm manifest avoided the earlier GPU address fault in this control run; the underlying warm-pipeline failure is still open, and this diagnostic setting is not a completed optimization.
 

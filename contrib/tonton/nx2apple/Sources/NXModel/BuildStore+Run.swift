@@ -39,8 +39,8 @@ extension BuildStore {
             return
         }
         // The experimental builder runs `nxb build` and never the script: no nxb, or one too old, stops here (#749). A game nxb does not take ends with its own exit code 4
-        nxbRun = ExperimentalBuilder.featureEnabled && experimentalBuilder
-        if let why = experimentalBuilderProblem() { fail(why); return }
+        nxbRun = ExperimentalBuilder.featureEnabled && experimentalBuilder && !requiresCompatibilityIPA
+        if !requiresCompatibilityIPA, let why = experimentalBuilderProblem() { fail(why); return }
         // Resolve the interpreter here if the dependency check has not landed yet. checkDeps()
         // runs on a background queue and startBuild() can beat it — for a moment deps.pythonPath is
         // empty, and the old fallback was Apple's /usr/bin/python3 (3.9), which the script then
@@ -98,7 +98,9 @@ extension BuildStore {
         if local != nil, LocalMacBuild.updating(titleID: tidHex) {
             fail(t("tonton.buildAlreadyUpdating")); return
         }
-        let workDir = local?.workDirectory ?? ((outDir.isEmpty ? baseDir : outDir) + "/" + tidHex + "_build")
+        let buildRoot = outDir.isEmpty ? baseDir : outDir
+        let compatibilitySuffix = !requiresCompatibilityIPA ? "" : iosBuildTarget.workSuffix + (iosBuildTarget.compatibility ? "-" + iosLegacyGPU : "")
+        let workDir = local?.workDirectory ?? buildRoot + "/" + tidHex + "_build" + compatibilitySuffix
         // The build's signing step refuses the attributes a cloud folder adds, after the long steps: stop here instead.
         if cloudFolderCheck(workDir) {
             failure = BuildFailure(kind: .cloudFolder, gameName: nil, detail: workDir)
@@ -151,7 +153,10 @@ extension BuildStore {
         }
         let engine = EngineLayout.root(repo.path)   // the checkout's engine/ (#214)
         // A game folder's files are not encrypted: the script ignores -k for it, and the launcher does not ask for the keys.
-        var args = [engine + "/" + RepoLayout.buildScript, inputDir] + (folder != nil ? [] : ["-k", keysPath]) + ["--progress", "json"]
+        let compatibilityDriver = engine + "/scripts/build_tonton_ios.py"
+        var args = (target != BuildTarget.mac && requiresCompatibilityIPA
+                    ? [compatibilityDriver, "--minimum-ios", iosBuildTarget.rawValue, "--legacy-target", iosLegacyGPU, "--engine-cache", buildRoot + "/.tonton-engines", inputDir]
+                    : [engine + "/" + RepoLayout.buildScript, inputDir]) + (folder != nil ? [] : ["-k", keysPath]) + ["--progress", "json"]
         if let selectedTitleID { args += ["--title-id", selectedTitleID] }
         // A small env file the pipeline copies into the app bundle (main.m sets one variable per line at boot). Only for an iPhone or
         // iPad build: the in-game menu's words in the launcher's language (GameMenuText, #1129), and the CPU decode of BC textures when
@@ -172,7 +177,7 @@ extension BuildStore {
         // The image of this game the other platform's build left (the iPhone build's games/<id>/romfs.img, the Mac app's): the
         // script takes it in place of extracting the RomFS again once it checks out as this version's (#708). A game folder is packed, not extracted.
         // Only for the script: the experimental builder gets these arguments too, and `nxb build` has no such option (0.6.3 and 0.6.4 stop at it).
-        if folder == nil, !nxbRun, RepoLayout.supportsRomfsFrom(repo.path) {
+        if folder == nil, !nxbRun, !requiresCompatibilityIPA, RepoLayout.supportsRomfsFrom(repo.path) {
             for image in RomFSArchive.reusableImages(root: outDir.isEmpty ? baseDir : outDir, key: tidHex) { args += ["--romfs-from", image] }
         }
         let macApp = target == BuildTarget.mac
@@ -182,7 +187,7 @@ extension BuildStore {
         oneGameIPAPath = ""
         if exportsOneGame {
             // One game's own IPA with its game data inside (BuildStore+OneGame.swift, #540)
-            oneGameIPAPath = OneGameIPA.path(folder: outDir.isEmpty ? baseDir : outDir, titleID: tidHex)
+            oneGameIPAPath = OneGameIPA.path(folder: outDir.isEmpty ? baseDir : outDir, titleID: tidHex + (requiresCompatibilityIPA ? iosBuildTarget.outputSuffix + (iosBuildTarget.compatibility ? "-" + iosLegacyGPU : "") : ""))
             args += OneGameIPA.arguments(ipa: oneGameIPAPath)
         } else if let macOutput {
             macAppPath = ""

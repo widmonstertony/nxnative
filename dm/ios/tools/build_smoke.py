@@ -54,7 +54,7 @@ def main():
     renderer = os.environ.get('DM_IOS_RENDERER', 'legacy')
     if renderer not in ('legacy', 'metal4'):
         raise ValueError('DM_IOS_RENDERER must be legacy or metal4')
-    minimum_os = '26.0' if renderer == 'metal4' else '16.1'
+    minimum_os = '26.0' if renderer == 'metal4' else os.environ.get('DM_IOS_DEPLOYMENT_TARGET', '16.1')
     env = dict(os.environ, GAME=profile.id, DM_GAME=profile.id,
                DM_IOS_DEPLOYMENT_TARGET=minimum_os,
                DM_BUNDLE_ID='org.nxnative.ci', DM_DISPLAY_NAME='CI build fixture',

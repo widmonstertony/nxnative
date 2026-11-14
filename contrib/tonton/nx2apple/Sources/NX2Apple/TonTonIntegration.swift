@@ -19,6 +19,7 @@ enum TonTonBootstrap {
             let dotnet = URL(fileURLWithPath: bin).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dotnet").path
             setenv("PATH", "\(bin):\(dotnet):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", 1)
             setenv("TONTON_PYTHON", python, 1)
+            setenv("TONTON_DOTNET", dotnet + "/dotnet", 1)
         }
         UserDefaults.standard.register(defaults: defaults)
         importInstalledGames()

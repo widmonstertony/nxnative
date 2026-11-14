@@ -10,6 +10,8 @@ Start with the **[iOS 16 / iOS 17 build and installation guide](docs/ios16-ios17
 | Modern iPhone / iPad | iOS / iPadOS **26.0** | Explicit Metal 4 target; requires compatible hardware |
 | Switch 2 | Per game and device | Targeted iPhone Air and M2 builds; see the play-test limits below |
 
+The **[TonTon Mac build page](docs/ios16-ios17.md#build-in-tonton-gamebox-on-mac)** on `main` can build for iOS/iPadOS **16.1**, **17**, or **26 (Metal 4)** using the same game inputs, queue and live progress. Pick **M2 iPad** or the conservative GPU checks for a classic build. The compatibility export is an unsigned single-game IPA; the existing shared-gamebox and per-game runtime integration are documented separately.
+
 The former branch name was `ios16-pokemon-za-port`; it was renamed, preserving its history. **Source builds are available; this repository does not distribute ready-to-play games or a universal compatibility guarantee.**
 
 ## TonTon Gamebox: game fixes and verification

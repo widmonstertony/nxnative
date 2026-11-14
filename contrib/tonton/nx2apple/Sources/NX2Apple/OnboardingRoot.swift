@@ -56,7 +56,7 @@ struct RootView: View {
                             .onAppear { shared.console.reloadCovers() }
                             .transition(CalmTransition.console)
                     } else {
-                        LauncherView(stores: stores, library: library, onRunSetup: runSetupAgain, enterConsole: { console.enter() },
+                        LauncherView(stores: stores, library: library, initialPage: CommandLine.arguments.contains("--device-builds") ? .builds : .library, onRunSetup: runSetupAgain, enterConsole: { console.enter() },
                                     controllerDriver: AnyConsoleDriver(shared.console), controls: shared.controls, recorder: shared.recorder)
                             .transition(CalmTransition.desktop)
                     }

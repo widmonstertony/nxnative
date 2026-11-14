@@ -7,6 +7,11 @@ package enum RepoLayout {
     /// (the build script in startBuild, the RomFS archive in the archive step). A copy older than this app lacks some of
     /// them (#87: romfs_image.py exists since v0.4.8, so a build ran 70 minutes and failed at its last step). A new
     /// tool the launcher calls goes into this list and is then checked before every build.
+    package static func supportsShellFramework(_ dir: String) -> Bool {
+        guard let text = try? String(contentsOfFile: EngineLayout.root(dir) + "/" + buildScript, encoding: .utf8) else { return false }
+        return text.contains("'--shell-framework'") || text.contains("\"--shell-framework\"")
+    }
+
     package static let buildScript = "scripts/build_ipa_from_nsp.py"
     package static let romfsImageTool = "dm/tools/romfs_image.py"
     package static let requiredTools = [buildScript, romfsImageTool]

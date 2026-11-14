@@ -20,7 +20,17 @@ package struct InstallCard: View {
     }
 
     package var body: some View {
-        if build.target != BuildTarget.mac, !build.running || sending || showLocked { card.disabled(build.running && !sending) }
+        if build.target != BuildTarget.mac, !build.running || sending || showLocked {
+            if build.requiresCompatibilityIPA {
+                CardGroup(loc.t("dev.section"), footnote: "") {
+                    CardRow(loc.t("shell.ipaOneGame")) { EmptyView() }
+                    CardDivider()
+                    ExportSteps(build: build, devices: devices)
+                }.disabled(build.running)
+            } else {
+                card.disabled(build.running && !sending)
+            }
+        }
     }
 
     /// The copy of the game data runs on the build store's `running` flag too, and its own buttons must stay usable (Stop).

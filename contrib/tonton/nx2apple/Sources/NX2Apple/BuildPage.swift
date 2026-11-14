@@ -26,6 +26,7 @@ struct BuildPage: View {
     var body: some View {
         let stagingQueue = !running && queue.hasWaiting
         CardPageHeading(loc.t("build.heading"), note: loc.t("build.intro"))
+        TonTonDeviceBuilds()
         TonTonUpdates()
         if running {
             ProgressCard(build: build)

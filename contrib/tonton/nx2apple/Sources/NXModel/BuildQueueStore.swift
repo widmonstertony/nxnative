@@ -67,6 +67,8 @@ import NXCore
             entry.status = .queued; entry.reason = nil
             if active, !paused, !awaitingResume, let currentBatch {
                 entry.target = currentBatch.target
+                entry.iosMinimum = currentBatch.iosMinimum
+                entry.iosLegacyGPU = currentBatch.iosLegacyGPU
                 entry.batch = currentBatch.batch
                 entry.packageAfter = currentBatch.packageAfter
                 entry.exportIPA = currentBatch.exportIPA
@@ -117,13 +119,15 @@ import NXCore
     // MARK: Running
 
     /// Starts the waiting queue, optionally applying the player's current target and shared-app packaging choice to the queued batch.
-    package func start(target: String? = nil, packageAfter: Bool? = nil, exportIPA: Bool? = nil, destinationName: String? = nil) {
+    package func start(target: String? = nil, iosMinimum: String? = nil, iosLegacyGPU: String? = nil, packageAfter: Bool? = nil, exportIPA: Bool? = nil, destinationName: String? = nil) {
         guard hasWaiting else { return }
         if target != nil || packageAfter != nil || exportIPA != nil {
             let existingDoneBatch = entries.last(where: { $0.status == .done })?.batch
             let batch = existingDoneBatch ?? UUID()
             for index in entries.indices where entries[index].status == .queued {
                 if let target { entries[index].target = target }
+                if let iosMinimum { entries[index].iosMinimum = iosMinimum }
+                if let iosLegacyGPU { entries[index].iosLegacyGPU = iosLegacyGPU }
                 if let packageAfter { entries[index].packageAfter = packageAfter }
                 if let exportIPA { entries[index].exportIPA = exportIPA }
                 entries[index].destinationName = destinationName

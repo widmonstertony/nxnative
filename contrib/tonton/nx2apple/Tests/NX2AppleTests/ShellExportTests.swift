@@ -1054,9 +1054,51 @@ import NXModel
         XCTAssertEqual(model.archivePath, "", "the game data is inside the IPA, nothing is packed beside it")
     }
 
+    @MainActor func testCompatibilityIPAUsesSelectedOSAndGPUWithoutDevice() throws {
+        let f = try makeFixture()
+        let stores = LauncherStores(xcrun: f.xcrun, defaults: testDefaults)
+        let model = stores.build
+        stores.repo.path = f.repo
+        try write(f.repo + "/dm/tools/nx_extract/Program.cs", "")
+        for tool in RepoLayout.requiredTools { try write(f.repo + "/" + tool, "'--work-dir'") }
+        try write(f.repo + "/scripts/build_tonton_ios.py", """
+        import pathlib, sys
+        pathlib.Path('\(state)/compat-args.txt').write_text('\\n'.join(sys.argv[1:]))
+        pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_bytes(b'ipa')
+        """)
+        model.target = BuildTarget.ios
+        model.iosMinimum = "17.0"
+        model.iosLegacyGPU = "m2"
+        model.outDir = path("out")
+        try fm.createDirectory(atPath: model.outDir, withIntermediateDirectories: true)
+        stores.dependencies.pythonPath = "/usr/bin/python3"
+        stores.dependencies.dotnetPath = "/usr/bin/true"
+        stores.dependencies.checked = true
+        stores.dependencies.deps = [Dep(id: "test", name: "test", hint: "", present: true, installCmd: [])]
+        stores.deviceStore.installDevice = ""
+        stores.deviceStore.signingTeam = ""
+        stores.deviceStore.exportIPA = false
+        let base = temporary.appendingPathComponent("Test [\(titleID)].nsp"), keys = temporary.appendingPathComponent("prod.keys")
+        try Data([0]).write(to: base); try Data().write(to: keys)
+        model.slots[0].paths = [base.path]; model.slots[3].paths = [keys.path]
+
+        let finished = expectation(description: "Compatibility IPA exported")
+        let token = model.$done.filter { $0 }.prefix(1).sink { _ in finished.fulfill() }
+        model.startBuild()
+        wait(for: [finished], timeout: 10)
+        withExtendedLifetime(token) {}
+        let args = try String(contentsOfFile: state + "/compat-args.txt", encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(Array(args.prefix(4)), ["--minimum-ios", "17.0", "--legacy-target", "m2"])
+        XCTAssertTrue(args.contains { $0.hasSuffix("_build/ios-17.0-classic-b5ac83de-m2") })
+        XCTAssertFalse(args.contains("--shell-framework"))
+        XCTAssertEqual(model.exportedIPAPath, path("out", "\(titleID)-ios17.0-m2.ipa"))
+    }
+
     func testOneGameChoiceIsOffAtFirstSavedAndOnlyCountsForAnExport() throws {
         testDefaults.removeObject(forKey: DeviceStore.oneGameKey)
-        let stores = LauncherStores(defaults: testDefaults); let model = stores.build
+        let fixture = try makeFixture()
+        let stores = LauncherStores(xcrun: fixture.xcrun, defaults: testDefaults); let model = stores.build
+        stores.repo.path = fixture.repo
         XCTAssertFalse(stores.deviceStore.exportOneGame, "the shared app stays the default")
         model.target = "ios"
         stores.deviceStore.exportOneGame = true

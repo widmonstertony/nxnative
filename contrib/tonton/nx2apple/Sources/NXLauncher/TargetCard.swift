@@ -15,7 +15,7 @@ package struct TargetCard: View {
                 .padding(.leading, 2)
             HStack(spacing: 14) {
                 targetCard(BuildTarget.mac, symbol: "desktopcomputer", title: "build.mac", note: "build.macNote")
-                targetCard(BuildTarget.ios, symbol: "iphone", title: "build.ios", note: "build.iosNote")
+                targetCard(BuildTarget.ios, symbol: "iphone", title: "build.ios", note: build.requiresCompatibilityIPA ? "tonton.iosTargetExport" : "build.iosNote")
             }
             // A Switch 2 game (#445): how far the engine's support goes, for the chosen target. Nothing is blocked: the engine
             // builds both, and one Switch 2 game ran on an iPhone, but no target is tested for every game.
@@ -32,7 +32,24 @@ package struct TargetCard: View {
             }
             // A Mac app runs on this Mac's GPU, which always decodes BC textures: the switch is the iPhone's only.
             if build.target != BuildTarget.mac {
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if build.hasTonTonIOSBuilder {
+                        Picker(loc.t("tonton.iosMinimum"), selection: $build.iosMinimum) {
+                            Text("iOS / iPadOS 16.1+").tag("16.1")
+                            Text("iOS / iPadOS 17+").tag("17.0")
+                            Text("iOS / iPadOS 26+ (Metal 4)").tag("26.0")
+                        }.disabled(build.running).padding(.horizontal, 18).padding(.top, 14)
+                        if build.iosBuildTarget.compatibility {
+                            Picker(loc.t("tonton.iosGPU"), selection: $build.iosLegacyGPU) {
+                                Text(loc.t("tonton.iosConservative")).tag("a10x")
+                                Text("M2 iPad").tag("m2")
+                            }.disabled(build.running).padding(.horizontal, 18)
+                        }
+                        Text(loc.t(build.iosBuildTarget.compatibility ? "tonton.iosCompatibilityNote" : (build.requiresCompatibilityIPA ? "tonton.iosModernExportNote" : "tonton.iosModernNote")))
+                            .font(.manrope(12.5)).foregroundStyle(LauncherPalette.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 18)
+                    }
+
                     HStack(alignment: .center, spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(loc.t("opt.bc")).font(.manrope(14))

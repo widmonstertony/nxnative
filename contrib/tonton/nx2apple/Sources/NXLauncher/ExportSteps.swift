@@ -32,7 +32,7 @@ package struct ExportSteps: View {
     private var inert: Bool { !exported && !sentDone }
     private var toDrive: Bool { devices.sendWhere == SendWhere.drive }
     private var gameName: String { build.gameName }
-    private var oneGame: Bool { devices.exportOneGame }
+    private var oneGame: Bool { build.exportsOneGame }
 
     package var body: some View {
         VStack(spacing: 0) {
@@ -49,7 +49,7 @@ package struct ExportSteps: View {
                     }
                 } else {
                     HStack(spacing: ExportGrid.gap) {
-                        if build.canExportBuiltGames {   // #994: the IPA of the frameworks already built, no game is built again
+                        if !oneGame && build.canExportBuiltGames {   // #994: the IPA of the frameworks already built, no game is built again
                             action(loc.t("shell.exportBuilt"), enabled: true) { build.exportBuiltGames() }
                                 .help(loc.t("shell.exportBuiltNote"))
                         }

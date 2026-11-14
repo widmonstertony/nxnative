@@ -12,6 +12,8 @@ package struct QueueEntry: Codable, Identifiable, Equatable, Sendable {
     package var name: String
     /// BuildTarget.mac or BuildTarget.ios, as of adding.
     package var target: String
+    package var iosMinimum: String?
+    package var iosLegacyGPU: String?
     /// Slot id (base, update, dlc, keys) to paths, as the library keeps them.
     package var inputs: [String: [String]]
     /// A game folder (GameLibrary.folderInput) the inputs came from, else nil.
@@ -31,10 +33,10 @@ package struct QueueEntry: Codable, Identifiable, Equatable, Sendable {
     package var destinationName: String?
 
     package init(id: UUID = UUID(), gameID: UUID? = nil, titleID: String, name: String, target: String, inputs: [String: [String]],
-                 gameFolder: String? = nil, outputDirectory: String, engineID: String, batch: UUID = UUID(), packageAfter: Bool = false,
+                 gameFolder: String? = nil, iosMinimum: String? = nil, iosLegacyGPU: String? = nil, outputDirectory: String, engineID: String, batch: UUID = UUID(), packageAfter: Bool = false,
                  exportIPA: Bool? = nil, status: Status = .queued, reason: String? = nil, destinationName: String? = nil) {
         self.id = id; self.gameID = gameID; self.titleID = titleID; self.name = name; self.target = target; self.inputs = inputs
-        self.gameFolder = gameFolder; self.outputDirectory = outputDirectory; self.engineID = engineID; self.batch = batch
+        self.iosMinimum = iosMinimum; self.iosLegacyGPU = iosLegacyGPU; self.gameFolder = gameFolder; self.outputDirectory = outputDirectory; self.engineID = engineID; self.batch = batch
         self.packageAfter = packageAfter; self.exportIPA = exportIPA; self.status = status; self.reason = reason
         self.destinationName = destinationName
     }

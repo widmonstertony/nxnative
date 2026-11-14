@@ -41,6 +41,7 @@ extension BuildStore {
                                       "USER": NSUserName(), "HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8",
                                       "TMPDIR": NSTemporaryDirectory()]
         if let droot = Toolchain.dotnetRoot(for: deps.dotnetPath.isEmpty ? "dotnet" : deps.dotnetPath) {
+            denv["PATH"] = droot + ":" + (denv["PATH"] ?? "")
             denv["DOTNET_ROOT"] = droot   // both variables carry the same root, as the apphost checks the arch-specific one first
             denv["DOTNET_ROOT_ARM64"] = droot
         }

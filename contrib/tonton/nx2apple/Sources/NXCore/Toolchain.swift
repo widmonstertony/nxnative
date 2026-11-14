@@ -414,7 +414,7 @@ package enum Toolchain {
     /// engine patch nsp-dotnet-sdk10-first). Before that patch, every build on a Mac whose /usr/local/share/dotnet held an Intel
     /// .NET 7 ran that one and stopped at NETSDK1045.
     package static func dotnetCandidates(home: String = NSHomeDirectory()) -> [String] {
-        ["/opt/homebrew/bin/dotnet", "/usr/local/bin/dotnet", "/usr/local/share/dotnet/dotnet", home + "/.dotnet/dotnet"]
+        (ProcessInfo.processInfo.environment["TONTON_DOTNET"].map { [$0] } ?? []) + ["/opt/homebrew/bin/dotnet", "/usr/local/bin/dotnet", "/usr/local/share/dotnet/dotnet", home + "/.dotnet/dotnet"]
     }
 
     /// Whether `dotnet --list-sdks` names an SDK the extractor builds with (it targets net10.0, so 10 or newer).
