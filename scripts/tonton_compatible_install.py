@@ -407,6 +407,7 @@ def install(signed, runtime, conf, work):
         initial_plist = hashlib.sha256(baseline.read(prefix + 'Info.plist')).hexdigest()
     check(bridge.run('sha256sum < ' + Q(live_plist)).split()[0] == initial_plist, 'The installed app does not match the baseline IPA')
     games = initial['data_container'] + '/Documents/Games'
+    games_identity = bridge.run(f'test ! -L {Q(games)} && stat -c "%d %i" {Q(games)}')
     slot = games + '/' + title
     target = slot + '/Resources'
     romfs = target + '/romfs.img'
@@ -488,7 +489,24 @@ mv {Q(new_msl + chain + ".img")} {Q(old_msl + chain + ".img")}
         time.sleep(5)
     check(installed and installed.get('version') == conf['app_version'],
           f'Install has not been observed. Verified installer and previous resource tables are recorded in {local_receipt}.')
-    check(installed['data_container'] == initial['data_container'], 'App update changed the data container')
+    old_container, new_container = initial['data_container'], installed['data_container']
+    if new_container != old_container:
+        # MobileInstallation may rename the data container during an in-place
+        # update. An unchanged directory inode proves this is the same library,
+        # not a freshly allocated or copied replacement.
+        new_games = new_container + '/Documents/Games'
+        check(bridge.run(f'test ! -e {Q(old_container)} && test ! -L {Q(old_container)} && '
+                         f'test ! -L {Q(new_games)} && stat -c "%d %i" {Q(new_games)}') == games_identity,
+              'App update did not retain the existing game library')
+        games = new_games
+        target = target.replace(old_container + '/', new_container + '/', 1)
+        romfs = romfs.replace(old_container + '/', new_container + '/', 1)
+        pending = pending.replace(old_container + '/', new_container + '/', 1)
+        rolled = rolled.replace(old_container + '/', new_container + '/', 1)
+        check(save_fingerprint(bridge, games) == saved, 'Save data changed after the container rename')
+        check(bridge.run(f'stat -c "%s %d %i %Y" {Q(romfs)}') == before_body,
+              'The renamed library does not contain the original game data')
+        check_tables(pending + '/dm')
     # Publish the matching tables only after the shell update is observed.
     # The old tables remain available if promotion of the staged directory fails.
     live_dm = target + '/dm'
