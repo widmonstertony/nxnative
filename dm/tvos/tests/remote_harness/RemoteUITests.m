@@ -1,4 +1,9 @@
 #import <XCTest/XCTest.h>
+static BOOL anyFocused(XCUIElementQuery *query) {
+    for (XCUIElement *element in query.allElementsBoundByIndex)
+        if (element.hasFocus) return YES;
+    return NO;
+}
 @interface RemoteUITests:XCTestCase
 @end
 @implementation RemoteUITests
@@ -44,10 +49,11 @@
     for(int row=0;row<5;row++) [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonDown];
     XCTAssertTrue(app.buttons[@"remote-存档并返回游戏匣"].hasFocus);
     [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonSelect];
-    XCTAssertTrue([app.buttons[@"保存并返回"] waitForExistenceWithTimeout:5]);
-    if (!app.buttons[@"保存并返回"].hasFocus) [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonRight];
-    if (!app.buttons[@"保存并返回"].hasFocus) [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonDown];
-    XCTAssertTrue(app.buttons[@"保存并返回"].hasFocus);
+    XCUIElementQuery *confirm = [app.buttons matchingIdentifier:@"保存并返回"];
+    XCTAssertTrue([confirm.firstMatch waitForExistenceWithTimeout:5]);
+    if (!anyFocused(confirm)) [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonRight];
+    if (!anyFocused(confirm)) [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonDown];
+    XCTAssertTrue(anyFocused(confirm));
     [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonSelect];
     XCTAssertTrue([app.buttons[@"gamebox-play"] waitForExistenceWithTimeout:5]);
     XCTAssertEqualObjects(app.buttons[@"gamebox-play"].label,@"继续游戏");

@@ -99,6 +99,11 @@ copy. If the profile is unsigned for CloudKit, or the user switches syncing
 off, local saves remain usable. Changing the automatic sync option after a game
 has started takes effect on the next app launch.
 
+Build 27 was installed in place on all three paired Apple TVs. The living-room
+device opened the shelf with the shared Z-A artwork and connected to CloudKit.
+The simulator exercises library return/resume and conflicting save choices
+with a fixture. A real cross-device save round trip is not yet verified.
+
 Normal Xcode development signing uses the configured team and paired Apple TV.
 Only install when the user has authorized device deployment. The verifier checks
 the native tvOS platform, nonoverlapping segment ranges, RX/RW protections,
