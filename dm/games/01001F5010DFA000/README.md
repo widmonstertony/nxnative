@@ -225,3 +225,16 @@ See [the input contract](../../../docs/desktop-controls-upstream.md#legends-desk
 The per-title host preserves its installed shader chain and game resources.
 Input regressions and packaging passed; player gameplay acceptance is pending.
 No save data is modified by the update.
+
+
+## Apple TV Gamebox
+
+Build 31 was installed in place on a physical Apple TV and tested from the
+library through language selection, character creation, and the first 3D beach
+scene. The boot abort required the registered SDK 11.4 large-region alignment
+cut: the older cached native modules contained only the two node-area cuts.
+Reusing the original game image and supplying the digest-matched non-point
+raster companions removed the startup black output. The playtest used a separate
+QA save with CloudKit writes disabled; the Z-A shader marker and save listing
+matched before and after the update. Later areas and long sessions were not
+tested.
