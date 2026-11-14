@@ -15,7 +15,7 @@ actor ArtworkStore {
     static let shared = ArtworkStore(directory: BannerCache.directory)
 
     static let titleListURL = URL(string: "https://raw.githubusercontent.com/blawar/titledb/master/US.en.json")!
-    static let imageHosts: Set<String> = ["img-eshop.cdn.nintendo.net", "cdn2.steamgriddb.com", "www.nintendo.com"]
+    static let imageHosts: Set<String> = ["img-eshop.cdn.nintendo.net", "cdn2.steamgriddb.com", "www.nintendo.com", "assets.nintendo.com"]
     /// The index format. An index written by an older launcher (no version: the first product per title ID won) is fetched
     /// again once, so its picks are made by `BannerPick`. Version 3 adds the language the index was read for.
     static let indexVersion = 3
@@ -431,6 +431,8 @@ actor ArtworkStore {
     /// Switch 2 and Nintendo Classics titles that blawar/titledb's regional lists do not carry yet: verified 16:9 key art
     /// with the official logo on SteamGridDB's CDN, used only while the title list has no entry for the ID.
     static let fallbackBanners: [String: String] = [
+        "010051400B17A000": "https://www.nintendo.com/eu/media/images/10_share_images/games_15/nintendo_switch_4/H2x1_NSwitch_FateExtellaLink_image1600w.jpg",
+        "01005E6010114000": "https://assets.nintendo.com/image/upload/c_fill,w_1200/q_auto/f_auto/dpr_2.0/store/software/switch/70010000031993/cadb2c06765d0dd2fbac39c98a5da6705ab82b74ef5fd3b688ea27c3f32b764c",
         "0400245021D2C000": "https://cdn2.steamgriddb.com/grid/4019460f699df3ca57bb36a6cc8b1ce5.png",   // Yoshi and the Mysterious Book
         "0400380020056000": "https://cdn2.steamgriddb.com/grid/220a08c045f283231e519ed83cd21466.png",   // Splatoon Raiders
         "04003F40232DE000": "https://cdn2.steamgriddb.com/grid/30430599d3640690ebddef63609c5f31.png",   // Hyrule Warriors: Age of Imprisonment

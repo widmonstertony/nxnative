@@ -30,12 +30,19 @@ UI-only prototype and is not evidence that the shared host can run a game.
 
 `Sources/LibraryAppearance16.h` draws the same TonTon catalog with a
 full-width artwork backdrop on phones and a split composition in landscape.
-The collection scrolls sideways on compact portrait screens and uses a grid
-elsewhere. Cover selection updates the artwork and details; Play validates
+The artwork grid scrolls vertically, including on phones. Cover images fill
+their cards at their original aspect ratio; the card crops any excess. Cover
+selection updates the artwork and details; Play validates
 the existing game before opening it. Long-press actions and controller
 navigation still use the shared library implementation. iOS 26 or later
 uses UIKit glass controls; the iOS 16.1 target uses standard button
 configurations with the same layout.
+
+The desktop launcher copies its selected hero and thumbnail images to the
+paired Gamebox's `Documents/LibraryArtwork/<title-id>/` as `hero.jpg` and
+`thumbnail.jpg`. This directory also accepts a shared `banner.jpg` and takes
+priority over signed framework banners and cartridge icons. These transfers
+do not rebuild games or write to game data or saves.
 
 The **+** button imports an existing prepared game folder into that layout,
 or moves a raw NSP/XCI/NSZ/NCA into `Documents/Imports` as a pending card.

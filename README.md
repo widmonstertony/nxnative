@@ -33,11 +33,19 @@ and transferred no game images or retail payloads. Fate's return-to-library
 action is included; the in-game quit and relaunch still need a player check.
 
 The redesigned TonTon bookshelf uses a full-width artwork backdrop, a
-horizontal collection on phones, and a split artwork and collection layout
+vertical collection on phones, and a split artwork and collection layout
 in landscape. The Play and per-game settings controls remain easy to reach.
+On iOS, cover art fills the cards just as on the Mac. The paired Mac launcher
+can send its chosen cover to the device without rebuilding or resending the game.
 The iOS 16.1 deployment target uses the same layout with system button
 materials; supported iOS versions use Liquid Glass. See the [library build
 and integration notes](dm/ios/LibraryApp/README.md).
+
+Air 60.84 and M2 60.107 on iPadOS 16.1 received the vertical shelf and shared
+artwork lookup in place. Twenty-four Switch title banners were verified on
+both devices. Air's Fate/EXTELLA LINK independent framework also reads the
+current virtual-button layout format and applies the touch ABXY mapping;
+in-game control retesting remains open.
 
 Add each published game fix here with its affected device, what changed, and
 the deepest scene actually verified. A signed install or a successful shader

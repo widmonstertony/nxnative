@@ -108,9 +108,15 @@ void TonTonApplyGlobalSettings(NSString *titleID){
     }
     TTApplyGameOverrides(titleID);
     TTApplyTouchLayout(titleID);
+    NSDictionary *mapping=TTControlMerged(defaults,titleID);
+    NSMutableDictionary *touchFace=[NSMutableDictionary new];
+    NSArray *face=@[@"A",@"B",@"X",@"Y"];
+    for(NSString *button in face)if([face containsObject:mapping[button]])touchFace[button]=mapping[button];
+    NSString *touchMap=TTControlEnvironment(touchFace);
+    if(touchMap.length)setenv("DM_TOUCH_FACE_MAP",touchMap.UTF8String,1);
+    else unsetenv("DM_TOUCH_FACE_MAP");
     // A profile-owned map remains authoritative, including an empty map.
     if(!librarySetting(titleID,@"DM_PAD_MAP")) {
-        NSDictionary *mapping=TTControlMerged(defaults,titleID);
         if(mapping.count)setenv("DM_PAD_MAP",TTControlEnvironment(mapping).UTF8String,1);
     }
 }
@@ -192,8 +198,11 @@ static NSArray<NSDictionary *> *games(void){
     return all;
 }
 static NSString *bundleForGame(NSDictionary *g){return g[@"bundle"] ?: [@"org.nxnative." stringByAppendingString:g[@"id"]];}
+#import "LibraryArtwork.h"
 static UIImage *coverForGame(NSDictionary *g){
     NSString *title=g[@"id"];
+    UIImage *preferred=TTLibraryPreferredArtwork(title,NO);
+    if(preferred)return preferred;
     UIImage *bundled=[UIImage imageNamed:title];
     if(bundled)return bundled;
     NSString *local=[NSBundle.mainBundle pathForResource:title ofType:@"png"];

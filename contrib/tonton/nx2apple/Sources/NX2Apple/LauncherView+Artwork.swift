@@ -49,6 +49,8 @@ extension LauncherView {
             await MainActor.run {
                 guard artworkFetchGeneration == generation, loc.lang.code == language else { return }
                 refreshArtwork()
+                let titles = Set(added.map { $0.uppercased() })
+                for game in library.games where titles.contains(game.titleID.uppercased()) { sendLibraryArtwork(game) }
             }
         }
     }
@@ -70,10 +72,15 @@ extension LauncherView {
     func closeArtwork(save: Bool) {
         guard let editor = artworkEditor else { return }
         if save { guard editor.save(to: library) || !editor.isDirty else { return } } else { editor.cancel() }
+        if save, let game = library.games.first(where: { $0.id == editor.gameID }) { sendLibraryArtwork(game) }
         withAnimation(.easeOut(duration: 0.18)) { artworkEditor = nil }
         artworkSlot = nil
         artworkPreview = nil
         refreshArtwork()
+    }
+
+    func sendLibraryArtwork(_ game: LibraryGame) {
+        LibraryArtworkDelivery.enqueue(game: game, repo: stores.repo.path, banners: library.artworkDirectory, xcrun: m.devices.xcrun)
     }
 
     /// The draft arrived: the hero and the game's card draw it, decoded at their own sizes. The hero is up to 4K, so the decode runs

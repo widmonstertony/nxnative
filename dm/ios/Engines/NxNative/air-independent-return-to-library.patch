@@ -8,7 +8,24 @@
  #ifdef DM_WEB_RUNTIME
  #import "TonTonWebRuntime.h"
  #endif
-@@ -433,6 +434,7 @@
+@@ -415,7 +416,15 @@
+         if([titleID isEqual:@"redalert2"]){
+             NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+-            UIViewController *game=TonTonWebRuntimeController(titleID,[documents stringByAppendingPathComponent:@"Games/redalert2"]);
++            UIViewController *library=owner.window.rootViewController;
++            UIViewController *game=TonTonWebRuntimeControllerWithReturn(titleID,[documents stringByAppendingPathComponent:@"Games/redalert2"],^{
++                SceneDelegate *current=weakSelf;
++                if(!current)return;
++                g_boot_ok=0;
++                current.window.rootViewController=library;
++                [library setNeedsUpdateOfSupportedInterfaceOrientations];
++                [current.window makeKeyAndVisible];
++            });
+             if(game){g_boot_ok=1;owner.window.rootViewController=game;}
+             return;
+         }
+ #endif
+@@ -433,6 +442,7 @@
              return;
          }
  #endif
@@ -16,7 +33,7 @@
          setenv("DM_LIBRARY_GAME_ID",titleID.UTF8String,1);
          if(!boot_env()){
              UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"卡带暂时无法启动" message:@"请检查该游戏的资源是否已完整移入游戏匣。" preferredStyle:UIAlertControllerStyleAlert];
-@@ -446,6 +448,22 @@
+@@ -446,6 +456,22 @@
          fprintf(stderr, "boot: effective frame pacing %s, present Hz %s\n",
                  getenv("DM_FRAME_LIMIT"), getenv("DM_PRESENT_HZ") ?: "engine default");
          if (g_independent_host.start) {
@@ -39,7 +56,7 @@
              g_independent_host.setCatalog(independent_catalog);
              const char *error = g_independent_host.start((const char *const *)g_argv, g_argc, g_independent_image);
              if (error) {
-@@ -454,7 +472,10 @@
+@@ -454,7 +480,10 @@
                      message:@"游戏自带引擎未能启动。" preferredStyle:UIAlertControllerStyleAlert];
                  [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
                  [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];

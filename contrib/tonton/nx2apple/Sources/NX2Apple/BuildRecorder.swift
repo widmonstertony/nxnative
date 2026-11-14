@@ -19,12 +19,14 @@ import NXLauncher
     private let library: GameLibrary
     private let engine: EngineSyncStore
     private let repoPath: () -> String
+    private let deviceXcrun: () -> String
     private var watching: Set<AnyCancellable> = []
 
     /// - Parameter activeBuildID: visual QA: a build drawn as running on this game.
     init(stores: LauncherStores, library: GameLibrary, activeBuildID: UUID? = nil) {
         build = stores.build; self.library = library; engine = stores.engineSync
         repoPath = { [repo = stores.repo] in repo.path }
+        deviceXcrun = { [build = stores.build] in build.devices.xcrun }
         self.activeBuildID = activeBuildID
         stores.settleFinishedBuild = { [weak self] in self?.settleBeforeNextQueuedBuild() }
         build.onBatchShellInstalled = { [weak self] games, app, device in
@@ -35,6 +37,7 @@ import NXLauncher
                 if let game = found {
                     let commit = game.toolsCommit.isEmpty ? self.buildCommit : game.toolsCommit
                     self.library.recordCompletedIOS(archive: item.archive, app: app, device: device, commit: commit, for: game.id)
+                    self.sendArtwork(for: game.id)
                 }
             }
             self.library.recordSharedAppInstalled(app: app, device: device)
@@ -88,6 +91,7 @@ import NXLauncher
             library.recordCompletedApp(path: build.macAppPath, commit: buildCommit, for: id)
         } else if !build.installedAppPath.isEmpty {
             library.recordCompletedIOS(archive: build.archivePath, app: build.installedAppPath, device: build.installedOn, commit: buildCommit, for: id)
+            sendArtwork(for: id)
         } else if !build.archivePath.isEmpty, var game = library.games.first(where: { $0.id == id }) {
             game.archivePath = build.archivePath
             game.lastTarget = BuildTarget.ios
@@ -95,5 +99,10 @@ import NXLauncher
             library.upsert(game)
         }
         recorded.send()
+    }
+
+    private func sendArtwork(for id: UUID) {
+        guard let game = library.games.first(where: { $0.id == id }) else { return }
+        LibraryArtworkDelivery.enqueue(game: game, repo: repoPath(), banners: library.artworkDirectory, xcrun: deviceXcrun())
     }
 }

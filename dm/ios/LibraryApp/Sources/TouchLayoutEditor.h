@@ -1,6 +1,7 @@
 #pragma once
 #import <UIKit/UIKit.h>
 #import "../../Sources/DmPadGeometry.h"
+#import "ControlPreferences.h"
 
 static NSString *const TTPadLayoutPreference = @"tonton.touch-layout.v2";
 static NSString *TTPadLayoutKey(NSString *titleID) {
@@ -72,8 +73,13 @@ static void TTApplyTouchLayout(NSString *titleID) {
     _canvas=[UIView new];_canvas.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
     _canvas.layer.cornerRadius=14;_canvas.clipsToBounds=YES;
     NSMutableArray *buttons=[NSMutableArray new];
-    // Upstream slots are right/bottom/top/left; the normal game labels are B/A/Y/X.
-    NSArray *labels=@[@"ABXY",@"B",@"A",@"Y",@"X",@"\u6447\u6746",@"\u5341\u5B57",@"ZL",@"L",@"ZR",@"R",@"L3",@"R3",@"\u2212",@"+"];
+    // Use the same face-key slots and labels as the game renderer.
+    NSMutableArray *labels=[@[@"ABXY",@"A",@"B",@"X",@"Y",@"\u6447\u6746",@"\u5341\u5B57",@"ZL",@"L",@"ZR",@"R",@"L3",@"R3",@"\u2212",@"+"] mutableCopy];
+    NSDictionary *mapping=TTControlMerged(NSUserDefaults.standardUserDefaults,_titleID);
+    for(NSUInteger c=DM_PAD_C_A;c<=DM_PAD_C_Y;c++){
+        NSString *output=mapping[labels[c]];
+        if([@[@"A",@"B",@"X",@"Y"] containsObject:output])labels[c]=output;
+    }
     for(int c=0;c<DM_PAD_C_N;c++){
         UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];b.tag=c;
         [b setTitle:labels[c] forState:UIControlStateNormal];
