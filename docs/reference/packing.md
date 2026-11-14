@@ -2,6 +2,20 @@
 
 ## Game packages
 
+### An imported TonTon Mac game selects iPhone when configuring a build
+
+- **Symptom:** configuring an imported Mac game selects the iPhone target and asks for device setup.
+- **Cause:** TonTon's catalog importer wrote `mac`, but `LibraryGame` normalizes only the frontend's `mac-app` token as a Mac target. Other tokens decode as iOS.
+- **Fix:** use `BuildTarget.mac` for imported installed games, catalog placeholders and verified local Mac configurations. The current build form remains the user's choice.
+- **Found on:** [Hyrule Warriors: Age of Imprisonment](../../dm/games/04003F40232DE000/README.md), during setup of an unbuilt Mac game.
+
+### TonTon rejects a complete NUP reached through a symbolic link
+
+- **Symptom:** a managed source link is reported as a partial NUP and its game is absent from the build selection.
+- **Cause:** the frontend opened the target but compared the header's container length with `attributesOfItem` on the link, which reports the link's own size.
+- **Fix:** `GameFolder.readNUP` gets the length from the same open file handle with `seekToEnd`, then seeks to the TOC. The linked input path stays intact; truncated targets still fail the length check. An unavailable target is still rejected.
+- **Found on:** [Hyrule Warriors: Age of Imprisonment](../../dm/games/04003F40232DE000/README.md), a read-only source linked into TonTon's managed input folder. This is an input validation check, not a new gameplay test.
+
 ### An iOS build stops when the profile has no prewarm seed list
 
 - **Symptom:** after the shader build, `build_ipa.sh` stops at `copy shader tables` because `pso_manifest.tsv` does not exist. This also stops the shell's game-framework build.
@@ -164,6 +178,13 @@
 - **Cause:** installed-bundle discovery knows the title and app path, but not the verified source version, custom profile or work directory. The folder scanner accepted unpacked `romfs/` directories only, although `pack_dump.py` accepts images too.
 - **Fix:** the TonTon frontend imports a local build configuration only for the matching title and canonical source directory. It preserves the version and external profile, uses the configured independent work directory and Mac shader cache, and places the result in the chosen Applications subfolder. `GameFolder.scan` accepts the packer's complete image layouts, including a standalone update and image-based DLC. An unrelated source does not inherit that configuration. An already queued/running external update is shown instead of starting a duplicate build. A profile may explicitly declare `graphics_api` (`nvn`, `vulkan`, `gl`) when the imports contain several SDK APIs; this overrides the survey guess without changing other games.
 - **Found on:** the local TonTon library import, including [Ocarina of Time](../../dm/games/0400486024DEC000/README.md), whose complete standalone update has no separate base, and retained Vulkan input for Re:Zero. Synthetic directory, work reuse and output-placement tests pass; these are not gameplay acceptance.
+
+### An unbuilt library entry has a disabled setup button without an explanation
+
+- **Symptom:** Launch options shows an unbuilt game and a disabled Build this game button, even though selecting its source files is the next step.
+- **Cause:** the action required a nonempty `base` slot before opening the setup form and also disabled itself whenever another game was building. Folder/NUP-only inputs were treated as missing by the same base-only checks elsewhere in the UI.
+- **Fix:** use the same input rule for NSP bases and game folders/NUPs. An idle catalog entry with no files opens file setup; an entry with files opens its build configuration. During another build, the action explicitly opens the current progress page and leaves the running task's inputs unchanged. An empty slot or an update alone is not a full input. Untouched imported Mac catalog placeholders use the Mac target.
+- **Found on:** [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md) in the TonTon Mac library. Synthetic tests cover missing files, folders/NUPs, update-only inputs and an active build. This UI change does not repair a damaged original package.
 
 ### RomFS folder transfers fail or leave stale game files
 

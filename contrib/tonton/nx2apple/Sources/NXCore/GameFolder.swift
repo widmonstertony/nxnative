@@ -270,7 +270,9 @@ package enum GameFolder {
         func u(_ b: [UInt8], _ o: Int, _ n: Int) -> UInt64 { (0..<n).reduce(UInt64(0)) { $0 | UInt64(b[o + $1]) << (8 * UInt64($1)) } }
         let head = [UInt8](h.readData(ofLength: 0x80))
         guard head.count == 0x80, head[0..<3].elementsEqual("NUP".utf8), head[3] == 1 else { return .failure(.notNUP(name)) }
-        let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? UInt64 ?? 0
+        // Statting a symbolic link reports the link's length, not the container
+        // opened above. Check this same file handle, including for managed links.
+        let size = (try? h.seekToEnd()) ?? 0
         if u(head, 0x40, 8) != size { return .failure(.nupPartial(name)) }
         let toc = u(head, 0x08, 8), tocSize = u(head, 0x10, 8), count = Int(u(head, 0x48, 4))
         let minTable = UInt64(0x30 + max(0, count) * 0x40)

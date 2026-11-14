@@ -18,7 +18,7 @@ struct BuildSelectedSheet: View {
     @EnvironmentObject var loc: Localizer
     @State private var checked: Set<UUID> = []
 
-    private var candidates: [LibraryGame] { library.games.filter { $0.inputs[GameLibrary.folderInput] != nil || !($0.inputs["base"] ?? []).isEmpty } }
+    private var candidates: [LibraryGame] { library.games.filter { GameBuildSetup.hasInputs($0.inputs) } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
