@@ -208,7 +208,7 @@ static NSArray *TonTonSeedResourceImportTasks(NSString *documents,id tasks) {
         @finally{if(temporaryOwned)[fm removeItemAtPath:temporary error:nil];}
     }return results;
 }
-static NSArray *TonTonImportPendingResources(NSString *documents) {
+static NSArray *TonTonImportPendingResourcesWithProgress(NSString *documents, void (^progress)(NSDictionary *)) {
     static NSObject *guard;static dispatch_once_t once;dispatch_once(&once,^{guard=[NSObject new];});
     @synchronized(guard){
         NSMutableArray *results=[NSMutableArray new];NSFileManager *fm=NSFileManager.defaultManager;
@@ -242,7 +242,9 @@ static NSArray *TonTonImportPendingResources(NSString *documents) {
                 else result=@{@"status":@"failed",@"reason":error.reason?:@"导入失败"};
             }
             [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil] writeToFile:receiptPath options:NSDataWritingAtomic error:nil];
-            [results addObject:result];
+            [results addObject:result];if(progress)progress(result);
         }return results;
     }
 }
+
+static NSArray *TonTonImportPendingResources(NSString *documents) { return TonTonImportPendingResourcesWithProgress(documents,nil); }

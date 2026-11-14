@@ -49,12 +49,20 @@ static void check_layout_values(void) {
         || l.dx[DM_PAD_SET_2D][DM_PAD_C_FACE] != 0 || l.dy[DM_PAD_SET_2D][DM_PAD_C_FACE] != -2 || l.dx[DM_PAD_SET_2D][DM_PAD_C_STICK] != 1
         || l.dy[DM_PAD_SET_2D][DM_PAD_C_STICK] != -1 || l.dx[DM_PAD_SET_3D][DM_PAD_C_A] != -1 || l.dx[DM_PAD_SET_3D_SPLIT][DM_PAD_C_ZL] != 64
         || l.dy[DM_PAD_SET_3D_SPLIT][DM_PAD_C_ZL] != -64 || dm_pad_layout_count(&l) != 4) FAIL("DM_TOUCH_LAYOUT: a valid value is not read as written");
+    if (!dm_pad_layout_parse("2;2d/a:2048,-2048;3d/stick:1,-1", &l)
+        || l.precision != 2 || l.dx[DM_PAD_SET_2D][DM_PAD_C_A] != 2048
+        || l.dy[DM_PAD_SET_2D][DM_PAD_C_A] != -2048
+        || l.dx[DM_PAD_SET_3D][DM_PAD_C_STICK] != 1) FAIL("fine layout: range or precision lost");
+    DmPadGeo stepGeo = {0}; stepGeo.u = 10; stepGeo.faceR = 30;
+    if (dm_pad_layout_step(&stepGeo, &l) != 5) FAIL("fine layout must use half-unit steps");
+    l.precision = 1;
+    if (dm_pad_layout_step(&stepGeo, &l) != 15) FAIL("legacy layout step changed");
     // A newer shell's layout or control: skipped, the rest is read.
     if (!dm_pad_layout_parse("1;4d/a:1,1;2d/home:3,3/b:2,0", &l) || dm_pad_layout_count(&l) != 1 || l.dx[DM_PAD_SET_2D][DM_PAD_C_B] != 2)
         FAIL("DM_TOUCH_LAYOUT: an unknown layout or control is not skipped");
     // Anything else is ignored whole: the controls keep their built-in places.
     static const char *bad[] = {
-        "2;2d/a:1,1", "x", "1x", "1;2d/a", "1;2d/a:", "1;2d/a:1", "1;2d/a:1,", "1;2d/a:1,1,1", "1;2d/a:+1,1", "1;2d/a:65,0", "1;2d/a:0,-65",
+        "3;2d/a:1,1", "2;2d/a:2049,0", "2;2d/a:0,-2049", "x", "1x", "1;2d/a", "1;2d/a:", "1;2d/a:1", "1;2d/a:1,", "1;2d/a:1,1,1", "1;2d/a:+1,1", "1;2d/a:65,0", "1;2d/a:0,-65",
         "1;2d/a:1000,0", "1;2d/a:0001,0", "1;2d/A:1,1", "1;2d/a:1,1 ", " 1;2d/a:1,1", "1;2d/a:1,1/", "1;2d/:1,1", "1;2d/a:--1,1", "1;2d/a:1.5,1",
         "1;2d/a:1,1\n2d", "1;2d/a=1,1", "1;2d//a:1,1",
     };
@@ -80,7 +88,7 @@ static void check_layout_values(void) {
         BOOL ok = dm_pad_layout_parse(v, &l);
         if (!ok && !layout_empty(&l)) FAIL("DM_TOUCH_LAYOUT '%s': rejected but not empty", v);
         for (int s = 0; s < DM_PAD_SET_N; s++) for (int c = 0; c < DM_PAD_C_N; c++)
-            if (abs(l.dx[s][c]) > DM_PAD_STEP_MAX || abs(l.dy[s][c]) > DM_PAD_STEP_MAX) FAIL("DM_TOUCH_LAYOUT '%s': a step out of range", v);
+            if (abs(l.dx[s][c]) > (l.precision == 2 ? DM_PAD_FINE_STEP_MAX : DM_PAD_STEP_MAX) || abs(l.dy[s][c]) > (l.precision == 2 ? DM_PAD_FINE_STEP_MAX : DM_PAD_STEP_MAX)) FAIL("DM_TOUCH_LAYOUT '%s': a step out of range", v);
     }
 }
 

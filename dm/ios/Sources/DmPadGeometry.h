@@ -27,7 +27,7 @@ enum { DM_PAD_C_FACE = 0, DM_PAD_C_A, DM_PAD_C_B, DM_PAD_C_X, DM_PAD_C_Y, DM_PAD
 enum { DM_PAD_SET_2D = 0, DM_PAD_SET_3D, DM_PAD_SET_2D_SPLIT, DM_PAD_SET_3D_SPLIT, DM_PAD_SET_N };
 // Each control's offset from its built-in place, in steps of a quarter of a face key's width at the player's size, so it scales with the
 // controls and not with the screen. 0 0 is the built-in place.
-typedef struct { signed char dx[DM_PAD_SET_N][DM_PAD_C_N], dy[DM_PAD_SET_N][DM_PAD_C_N]; } DmPadLayout;
+typedef struct { short dx[DM_PAD_SET_N][DM_PAD_C_N], dy[DM_PAD_SET_N][DM_PAD_C_N]; int precision; } DmPadLayout;
 
 typedef struct {
     CGFloat scale;   // DM_TOUCH_SIZE: 0.8 small, 1 medium (the built-in size), 1.2 large
@@ -226,27 +226,29 @@ static inline DmPadGeo dm_pad_geo_placed(CGRect bounds, UIEdgeInsets insets, DmL
 // dm_pad_arrange then moves a control only to where it stays inside the area its built-in place uses and clear of every other control.
 static const char *_Nonnull const dm_pad_control_names[DM_PAD_C_N] = {"face", "a", "b", "x", "y", "stick", "dpad", "zl", "l", "zr", "r", "l3", "r3", "minus", "plus"};
 static const char *_Nonnull const dm_pad_set_names[DM_PAD_SET_N] = {"2d", "3d", "2s", "3s"};
-enum { DM_PAD_LAYOUT_MAX = 1024, DM_PAD_STEP_MAX = 64 };
+enum { DM_PAD_LAYOUT_MAX = 1536, DM_PAD_STEP_MAX = 64, DM_PAD_FINE_STEP_MAX = 2048 };
 static const CGFloat DM_PAD_MOVE_GAP = 10;   // a moved control keeps this far from every other drawn control: 10 u, and at least 10 points
 
 static inline int dm_pad_name_index(const char *p, size_t n, const char *_Nonnull const *_Nonnull names, int count) {
     for (int i = 0; i < count; i++) if (strlen(names[i]) == n && !strncmp(p, names[i], n)) return i;
     return -1;
 }
-static inline BOOL dm_pad_parse_step(const char *_Nonnull *_Nonnull pp, signed char *out) {
+static inline BOOL dm_pad_parse_step(const char *_Nonnull *_Nonnull pp, short *out, int limit) {
     const char *p = *pp; int sign = 1, v = 0, digits = 0;
     if (*p == '-') { sign = -1; p++; }
-    while (*p >= '0' && *p <= '9') { if (++digits > 3) return NO; v = v * 10 + (*p++ - '0'); }
-    if (!digits || v > DM_PAD_STEP_MAX) return NO;
-    *out = (signed char)(sign * v); *pp = p;
+    while (*p >= '0' && *p <= '9') { if (++digits > (limit == DM_PAD_STEP_MAX ? 3 : 4)) return NO; v = v * 10 + (*p++ - '0'); }
+    if (!digits || v > limit) return NO;
+    *out = (short)(sign * v); *pp = p;
     return YES;
 }
 // NO for a value it ignored. out is then the built-in layout, as for an unset or empty value (which give YES).
 static inline BOOL dm_pad_layout_parse(const char *_Nullable v, DmPadLayout *out) {
     memset(out, 0, sizeof *out);
     if (!v || !*v) return YES;
-    if (strnlen(v, DM_PAD_LAYOUT_MAX + 1) > DM_PAD_LAYOUT_MAX || v[0] != '1' || (v[1] && v[1] != ';')) return NO;
+    if (strnlen(v, DM_PAD_LAYOUT_MAX + 1) > DM_PAD_LAYOUT_MAX || (v[0] != '1' && v[0] != '2') || (v[1] && v[1] != ';')) return NO;
     DmPadLayout l; memset(&l, 0, sizeof l);
+    l.precision = v[0] - '0';
+    int limit = l.precision == 2 ? DM_PAD_FINE_STEP_MAX : DM_PAD_STEP_MAX;
     const char *p = v + 1;
     while (*p == ';') {
         const char *name = ++p;
@@ -256,12 +258,12 @@ static inline BOOL dm_pad_layout_parse(const char *_Nullable v, DmPadLayout *out
             const char *control = ++p;
             while ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9')) p++;
             size_t n = (size_t)(p - control);
-            signed char dx, dy;
+            short dx, dy;
             if (!n || *p != ':') return NO;
             p++;
-            if (!dm_pad_parse_step(&p, &dx) || *p != ',') return NO;
+            if (!dm_pad_parse_step(&p, &dx, limit) || *p != ',') return NO;
             p++;
-            if (!dm_pad_parse_step(&p, &dy)) return NO;
+            if (!dm_pad_parse_step(&p, &dy, limit)) return NO;
             int c = dm_pad_name_index(control, n, dm_pad_control_names, DM_PAD_C_N);
             if (set >= 0 && c >= 0) { l.dx[set][c] = dx; l.dy[set][c] = dy; }
         }
@@ -341,13 +343,16 @@ static inline CGPoint dm_pad_clamp(const DmPadGeo *g, BOOL full, int c) {
     if (CGRectIsNull(within)) return CGPointZero;
     return CGPointMake(dm_pad_clamp_1d(x0, x1, CGRectGetMinX(within), CGRectGetMaxX(within)), dm_pad_clamp_1d(y0, y1, CGRectGetMinY(within), CGRectGetMaxY(within)));
 }
+static inline CGFloat dm_pad_layout_step(const DmPadGeo *g, const DmPadLayout *layout) {
+    return layout->precision == 2 ? g->u * 0.5 : g->faceR / 2;
+}
 // The arrangement of the current layout, on top of the size and the stick's place. Two rounds: the diamond and the other controls, then the
 // keys of the diamond on their own, from where the diamond ended up. Each round places every control that fits and tries the rest again,
 // so a control can take a place another one has left. A control that never fits keeps its place (dropped). Whatever the value, the result
 // is a layout in which every control is inside its area and no two overlap.
 static inline void dm_pad_arrange(DmPadGeo *g, BOOL full, BOOL separated, const DmPadLayout *layout) {
     int set = (separated ? DM_PAD_SET_2D_SPLIT : DM_PAD_SET_2D) + (full ? 1 : 0);
-    CGFloat step = g->faceR / 2;   // a quarter of a face key's width
+    CGFloat step = dm_pad_layout_step(g, layout);
     const unsigned keys = 1u << DM_PAD_C_A | 1u << DM_PAD_C_B | 1u << DM_PAD_C_X | 1u << DM_PAD_C_Y;
     unsigned want = 0;
     for (int c = 0; c < DM_PAD_C_N; c++) if (dm_pad_control_drawn(c, full) && (layout->dx[set][c] || layout->dy[set][c])) want |= 1u << c;
