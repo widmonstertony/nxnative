@@ -75,6 +75,14 @@ audit for 2.0.2. The Mac build page can sign and update the independently
 linked engine in the existing gamebox. See the
 [installation guide](../../../docs/ios16-ios17.md#build-in-tonton-gamebox-on-mac).
 
+On an M2 iPad running iPadOS 16.1, TonTon 60.104 was installed over the
+existing gamebox. Readback verified the signed independent host, shader chain
+`38be749279d0`, the unchanged RomFS image, and the original save fingerprints.
+An isolated save with cloud sync disabled reached the Simplified Chinese setup,
+passed the 3D opening, and reached the playable station. The protagonist was
+visible in third person; movement and camera rotation both responded.
+This smoke test does not establish performance across the city or in combat.
+
 ## Pipeline bases made before the game runs
 
 - **Resolved: the Mac app's bundled pipeline archive was built for the wrong depth mode** (GitHub issue #614, MacBook Air M4, Mac app at `38b8907`). The game calls `nvnDeviceSetDepthMode` with near = 0 (`[nvn] depth mode near=0` in the Mac report and in both iPhone logs of issues #149 and #292), and the profile had no `depth_mode`, so the NSP script's prebuild made the bundled archive's 1.2 GB of bases for near = −w (`main0` vertex entries). The host follows the game's mode and found none of them: `pipeline archive bundled with the app: made for … depth near=-w … this run needs … depth near=0 … the device builds the bases it does not hold`. Every base then compiled on the Mac while playing (`archive lookups … found none 6`, `bases compiled 3 / 258.6 ms` up to frame 1200), one cause of the hitches on new moves and effects that the report describes. **Current:** `depth_mode zero`, as Legends: Arceus, Scarlet and Violet set; it changes only the bases made offline (the shader input digest and the libraries are unchanged), so an app or IPA packed again gets an archive the game uses. **Open:** not yet re-measured with a repacked app; shader library loads (`shader libraries 12` in the report's 105 ms frame) are not covered by the archive. The report's other symptom, frame intervals alternating 33 / 50 ms in fullscreen with the GPU at 23–25 ms a frame (`old frames dropped by merging 157` per 300 ticks, gone while macOS screen capture runs), is not explained by this; see [Frame latency 2 for the display link in fullscreen](../../../docs/reference/frame-rate.md#frame-latency-2-for-the-display-link-in-fullscreen).
