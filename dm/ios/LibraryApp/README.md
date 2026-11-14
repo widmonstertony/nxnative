@@ -28,6 +28,15 @@ remain on that device or in its local build. Game resources, saves and signing
 material must not be committed. The separate `NXGameLibrary` target remains a
 UI-only prototype and is not evidence that the shared host can run a game.
 
+`Sources/LibraryAppearance16.h` draws the same TonTon catalog with a
+full-width artwork backdrop on phones and a split composition in landscape.
+The collection scrolls sideways on compact portrait screens and uses a grid
+elsewhere. Cover selection updates the artwork and details; Play validates
+the existing game before opening it. Long-press actions and controller
+navigation still use the shared library implementation. iOS 26 or later
+uses UIKit glass controls; the iOS 16.1 target uses standard button
+configurations with the same layout.
+
 The **+** button imports an existing prepared game folder into that layout,
 or moves a raw NSP/XCI/NSZ/NCA into `Documents/Imports` as a pending card.
 Raw packages need the usual extraction, guest patching and shader build before
@@ -35,7 +44,6 @@ they can run. Adding an unregistered guest program also requires rebuilding
 and signing the host app; the file picker alone cannot add executable code to
 an already signed iOS binary.
 
-The same host cannot start a second game in the current process. The selected
-profile and graphics state are process-wide and initialize once. A return to
-the library and subsequent game switch needs a controlled host teardown or a
-fresh process launch; the current card flow starts one game per app launch.
+The original shared host initializes process-wide profile and graphics state
+once. An independent game host can return to the shelf in the same process
+only if it implements [the optional teardown contract](../Engines/NxNative/README.md#independent-engine-return-to-the-library-air-6078).
