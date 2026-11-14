@@ -49,6 +49,20 @@ import NXModel
         XCTAssertFalse(EngineLayout.needsSyncBeforeBuild(repo))
     }
 
+    func testPackagedCheckoutWinsOverDiscoveryButKeepsAnExplicitSupportedChoice() throws {
+        try touch(EngineLayout.marker)
+        try touch("nearby/" + EngineLayout.marker)
+        try touch("nearby/" + RepoLayout.buildScript, "p.add_argument('--work-dir')\n")
+        let nearby = root.appendingPathComponent("nearby")
+        let bundle = nearby.appendingPathComponent("TonTon.app")
+        testDefaults.set(repo, forKey: "repoPath")
+        XCTAssertEqual(RepoLayout.find(defaults: testDefaults, bundleURL: bundle, currentDirectory: nearby.path,
+                                       home: repo, packagedRepo: repo), repo)
+        testDefaults.set(nearby.path, forKey: "repoPath")
+        XCTAssertEqual(RepoLayout.find(defaults: testDefaults, bundleURL: bundle, currentDirectory: nearby.path,
+                                       home: repo, packagedRepo: repo), nearby.path)
+    }
+
     func testTheBuildScriptComesFromTheCheckoutsEngine() throws {
         try newLayout()
         try syncedEngine()

@@ -62,7 +62,8 @@ package enum RepoLayout {
     /// it, then fall back to a saved choice. A repository is identified by
     /// dm/tools/nx_extract/Program.cs, which only exists in a real checkout.
     package static func find(defaults: UserDefaults = .standard, bundleURL: URL = Bundle.main.bundleURL,
-                             currentDirectory: String = FileManager.default.currentDirectoryPath, home: String = NSHomeDirectory()) -> String {
+                             currentDirectory: String = FileManager.default.currentDirectoryPath, home: String = NSHomeDirectory(),
+                             packagedRepo: String? = Bundle.main.object(forInfoDictionaryKey: "TonTonEngineSource") as? String) -> String {
         // A candidate that is merely a repository (an upstream nxnative clone) must lose to one
         // carrying this fork's `--work-dir`: building from an upstream checkout fails with
         // "unrecognized arguments" after the app has already picked it — and a saved path from an
@@ -70,6 +71,13 @@ package enum RepoLayout {
         // (the report's build log). The fork check is the script's own argparse, not a name match,
         // so a checkout under any folder name ranks correctly.
         let saved = defaults.string(forKey: "repoPath").flatMap { isRepo($0) ? $0 : nil }
+        // The locally packaged TonTon app knows its own checkout. Do not open every unrelated
+        // repository during window creation, particularly on protected or disconnected volumes.
+        if let packagedRepo, isRepo(packagedRepo) {
+            guard let saved, saved != packagedRepo else { return packagedRepo }
+            return supportsWorkDir(saved) ? saved : packagedRepo
+        }
+        if let saved, supportsWorkDir(saved) { return saved }
         var seeds: [String] = []
         // the app bundle: …/frontend/NX2Apple.app/Contents/MacOS — the checkout it ships from wins
         let bundle = bundleURL.standardizedFileURL
@@ -93,9 +101,7 @@ package enum RepoLayout {
                 d = up
             }
         }
-        let forks = repos.filter { supportsWorkDir($0) }
-        if let saved, supportsWorkDir(saved) { return saved }   // the player's own fork checkout
-        if let f = forks.first, f != saved {
+        if let f = repos.first(where: { supportsWorkDir($0) }), f != saved {
             if let saved { fputs("launcher: using the fork checkout \(f); the saved repository \(saved) is an upstream clone without --work-dir\n", stderr) }
             return f
         }
