@@ -84,10 +84,10 @@ static UIColor *TTLibraryAccent16(void) {
 #endif
     playStyle.title=@"\u5F00\u59CB\u6E38\u620F";playStyle.image=[UIImage systemImageNamed:@"play.fill"];
     playStyle.imagePadding=9;playStyle.cornerStyle=UIButtonConfigurationCornerStyleLarge;
-    playStyle.baseBackgroundColor=TTLibraryAccent16();
-    playStyle.baseForegroundColor=[UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
-        return traits.userInterfaceStyle==UIUserInterfaceStyleDark?C(35,22,61):UIColor.whiteColor;
-    }];
+    // Prominent glass can choose a white label. Keep enough contrast even
+    // when UIKit applies that system color instead of the requested tint.
+    playStyle.baseBackgroundColor=C(72,49,133);
+    playStyle.baseForegroundColor=UIColor.whiteColor;
     self.play.configuration=playStyle;self.play.backgroundColor=UIColor.clearColor;
     self.gameSettings=[self button:@"\u672C\u6E38\u620F\u8BBE\u7F6E" symbol:@"slider.horizontal.3" action:@selector(settingsSelected)];
     self.appSettings=[self button:@"\u8BBE\u7F6E" symbol:@"gearshape" action:@selector(showSettings)];
