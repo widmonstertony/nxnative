@@ -39,15 +39,18 @@ on tvOS 26 and later and standard focusable controls on earlier versions.
 Pass `--gamebox` to open the prepared title in the TonTon game shelf. Add a
 catalogue entry with `--preview-game 01001F5010DFA000 '宝可梦传说：阿尔宙斯' /path/to/banner.jpg`.
 The gamebox then opens a gallery of 16:9 cover cards navigable with the remote.
-Selecting the prepared title opens its settings and Start page; preview cards
-are marked “仅供预览” and cannot launch another title or access its save.
-The app keeps its existing bundle identifier and save path. “本游戏设置” stores the controller button
+Selecting a game opens its settings and Start page. A card is only a preview
+when it has no bundled tvOS runtime. The same app can launch Z-A or a signed
+native Arceus 1.1.1 framework. Arceus has independent game files, shaders,
+controller settings and saves. Z-A retains its bundle identifier, resources,
+and save path. “本游戏设置” stores the controller button
 mapping and controller help preferences for that title. Press Play/Pause on
 the Siri Remote or hold Options on a supported gamepad to open the panel.
 After saving normally in the game, choose
 “存档并返回游戏匣” from the controls panel to pause the session.
-“继续游戏” resumes the same process. Additional games require a tvOS host,
-game files and compatible shaders; the gallery does not load iOS frameworks.
+“继续游戏” resumes the same process. One game can own the process at a time:
+to start a different title, first save and reopen the gamebox. A card never
+loads an iOS framework.
 
 ## Static signed module layout
 
@@ -90,6 +93,28 @@ clang -std=c11 -I dm/host dm/tvos/tests/test_remote.c -o /tmp/test-tv-remote
 /tmp/test-tv-remote
 python3 dm/tvos/tests/test_remote_ui.py --output /path/to/remote-ui-qa
 ```
+
+### Add a native game to the shared library
+
+1. Prepare that title's rewritten modules, fixups and profile for a matching
+   runtime checkout. Use `compile_shaders.py --runtime-source … --package …
+   --source-cache … --output …` with that checkout and the same game profile.
+   Use dedicated tvOS shader and translation caches. The tool preserves the
+   translator's version and generates tvOS libraries, including its variants
+   and matching reflection. Carry over the tables from the completed build.
+2. Package the tvOS output under `msl/` as USTAR/gzip and compute its SHA-256.
+   Build the game framework with `prepare_project.py --runner-title-id …`,
+   `--romfs-identity …` (from `romfs_image.py --identity`) and the archive SHA.
+   Set the same native runtime's title ID in the profile and framework. Run
+   `verify_segments.py` on the framework before signing.
+3. Prepare the main app with its existing configuration and add the built
+   framework with `--runner-framework …` and an artwork entry with
+   `--preview-game TITLE_ID DISPLAY_NAME ARTWORK`. Sign the embedded
+   framework before signing the app. Stage the title's `RomFS.img` and
+   `msl.tar.gz` under `Library/Caches/TonTonGames/<UPPERCASE_TITLE_ID>/`.
+   The runtime checks the image's identity and verifies the shader archive
+   before running the game. Each title uses the title ID in CloudKit and
+   the isolated `save/` directory in its own local root.
 
 To use automatic save sync, pass `--cloud-container` with the existing shared
 private CloudKit container and `--cloud-environment` with the environment used

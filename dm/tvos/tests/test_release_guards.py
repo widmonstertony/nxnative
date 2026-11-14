@@ -13,7 +13,7 @@ def main():
     prepare_path = tv / 'tools/prepare_project.py'
     prepare_source = prepare_path.read_text()
 
-    assert 'NSString *msl = imported ? externalMSL : bundledMSL;' in main_source
+    assert 'boot_msl = imported ? externalMSL : bundledMSL;' in main_source
     assert '!imported && (archiveAvailable || !bundledDirectory)' in main_source
     assert 'if (![fm fileExistsAtPath:msl])' not in main_source
     assert 'preparation_started = 0; // a later foreground/start event may retry' in main_source

@@ -17,6 +17,9 @@ void dm_focus_set(int a) {}
 void guest_clock_freeze_for(int r,int a) {}
 void dm_gfx_suspend(int a) {}
 void front_tv_start(void) {}
+NSString *front_tv_save_path(void) { return @"/test/save"; }
+BOOL front_tv_runtime_blocked(void) { return NO; }
+void front_tv_show_runtime(NSString *title, NSString *titleID, UIViewController *presenter) {}
 int front_tv_ready(void) { return 1; }
 int front_tv_preparing(void) { return 0; }
 int front_cloudkit_configured(void) { return getenv("TV_MOCK_SAVE") != NULL; }

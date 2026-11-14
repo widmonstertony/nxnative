@@ -20,7 +20,7 @@ The [upstream optimization audit](docs/tonton-upstream-audit.md) covers every in
 
 The [iOS feature deployment matrix](docs/tonton-upstream-audit.md#ios-shell-functions-november-13) records the NX2Apple snapshot, return-to-library boundary, controller/menu features and remaining device checks. The Air glass update pairs the new bookshelf with the safe return menu in Fate/EXTELLA LINK. Older engines do not acquire teardown support merely from a shell update.
 
-The [Apple TV target](dm/tvos/README.md) includes a TV-native TonTon shelf, shared cover artwork, Remote and gamepad controls, per-title ABXY mapping, and private CloudKit save sync with an authorized profile. Its current prepared title is Pokémon Legends: Z-A. Returning to the TV shelf pauses that game in place; it does not make iPhone game binaries runnable on Apple TV.
+The [Apple TV target](dm/tvos/README.md) includes a TV-native TonTon shelf, shared cover artwork, Remote and gamepad controls, per-title ABXY mapping, and private CloudKit save sync with an authorized profile. The shelf supports Pokémon Legends: Z-A and a separate native runtime for Pokémon Legends: Arceus 1.1.1. Returning to the TV shelf pauses the active game; the two titles retain separate local and CloudKit saves.
 
 The TonTon bookshelf follows the iOS appearance or an explicit light/dark
 choice. It uses native Liquid Glass controls on iOS 26/27 and system

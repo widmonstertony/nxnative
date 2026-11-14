@@ -85,13 +85,30 @@ def main():
     p.add_argument('--display-title', help='Localized game name for the Gamebox shelf')
     p.add_argument('--preview-game', action='append', default=[], nargs=3, metavar=('TITLE_ID', 'TITLE', 'ARTWORK'),
                    help='Show an additional game and its cover in the library without enabling launch')
+    p.add_argument('--runner-title-id', help='Build a native game framework instead of a standalone TV app')
+    p.add_argument('--romfs-identity', type=Path, help='Expected packed RomFS identity for a game framework')
+    p.add_argument('--runner-framework', type=Path, action='append', default=[],
+                   help='Embed a prepared tvOS game framework; its game must be listed with --preview-game')
     p.add_argument('--cloud-container', help='CloudKit container already authorized by the tvOS provisioning profile')
     p.add_argument('--cloud-environment', default='Development', choices=('Development', 'Production'))
     a = p.parse_args()
     if not re.fullmatch('[0-9a-f]{64}', a.shader_archive_sha256):
         p.error('--shader-archive-sha256 must be a lowercase SHA-256 digest')
-    if (a.artwork or a.display_title or a.preview_game) and not a.gamebox:
+    if (a.artwork or a.display_title or a.preview_game or a.runner_framework) and not a.gamebox:
         p.error('--artwork, --display-title and --preview-game require --gamebox')
+    if a.runner_title_id:
+        a.runner_title_id = a.runner_title_id.lower()
+        if a.gamebox or a.runner_framework or not re.fullmatch('[0-9a-f]{16}', a.runner_title_id):
+            p.error('--runner-title-id requires a 16-digit ID and cannot be combined with --gamebox')
+        if not a.romfs_identity or not a.romfs_identity.is_file():
+            p.error('--runner-title-id requires --romfs-identity')
+        identity = a.romfs_identity.read_text()
+        if not re.fullmatch(r'DMROMFSID1 title=' + a.runner_title_id.upper() +
+                            r' version=[^ ]+ build=[^ ]+ size=[0-9]+ index=[0-9a-f]{16}\n',
+                            identity, re.IGNORECASE):
+            p.error('packed RomFS identity must match the runner title ID')
+    elif a.romfs_identity:
+        p.error('--romfs-identity requires --runner-title-id')
     tv = Path(__file__).resolve().parents[1]
     if a.cloud_container and not re.fullmatch(r'iCloud\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', a.cloud_container):
         p.error('expected an explicit iCloud container identifier')
@@ -101,7 +118,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     gen = out / 'Gen'; gen.mkdir(exist_ok=True)
     iosgen = a.ios_project.resolve() / 'Gen'
-    for n in ('src', 'main', 'dm'):
+    directories = ['src', 'main', 'dm']
+    if (iosgen / 'profile').is_dir():
+        directories += ['profile']
+    for n in directories:
         dest = gen / n
         # These are generated inputs. Refresh them together: retaining old
         # fixup tables while embed.S points at a newer module mixes layouts.
@@ -121,30 +141,25 @@ def main():
         elif dest.exists():
             shutil.rmtree(dest)
         replacement.rename(dest)
-    # Older prepared iOS projects have a frozen source-file list. The runtime
-    # BC-to-ASTC implementation may have been added to the checkout after that
-    # preparation, so add exactly that shared source when it is absent. Fresh
-    # iOS preparations already contain it through the host Makefile wildcard.
-    bc2astc = tv.parent / 'gfx' / 'tex' / 'nvn_bc2astc.c'
-    bc2astc_link = gen / 'src' / 'gfx__tex__nvn_bc2astc.c'
-    if bc2astc.is_file():
-        replace_symlink(bc2astc_link, bc2astc)
     prepare_save_sync(gen, tv.parent / 'host', bool(a.cloud_container))
     # Let ld own segment addresses, fixup indices and signing metadata. The
     # guest's own PC-relative references keep their original module offsets.
     original = (iosgen / 'embed.S').read_text()
     bins = {Path(s).name.removesuffix('.patched.bin'): Path(s)
             for s in re.findall(r'\.incbin "([^"]+)"', original)}
-    asm, flags, address = [], [], 0x104000000
-    for mod in ('main', 'sdk'):
+    if not bins or any(not re.fullmatch(r'(?:main|rtld|sdk|subsdk[0-9]+)', mod) for mod in bins):
+        raise ValueError('tvOS needs a prepared NSO-only module layout')
+    if a.romfs_identity:
+        shutil.copyfile(a.romfs_identity, gen / 'dm' / 'romfs.id')
+    asm, flags, address = [], [], 0x04000000 if a.runner_title_id else 0x104000000
+    for mod, binary in bins.items():
         hdr = dict(line[2:].split() for line in
                    (gen / 'dm' / f'{mod}.fixups.tsv').read_text().splitlines()
                    if line.startswith('# '))
-        binary = bins[mod]
         start = (int(hdr['TEXT_END'], 16) + 0x3fff) & ~0x3fff
         patch = int(hdr['PATCH_OFF'], 16)
         size = binary.stat().st_size; end = (size + 0x3fff) & ~0x3fff
-        if patch <= start or patch % 0x4000:
+        if patch <= start or patch % 0x4000 or patch >= size:
             raise ValueError('tvOS static layout requires positive aligned PATCH_OFF')
         for seg, section, lo, hi, prot in (
             (f'__DM{mod}0', f'__dm{mod}x0', 0, start, 'rx'),
@@ -167,15 +182,19 @@ def main():
             continue
         if re.match(r'HEADER_SEARCH_PATHS\s*=', line):
             line = line.replace('=', '= "$(SRCROOT)/Gen/src" ', 1)
+        if line.startswith('DM_FRAMEWORKS ='):
+            line = re.sub(r' -framework (?:Cocoa|IOKit)\b', '', line)
         config.append(line)
     cloudkit = [] if any(re.match(r'DM_FRAMEWORKS\s*=.*-framework CloudKit\b', line) for line in config) else ['-framework CloudKit']
-    config.append('OTHER_LDFLAGS = $(inherited) $(DM_FRAMEWORKS) -lz ' + ' '.join(cloudkit + flags))
+    export = ['-Wl,-exported_symbol,_TonTonTVRunner'] if a.runner_title_id else []
+    config.append('OTHER_LDFLAGS = $(inherited) $(DM_FRAMEWORKS) -lz ' + ' '.join(cloudkit + flags + export))
     (gen / 'dm-tv.xcconfig').write_text('\n'.join(config) + '\n')
     from app_icon import create as create_icon
     icon = iosgen / 'Assets.xcassets/AppIcon.appiconset/icon.png'
-    if not icon.is_file():
+    if not a.runner_title_id and not icon.is_file():
         raise ValueError('Prepared iOS icon artwork is missing')
-    create_icon(icon, gen / 'TVAssets.xcassets')
+    if not a.runner_title_id:
+        create_icon(icon, gen / 'TVAssets.xcassets')
     if a.gamebox:
         cover = gen / 'TVAssets.xcassets' / 'GameboxFeature.imageset'
         cover.mkdir(exist_ok=True)
@@ -187,6 +206,9 @@ def main():
         (cover / 'Contents.json').write_text('{"images":[{"idiom":"universal","filename":"cover.png"}],"info":{"author":"xcode","version":1}}\n')
     sources = out / 'Sources'
     replace_symlink(sources, tv / 'Sources', directory=True)
+    name = 'DmTVGame' + a.runner_title_id if a.runner_title_id else 'DmTV'
+    if a.runner_title_id:
+        a.bundle_id = f'org.nxnative.{a.runner_title_id}.tv.runtime'
     cloud_info = cloud_sign = ''
     if a.cloud_container:
         (gen / 'TV-Cloud.entitlements').write_bytes(plistlib.dumps({
@@ -195,17 +217,48 @@ def main():
             'com.apple.developer.icloud-container-environment': a.cloud_environment,
         }))
         cloud_info = f'DMCloudSaveContainer: {a.cloud_container}'
-        cloud_sign = 'CODE_SIGN_ENTITLEMENTS: Gen/TV-Cloud.entitlements'
+        if not a.runner_title_id:
+            cloud_sign = 'CODE_SIGN_ENTITLEMENTS: Gen/TV-Cloud.entitlements'
     localized_game = f'DMGameboxTitle: {json.dumps(a.display_title, ensure_ascii=False)}' if a.display_title else ''
+    dependencies = []
+    runners = {}
+    preview_ids = {key.lower() for key, _, _ in a.preview_game}
+    for framework in a.runner_framework:
+        framework = framework.resolve()
+        info = plistlib.loads((framework / 'Info.plist').read_bytes())
+        title = info.get('DMGameboxRunnerTitle')
+        digest = info.get('DMShaderArchiveSHA256')
+        if (title not in preview_ids or title in runners or not isinstance(digest, str) or
+            not re.fullmatch(r'[0-9a-f]{64}', digest) or framework.stem != 'DmTVGame' + title or
+            info.get('CFBundleExecutable') != framework.stem or
+            not (framework / framework.stem).is_file() or not (framework / 'dm/romfs.id').is_file()):
+            raise ValueError(f'Invalid tvOS game runtime: {framework}')
+        runners[title] = digest
+        dependencies.append(f'      - framework: {json.dumps(str(framework))}\n        embed: true\n        link: false\n')
+    deps = '    dependencies:\n' + ''.join(dependencies) if dependencies else ''
+    runner_info = f'DMGameboxRunners: {json.dumps(runners)}' if runners else ''
+    runner_title = f'DMGameboxRunnerTitle: "{a.runner_title_id}"' if a.runner_title_id else ''
+    flags = '$(inherited) -mcpu=apple-a15'
+    if a.runner_title_id:
+        flags += f' -DDM_TV_RUNNER=1 -DDM_TV_RUNNER_TITLE=\\\"{a.runner_title_id}\\\"'
+    asset_source = '' if a.runner_title_id else '- path: Gen/TVAssets.xcassets'
+    app_icon = '' if a.runner_title_id else 'ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image'
+    scene = '' if a.runner_title_id else """
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: TVSceneDelegate"""
     previews = prepare_preview_assets(gen / 'TVAssets.xcassets', a.preview_game)
     preview_info = f'DMGameboxPreviews: {json.dumps(previews, ensure_ascii=False)}' if previews else ''
-    (out / 'project.yml').write_text(f'''name: DmTV
+    (out / 'project.yml').write_text(f'''name: {name}
 configFiles:
   Release: Gen/dm-tv.xcconfig
   Debug: Gen/dm-tv.xcconfig
 targets:
-  DmTV:
-    type: application
+  {name}:
+    type: {'framework' if a.runner_title_id else 'application'}
     platform: tvOS
     deploymentTarget: '17.0'
     sources:
@@ -213,18 +266,20 @@ targets:
       - path: Gen/src
       - path: Gen/main/main.c
         compilerFlags: -Dmain=dm_main
-      - path: Gen/TVAssets.xcassets
+      {asset_source}
       - path: Gen/embed.S
       - path: Gen/dm
         type: folder
         buildPhase: resources
-    info:
+{deps}    info:
       path: Gen/TV-Info.plist
       properties:
         CFBundleDisplayName: {'TonTon 游戏匣' if a.gamebox else 'Pokémon Legends Z-A'}
-        {'DMGameboxTV: true' if a.gamebox else ''}
+        {'DMGameboxTV: true' if a.gamebox or a.runner_title_id else ''}
         {localized_game}
         {preview_info}
+        {runner_info}
+        {runner_title}
         {cloud_info}
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
@@ -234,38 +289,34 @@ targets:
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
           - ProfileName: MicroGamepad
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
-          UISceneConfigurations:
-            UIWindowSceneSessionRoleApplication:
-              - UISceneConfigurationName: Default
-                UISceneDelegateClassName: TVSceneDelegate
+{scene}
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: {a.bundle_id}
-      PRODUCT_NAME: DmTV
+      PRODUCT_NAME: {name}
+      DEFINES_MODULE: NO
       MARKETING_VERSION: '2.0.2'
       CURRENT_PROJECT_VERSION: '{a.build_number}'
-      ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
+      {app_icon}
       DEVELOPMENT_TEAM: {a.team}
       CODE_SIGN_STYLE: Automatic
       {cloud_sign}
       ENABLE_USER_SCRIPT_SANDBOXING: NO
       CLANG_ENABLE_OBJC_ARC: YES
       GCC_C_LANGUAGE_STANDARD: gnu11
-      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15
+      OTHER_CFLAGS: {flags}
       GCC_WARN_INHIBIT_ALL_WARNINGS: YES
       ENABLE_BITCODE: NO
       DEBUG_INFORMATION_FORMAT: dwarf
 schemes:
-  DmTV:
+  {name}:
     build:
       targets:
-        DmTV: all
+        {name}: all
     run:
       config: Release
 ''')
     subprocess.run(['xcodegen', 'generate', '--spec', str(out / 'project.yml')], check=True, cwd=out)
-    print(out / 'DmTV.xcodeproj')
+    print(out / (name + '.xcodeproj'))
 
 
 if __name__ == '__main__':

@@ -12,8 +12,20 @@
 #include "save_sync.h"
 #import "tv_gamebox.h"
 #include <math.h>
+#if defined(DM_TV_QA) && defined(DM_TV_RUNNER)
+#include <notify.h>
+#endif
 
 void front_tv_start(void);
+NSString *front_tv_save_path(void);
+BOOL front_tv_runtime_blocked(void);
+void front_tv_show_runtime(NSString *title, NSString *titleID, UIViewController *presenter);
+#ifdef DM_TV_RUNNER
+#define TVMetalView TVRunnerMetalView
+#define TVRootVC TVRunnerRootVC
+#define TVLibraryVC TVRunnerLibraryVC
+#define TVShelfCard TVRunnerShelfCard
+#endif
 int front_tv_ready(void);
 int front_tv_preparing(void);
 static CAMetalLayer *tv_layer;
@@ -36,6 +48,8 @@ static BOOL tv_game_opened;
 static BOOL tv_exit_pending;
 static void (^tv_flush_game)(void (^completed)(BOOL));
 static void tv_return_to_library(void);
+static void (^tv_return_to_shelf)(void);
+void front_tv_return_handler(void (^returned)(void)) { tv_return_to_shelf = [returned copy]; }
 static BOOL tv_active = YES;
 static void tv_held_options(void);
 static TVRemoteState remote_state;
@@ -124,6 +138,7 @@ void front_tv_focus(int active) {
 - (void)updateRemoteHint;
 - (void)showRemotePanel;
 - (void)createGame;
+- (void)pulseRemoteButton:(uint64_t)bit;
 @end
 @implementation TVRootVC
 - (void)viewDidLoad {
@@ -150,7 +165,10 @@ void front_tv_focus(int active) {
     [NSNotificationCenter.defaultCenter addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { controllers_update(); }];
     [NSNotificationCenter.defaultCenter addObserverForName:GCControllerDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { controllers_update(); }];
     controllers_update(); UIApplication.sharedApplication.idleTimerDisabled = YES;
-    remote_state.mode = (int)[NSUserDefaults.standardUserDefaults integerForKey:@"TVRemoteMode"];
+    NSString *modeKey = tv_title_id ? TVGamePreference(tv_title_id, @"RemoteMode") : @"TVRemoteMode";
+    NSNumber *mode = [NSUserDefaults.standardUserDefaults objectForKey:modeKey] ?:
+        [NSUserDefaults.standardUserDefaults objectForKey:@"TVRemoteMode"];
+    remote_state.mode = mode.intValue;
     if (remote_state.mode < TV_REMOTE_MOVE || remote_state.mode > TV_REMOTE_DPAD) remote_state.mode = TV_REMOTE_MOVE;
     self.remotePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(remotePanned:)];
     [self.view addGestureRecognizer:self.remotePan];
@@ -165,6 +183,14 @@ void front_tv_focus(int active) {
     [NSNotificationCenter.defaultCenter addObserverForName:@"TVRemoteReset" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
         self.pulseSerial++; [self updateRemoteHint];
     }];
+#if defined(DM_TV_QA) && defined(DM_TV_RUNNER)
+    if (getenv("DM_TV_QA_PLAY_RUNNER")) {
+        int token = 0;
+        notify_register_dispatch("com.tonytan.gamebox.qa.press-a", &token, dispatch_get_main_queue(), ^(int registered) {
+            if (tv_game_visible && tv_active) [self pulseRemoteButton:DM_BTN_A];
+        });
+    }
+#endif
     [self becomeFirstResponder];
 }
 - (BOOL)canBecomeFirstResponder { return YES; }
@@ -253,7 +279,7 @@ void front_tv_focus(int active) {
     }
     if (i < 3) {
         tv_remote_mode(&remote_state, (int)i);
-        [NSUserDefaults.standardUserDefaults setInteger:i forKey:@"TVRemoteMode"];
+        [NSUserDefaults.standardUserDefaults setInteger:i forKey:(tv_title_id ? TVGamePreference(tv_title_id, @"RemoteMode") : @"TVRemoteMode")];
         fprintf(stderr, "tvOS Remote: mode=%ld\n", (long)i); [self hideRemotePanel]; return;
     }
     if (i == 3) { tv_remote_cancel(&remote_state, 1); input_publish(); [self updateRemoteHint]; return; }
@@ -265,6 +291,9 @@ void front_tv_focus(int active) {
         [button setTitle:[NSString stringWithFormat:@"%@ %@", remote_state.held & bit ? @"Release" : @"Hold", @[@"L", @"R", @"ZL", @"ZR"][i-16]] forState:UIControlStateNormal];
         return;
     }
+    [self pulseRemoteButton:bit];
+}
+- (void)pulseRemoteButton:(uint64_t)bit {
     // The focused button produces one bounded pulse, never an accidental hold.
     remote_state.pulse = bit; input_publish(); NSUInteger serial = ++self.pulseSerial;
     fprintf(stderr, "tvOS Remote: pulse=0x%llx\n", (unsigned long long)bit);
@@ -386,6 +415,7 @@ static void tv_return_to_library(void) {
         UIButtonConfiguration *cfg = tv_play.configuration;
         cfg.title = @"继续游戏"; tv_play.configuration = cfg;
         tv_refresh_cloud_status();
+        if (synchronized && tv_return_to_shelf) tv_return_to_shelf();
         if (!synchronized) {
             UIAlertController *notice = [UIAlertController alertControllerWithTitle:@"云存档还在同步"
               message:@"本机进度已保留。可以先继续游戏，或稍后再检查同步。" preferredStyle:UIAlertControllerStyleAlert];
@@ -410,15 +440,16 @@ static void tv_open_game(void) {
     UIApplication.sharedApplication.idleTimerDisabled = YES;
 }
 
-static void tv_play_selected(void) {
+void front_tv_play_selected(void) {
     if (tv_game_visible || !tv_play.enabled) return;
-    if (tv_game_opened || !front_cloudkit_configured() ||
+    if (front_tv_runtime_blocked()) { TVShowSwitchRequired(tv_library.topViewController); return; }
+    const char *sync = getenv("DM_SAVE_SYNC");
+    if (tv_game_opened || (sync && !strcmp(sync, "0")) || !front_cloudkit_configured() ||
         [NSUserDefaults.standardUserDefaults boolForKey:TVGamePreference(tv_title_id,@"CloudDisabled")]) {
         tv_open_game(); return;
     }
-    const char *save = getenv("DM_SAVE");
-    if (!save || !*save) { tv_open_game(); return; }
-    NSString *savePath = @(save), *titleID = tv_title_id;
+    NSString *savePath = front_tv_save_path(), *titleID = tv_title_id;
+    if (!savePath.length) { tv_open_game(); return; }
     tv_checking_saves = YES;
     tv_play.enabled = NO;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
@@ -509,6 +540,8 @@ static UIViewController *tv_build_gallery(NSString *game, NSString *titleID, NSA
     if (![previews isKindOfClass:NSArray.class] || !previews.count) return nil;
     NSMutableSet *seen=[NSMutableSet setWithObject:titleID.lowercaseString];
     NSMutableArray<UIButton *> *cards=[NSMutableArray array];
+    NSDictionary *runners = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxRunners"];
+    NSUInteger playable = ready ? 1 : 0;
     TVShelfCard *first=tv_gallery_card(game,titleID,YES,ready);
     [first addAction:[UIAction actionWithHandler:^(__unused UIAction *action){
         [tv_library pushViewController:tv_library_home animated:YES];
@@ -523,8 +556,16 @@ static UIViewController *tv_build_gallery(NSString *game, NSString *titleID, NSA
         if ([seen containsObject:key] || [key rangeOfCharacterFromSet:
             [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location!=NSNotFound) continue;
         [seen addObject:key];
-        TVShelfCard *card=tv_gallery_card(title,key,NO,NO);
+        NSString *root = TVGameResourceRoot(key);
+        BOOL bundled = [runners[key] isKindOfClass:NSString.class];
+        BOOL available = bundled &&
+            [NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"RomFS.img"]] &&
+            ([NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"msl.tar.gz"]] ||
+             [NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"msl/.archive-sha256"]]);
+        if (available) playable++;
+        TVShelfCard *card=tv_gallery_card(title,key,bundled,available);
         [card addAction:[UIAction actionWithHandler:^(__unused UIAction *action){
+            if (bundled) { front_tv_show_runtime(title, key, tv_gallery_home); return; }
             UIAlertController *dialog=[UIAlertController alertControllerWithTitle:title
                 message:@"这是游戏库预览。这款游戏的 Apple TV 运行组件尚未安装。"
                 preferredStyle:UIAlertControllerStyleAlert];
@@ -541,7 +582,7 @@ static UIViewController *tv_build_gallery(NSString *game, NSString *titleID, NSA
     UILabel *brand=libraryLabel(@"TonTon 游戏匣",36,UIFontWeightSemibold);
     brand.textColor=[UIColor colorWithWhite:1 alpha:.70];
     UILabel *heading=libraryLabel(@"游戏库",76,UIFontWeightHeavy);
-    UILabel *summary=libraryLabel([NSString stringWithFormat:@"%lu 款游戏  ·  %d 款可打开",(unsigned long)cards.count,ready?1:0],27,UIFontWeightMedium);
+    UILabel *summary=libraryLabel([NSString stringWithFormat:@"%lu 款游戏  ·  %lu 款可打开",(unsigned long)cards.count,(unsigned long)playable],27,UIFontWeightMedium);
     summary.textColor=[UIColor colorWithWhite:1 alpha:.68];
     UILabel *all=libraryLabel(@"所有游戏",32,UIFontWeightBold);
     UIStackView *tiles=[[UIStackView alloc] initWithArrangedSubviews:cards];
@@ -609,7 +650,7 @@ UIViewController *front_tv_library_root(NSString *game, NSString *titleID, NSArr
     configuration.title = canOpen ? @"开始游戏" : @"游戏文件未就绪";
     configuration.image = [UIImage systemImageNamed:canOpen ? @"play.fill" : @"externaldrive.badge.exclamationmark"];
     configuration.imagePadding = 14;
-    tv_play = [UIButton buttonWithConfiguration:configuration primaryAction:[UIAction actionWithHandler:^(__unused UIAction *action){tv_play_selected();}]];
+    tv_play = [UIButton buttonWithConfiguration:configuration primaryAction:[UIAction actionWithHandler:^(__unused UIAction *action){front_tv_play_selected();}]];
     tv_play.enabled = canOpen;
     tv_play.accessibilityIdentifier = @"gamebox-play";
     UIButtonConfiguration *settingStyle = [UIButtonConfiguration grayButtonConfiguration];
@@ -620,6 +661,12 @@ UIViewController *front_tv_library_root(NSString *game, NSString *titleID, NSArr
     tv_settings = [UIButton buttonWithConfiguration:settingStyle primaryAction:[UIAction actionWithHandler:^(__unused UIAction *action){tv_present_options();}]];
     tv_settings.accessibilityIdentifier = @"gamebox-settings";
     UIStackView *actions = [[UIStackView alloc] initWithArrangedSubviews:@[device,title,tv_cloud_status,tv_play,tv_settings,hint]];
+    if (tv_return_to_shelf) {
+        UIButton *back = [UIButton buttonWithConfiguration:[UIButtonConfiguration grayButtonConfiguration]
+            primaryAction:[UIAction actionWithHandler:^(__unused UIAction *action){ tv_return_to_shelf(); }]];
+        [back setTitle:@"返回游戏库" forState:UIControlStateNormal];
+        [actions addArrangedSubview:back];
+    }
     actions.axis = UILayoutConstraintAxisVertical; actions.spacing = 22;
     actions.alignment = UIStackViewAlignmentLeading;
     actions.translatesAutoresizingMaskIntoConstraints = NO;

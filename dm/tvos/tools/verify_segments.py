@@ -9,7 +9,7 @@ import struct
 def verify(executable, generated):
     data = executable.read_bytes()
     magic, cpu, subtype, kind, count, size, flags, reserved = struct.unpack_from('<8I', data)
-    assert magic == 0xFEEDFACF and cpu == 0x100000C and kind == 2
+    assert magic == 0xFEEDFACF and cpu == 0x100000C and kind in (2, 6)
     sections, segment_ranges = {}, []
     off = 32; platform = None
     for _ in range(count):
