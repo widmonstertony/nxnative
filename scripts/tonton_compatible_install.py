@@ -68,7 +68,15 @@ class Bridge:
         result = message.get('result', {})
         if message.get('error') or result.get('isError'):
             raise RuntimeError(f'Device bridge {name}: {str(message)[:600]}')
-        return result.get('structuredContent') or json.loads(result['content'][0]['text'])
+        if result.get('structuredContent') is not None:
+            return result['structuredContent']
+        # Older bridge builds return a plain acknowledgement for actions such
+        # as kill_app, despite returning JSON for query tools.
+        raw = result['content'][0]['text']
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
 
     def run(self, script):
         answer = self.call('run_command', dict(command=script, timeout=25))
