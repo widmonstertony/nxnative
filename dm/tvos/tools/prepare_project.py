@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Prepare an independent tvOS Xcode project from existing iOS host inputs."""
 import argparse
+import json
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +19,42 @@ def replace_symlink(path: Path, target: Path, *, directory: bool = False) -> Non
     path.symlink_to(target, target_is_directory=directory)
 
 
+def prepare_save_sync(gen: Path, host: Path, require_hooks: bool) -> None:
+    src = gen / 'src'
+    for name in ('save_cloudkit.m', 'save_sync.c'):
+        replace_symlink(src / f'host__{name}', host / name)
+    replace_symlink(src / 'save_sync.h', host / 'save_sync.h')
+    filesystem = src / 'host__hle_fs.c'
+    if not filesystem.is_file():
+        if require_hooks:
+            raise ValueError('Missing game filesystem source: cannot enable CloudKit safely')
+        return
+    fs = filesystem.read_text()
+    if 'save_sync_mount(' in fs and 'save_sync_committed();' in fs:
+        return
+    if not require_hooks:
+        return
+    # Frozen Z-A builds predate save sync. Keep their ROM filesystem and guest
+    # host unchanged. Install hooks only at the verified save transactions.
+    base_mount = '    return mount_ex(name, dd, 0, 1);'
+    device_path = '    strlcat(dd, "_device", sizeof dd);'
+    commit = 'atomic_fetch_add(&g_save_commits, 1);'
+    if ('DM_GAME_PROGRAM_ID' not in fs or fs.count('#include "hle.h"') != 1 or fs.count(base_mount) != 2 or fs.count(device_path) != 1 or
+        fs.count(commit) != 1 or 'save_sync_mount(' in fs or 'save_sync_committed();' in fs):
+        raise ValueError('Unrecognized save filesystem: regenerate prepared game inputs with the current save hooks')
+    fs = fs.replace('#include "hle.h"', '#include "hle.h"\n#include <stdio.h>\n#include "save_sync.h"\n'
+        'static void tv_sync_save(const char *path) {\n'
+        '    char title[17]; snprintf(title, sizeof title, "%016llX", (unsigned long long)DM_GAME_PROGRAM_ID);\n'
+        '    if (save_sync_mount(path, title)) die("tvOS save recovery is incomplete; will not mount %s", path);\n'
+        '}\n', 1)
+    # Insert before resolving the separate device path, so both mounts share the same sync root.
+    fs = fs.replace(base_mount, '    tv_sync_save(dd);\n' + base_mount, 1)
+    fs = fs.replace(device_path, '    tv_sync_save(dd);\n' + device_path, 1)
+    fs = fs.replace(commit, commit + ' save_sync_committed();', 1)
+    filesystem.unlink()
+    filesystem.write_text(fs)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--ios-project', type=Path, required=True)
@@ -26,10 +64,18 @@ def main():
     p.add_argument('--shader-archive-sha256', required=True)
     p.add_argument('--build-number', default='1')
     p.add_argument('--gamebox', action='store_true', help='Use the focusable TonTon game library')
+    p.add_argument('--artwork', type=Path, help='Use the Mac shelf hero image in the Apple TV shelf')
+    p.add_argument('--display-title', help='Localized game name for the Gamebox shelf')
+    p.add_argument('--cloud-container', help='CloudKit container already authorized by the tvOS provisioning profile')
+    p.add_argument('--cloud-environment', default='Development', choices=('Development', 'Production'))
     a = p.parse_args()
     if not re.fullmatch('[0-9a-f]{64}', a.shader_archive_sha256):
         p.error('--shader-archive-sha256 must be a lowercase SHA-256 digest')
+    if (a.artwork or a.display_title) and not a.gamebox:
+        p.error('--artwork and --display-title require --gamebox')
     tv = Path(__file__).resolve().parents[1]
+    if a.cloud_container and not re.fullmatch(r'iCloud\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', a.cloud_container):
+        p.error('expected an explicit iCloud container identifier')
     out = a.output.resolve()
     if out == a.ios_project.resolve():
         p.error('--output must differ from the prepared iOS project')
@@ -64,8 +110,7 @@ def main():
     bc2astc_link = gen / 'src' / 'gfx__tex__nvn_bc2astc.c'
     if bc2astc.is_file():
         replace_symlink(bc2astc_link, bc2astc)
-    # Frozen iOS preparations may predate the native cloud transport.
-    replace_symlink(gen / 'src' / 'host__save_cloudkit.m', tv.parent / 'host' / 'save_cloudkit.m')
+    prepare_save_sync(gen, tv.parent / 'host', bool(a.cloud_container))
     # Let ld own segment addresses, fixup indices and signing metadata. The
     # guest's own PC-relative references keep their original module offsets.
     original = (iosgen / 'embed.S').read_text()
@@ -101,6 +146,8 @@ def main():
     for line in (iosgen / 'dm.xcconfig').read_text().splitlines():
         if line.startswith(('CODE_SIGN_ENTITLEMENTS', 'DM_XCODE_OUTPUT_ROOT', 'OTHER_LDFLAGS', 'DM_APPICON')):
             continue
+        if re.match(r'HEADER_SEARCH_PATHS\s*=', line):
+            line = line.replace('=', '= "$(SRCROOT)/Gen/src" ', 1)
         config.append(line)
     cloudkit = [] if any(re.match(r'DM_FRAMEWORKS\s*=.*-framework CloudKit\b', line) for line in config) else ['-framework CloudKit']
     config.append('OTHER_LDFLAGS = $(inherited) $(DM_FRAMEWORKS) -lz ' + ' '.join(cloudkit + flags))
@@ -113,10 +160,24 @@ def main():
     if a.gamebox:
         cover = gen / 'TVAssets.xcassets' / 'GameboxFeature.imageset'
         cover.mkdir(exist_ok=True)
-        shutil.copyfile(icon, cover / 'cover.png')
+        if a.artwork:
+            subprocess.run(['/usr/bin/sips', '-s', 'format', 'png', '-Z', '1920', str(a.artwork.resolve()),
+                            '--out', str(cover / 'cover.png')], check=True, capture_output=True)
+        else:
+            shutil.copyfile(icon, cover / 'cover.png')
         (cover / 'Contents.json').write_text('{"images":[{"idiom":"universal","filename":"cover.png"}],"info":{"author":"xcode","version":1}}\n')
     sources = out / 'Sources'
     replace_symlink(sources, tv / 'Sources', directory=True)
+    cloud_info = cloud_sign = ''
+    if a.cloud_container:
+        (gen / 'TV-Cloud.entitlements').write_bytes(plistlib.dumps({
+            'com.apple.developer.icloud-container-identifiers': [a.cloud_container],
+            'com.apple.developer.icloud-services': ['CloudKit'],
+            'com.apple.developer.icloud-container-environment': a.cloud_environment,
+        }))
+        cloud_info = f'DMCloudSaveContainer: {a.cloud_container}'
+        cloud_sign = 'CODE_SIGN_ENTITLEMENTS: Gen/TV-Cloud.entitlements'
+    localized_game = f'DMGameboxTitle: {json.dumps(a.display_title, ensure_ascii=False)}' if a.display_title else ''
     (out / 'project.yml').write_text(f'''name: DmTV
 configFiles:
   Release: Gen/dm-tv.xcconfig
@@ -141,6 +202,8 @@ targets:
       properties:
         CFBundleDisplayName: {'TonTon 游戏匣' if a.gamebox else 'Pokémon Legends Z-A'}
         {'DMGameboxTV: true' if a.gamebox else ''}
+        {localized_game}
+        {cloud_info}
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         DMLanguage: zh-CN
@@ -163,6 +226,7 @@ targets:
       ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
       DEVELOPMENT_TEAM: {a.team}
       CODE_SIGN_STYLE: Automatic
+      {cloud_sign}
       ENABLE_USER_SCRIPT_SANDBOXING: NO
       CLANG_ENABLE_OBJC_ARC: YES
       GCC_C_LANGUAGE_STANDARD: gnu11

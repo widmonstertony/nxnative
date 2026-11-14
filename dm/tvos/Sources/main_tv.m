@@ -15,9 +15,10 @@
 #include "front.h"
 #include "save_sync.h"
 #import "romfs_patch.h"
+#import "tv_gamebox.h"
 
 UIViewController *front_tv_root(void);
-UIViewController *front_tv_library_root(NSString *game, void (^flush)(void (^)(BOOL)));
+UIViewController *front_tv_library_root(NSString *game, NSString *titleID, void (^flush)(void (^)(BOOL)));
 BOOL front_tv_game_visible(void);
 void front_tv_focus(int active);
 void front_tv_resources_ready(NSString *failure);
@@ -139,6 +140,11 @@ void front_tv_start(void) {
         return;
     }
     if (!boot_ready || host_started) return;
+    if ([NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxTV"]) {
+        NSString *title = [NSString stringWithFormat:@"%016llX", (unsigned long long)DM_GAME_PROGRAM_ID];
+        if ([NSUserDefaults.standardUserDefaults boolForKey:TVGamePreference(title,@"CloudDisabled")])
+            setenv("DM_SAVE_SYNC", "0", 1);
+    }
     pthread_attr_t attr; int result = pthread_attr_init(&attr);
     int attrInitialized = result == 0;
     if (!result) result = pthread_attr_setstacksize(&attr, 64u << 20);
@@ -271,7 +277,9 @@ static void boot(void) {
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     if ([NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxTV"]) {
-        self.window.rootViewController = front_tv_library_root(@DM_GAME_NAME, ^(void (^completed)(BOOL)) {
+        NSString *title = [NSString stringWithFormat:@"%016llX", (unsigned long long)DM_GAME_PROGRAM_ID];
+        NSString *displayName = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxTitle"] ?: @DM_GAME_NAME;
+        self.window.rootViewController = front_tv_library_root(displayName, title, ^(void (^completed)(BOOL)) {
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
                 BOOL synchronized = !host_started || save_sync_flush(5000);
                 dispatch_async(dispatch_get_main_queue(), ^{ completed(synchronized); });

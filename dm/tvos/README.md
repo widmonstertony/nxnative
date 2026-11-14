@@ -30,14 +30,19 @@ from every phone Remote version. The production handler has portable state and
 tvOS simulator UIKit/focus regression tests. Physical phone/Remote input still
 requires verification on the target TV; installation alone does not prove it.
 
-`prepare_project.py` derives the tvOS layered icon and top-shelf assets from the
-prepared iOS icon. The original artwork is fitted whole on a dark TV canvas; it
-is not replaced by a generic icon or cropped through its title.
+`prepare_project.py` derives the tvOS layered icon and system Top Shelf assets
+from the prepared iOS icon. The in-app shelf uses `--artwork` with the same hero
+image as the Mac, fills the card without stretching, and accepts an optional
+`--display-title` for the localized title. The shelf uses system glass controls
+on tvOS 26 and later and standard focusable controls on earlier versions.
 
 Pass `--gamebox` to give the build a TonTon game shelf with a card for its
 prepared title. It retains the standalone tvOS app's bundle identifier and
-does not change its save path. After saving normally in the game, choose
-“存档并返回游戏匣” from the Remote controls panel to pause the session.
+does not change its save path. “本游戏设置” stores the controller button
+mapping and controller help preferences for that title. Press Play/Pause on
+the Siri Remote or hold Options on a supported gamepad to open the panel.
+After saving normally in the game, choose
+“存档并返回游戏匣” from the controls panel to pause the session.
 “继续游戏” resumes the same process. The shelf does not load additional
 games or read an executable bundle from iOS. Each title needs a prepared
 tvOS host, game files and compatible shader libraries.
@@ -83,6 +88,16 @@ clang -std=c11 -I dm/host dm/tvos/tests/test_remote.c -o /tmp/test-tv-remote
 /tmp/test-tv-remote
 python3 dm/tvos/tests/test_remote_ui.py --output /path/to/remote-ui-qa
 ```
+
+To use automatic save sync, pass `--cloud-container` with the existing shared
+private CloudKit container and `--cloud-environment` with the environment used
+by the other platforms. The tvOS App ID and development profile must authorize
+that container. Use the same iCloud account on each device. No folder picker
+is used. Before opening a game, the shelf offers a choice if the local and
+cloud saves disagree, and “离线游玩” keeps that session from changing the cloud
+copy. If the profile is unsigned for CloudKit, or the user switches syncing
+off, local saves remain usable. Changing the automatic sync option after a game
+has started takes effect on the next app launch.
 
 Normal Xcode development signing uses the configured team and paired Apple TV.
 Only install when the user has authorized device deployment. The verifier checks
@@ -132,10 +147,11 @@ writable by the app. CoreDevice listing a Support file is not evidence that the
 application sandbox can read it. A resource bundle is also accepted.
 `DM_MSL_DIR` and other explicit
 environment options take precedence. Pipeline cache is disabled initially and
-the original game present interval is retained. Saves currently live only in
-the local cache, with no automatic backup or cross-device synchronization.
-tvOS can purge cache data while the app is not running or storage is low, so
-these files are not persistent saves and must be backed up separately. See
+the original game present interval is retained. Saves still live in the local
+cache, which tvOS can purge while the app is not running or storage is low.
+With authorized CloudKit signing, the shared save engine syncs committed saves
+and requests an upload when returning to the shelf or backgrounding. Without
+working CloudKit, back up local saves separately. See
 [Apple's archived local-storage guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/AppleTV_PG/index.html#//apple_ref/doc/uid/TP40015241-CH12-SW7).
 
 An offline relocated RomFS patch is opt-in. Put its verified schema-4
