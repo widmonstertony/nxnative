@@ -431,7 +431,7 @@ static void tv_play_selected(void) {
             tv_checking_saves = NO;
             tv_play.enabled = YES;
             NSString *hash = fields[@"chash"];
-            BOOL conflict = [fields[@"conflict"] isEqual:@"1"] && hash.length == 64 &&
+            BOOL conflict = [fields[@"conflict"] isEqual:@"1"] && hash.length == SS_HASH &&
                 [hash rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound;
             if (!conflict) { tv_open_game(); return; }
             UIAlertController *dialog = [UIAlertController alertControllerWithTitle:@"发现两份游戏存档"

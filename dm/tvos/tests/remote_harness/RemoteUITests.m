@@ -2,7 +2,7 @@
 @interface RemoteUITests:XCTestCase
 @end
 @implementation RemoteUITests
-- (void)testGameboxSettingsAndOfflineSaveChoice {
+- (void)testGameboxSettings {
     self.continueAfterFailure=NO;
     XCUIApplication *app=[[XCUIApplication alloc] initWithBundleIdentifier:@"org.nxnative.tvremote-harness"];
     app.launchArguments=@[@"-ton-ton-shelf"];
@@ -15,13 +15,20 @@
     [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonSelect];
     XCTAssertTrue([app.buttons[@"始终显示手柄提示"] waitForExistenceWithTimeout:5] || app.buttons[@"自动隐藏手柄提示"].exists);
     XCTAssertTrue(app.buttons[@"ABXY：改为按字母映射"].exists || app.buttons[@"ABXY：改为任天堂位置"].exists);
-    [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonMenu];
-    if (!app.buttons[@"gamebox-play"].hasFocus) [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonUp];
+}
+
+- (void)testGameboxConflictingSaveChoices {
+    self.continueAfterFailure=NO;
+    XCUIApplication *app=[[XCUIApplication alloc] initWithBundleIdentifier:@"org.nxnative.tvremote-harness"];
+    app.launchArguments=@[@"-ton-ton-shelf"];
+    app.launchEnvironment=@{@"TV_MOCK_SAVE":@"1"};
+    [app launch];
+    XCTAssertTrue([app.staticTexts[@"iCloud 自动存档已连接"] waitForExistenceWithTimeout:10]);
     XCTAssertTrue(app.buttons[@"gamebox-play"].hasFocus);
     [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonSelect];
     XCTAssertTrue([app.buttons[@"离线游玩"] waitForExistenceWithTimeout:8]);
-    [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonMenu];
-    XCTAssertTrue(app.buttons[@"gamebox-play"].exists);
+    XCTAssertTrue(app.buttons[@"保留本机进度"].exists);
+    XCTAssertTrue(app.buttons[@"使用 iCloud 进度"].exists);
 }
 
 - (void)testGameboxReturnAndResumeWithoutRestarting {

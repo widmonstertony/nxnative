@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "save_sync.h"
 UIViewController *front_tv_root(void);
 UIViewController *front_tv_library_root(NSString *, NSString *, void (^)(void (^)(BOOL)));
 void front_tv_focus(int active);
@@ -21,7 +22,7 @@ int front_tv_preparing(void) { return 0; }
 int front_cloudkit_configured(void) { return getenv("TV_MOCK_SAVE") != NULL; }
 int front_cloudkit_account(char scope[33]) { return front_cloudkit_configured(); }
 int save_sync_report(const char *save, const char *title, const char *folder, int timeout, char *out, size_t size) {
-    snprintf(out, size, "conflict=1 chash=%064d", 0);
+    snprintf(out, size, "conflict=1 chash=%0*d", SS_HASH, 0);
     return 0;
 }
 @interface QAScene : UIResponder <UIWindowSceneDelegate>
