@@ -20,6 +20,18 @@ static inline uint4 dm_legacy_atomic_max_2d(device atomic_uint* image,
     return uint4(previous, 0u, 0u, 0u);
 }
 '''
+ARRAY_HELPER = '''
+static inline uint4 dm_legacy_atomic_max_2d_array(device atomic_uint* image,
+        uint2 xy, uint layer, uint value, constant uint* layout) {
+    if (xy.x >= layout[0] || xy.y >= layout[1] || layer >= layout[2] || layout[3] != 1u)
+        return uint4(0u);
+    ulong in_layer = ulong(xy.y) * ulong(layout[4]) + ulong(xy.x);
+    if (in_layer >= ulong(layout[5])) return uint4(0u);
+    ulong at = ulong(layer) * ulong(layout[5]) + in_layer;
+    uint previous = atomic_fetch_max_explicit(image + at, value, memory_order_relaxed);
+    return uint4(previous, 0u, 0u, 0u);
+}
+'''
 
 
 def closing(text, start):
@@ -55,29 +67,32 @@ def lower(source):
     if re.search(r'\[\[\s*(color|sample_mask|depth)\s*\(', clean):
         raise ValueError('Output or sample-mask ordering is not proven')
     images = list(re.finditer(r'\btexture\w*\s*<[^;]+?access::(?:write|read_write)[^;]*;', clean))
-    declaration = re.compile(r'texture2d\s*<\s*uint\s*,\s*access::read_write\s*>\s+(\w+)\s*\[\[\s*id\s*\(\s*(\d+)\s*\)\s*\]\]\s*;')
+    declaration = re.compile(r'(texture2d(?:_array)?)\s*<\s*uint\s*,\s*access::read_write\s*>\s+(\w+)\s*\[\[\s*id\s*\(\s*(\d+)\s*\)\s*\]\]\s*;')
     matches = list(declaration.finditer(clean))
     if len(images) != 1 or len(matches) != 1:
-        raise ValueError('Exactly one unsigned 2D read/write image is required')
-    name, aid = matches[0].group(1, 2)
+        raise ValueError('Exactly one unsigned 2D or 2D-array read/write image is required')
+    image_type, name, aid = matches[0].groups()
+    layered = image_type.endswith('_array')
     refs = set(re.findall(r'\b(\w+)\.' + re.escape(name) + r'\b', clean))
     if len(refs) != 1:
         raise ValueError('Image argument ownership is ambiguous')
     image = next(iter(refs)) + '.' + name
-    pattern = re.compile(re.escape(image) + r'\.(atomic_fetch_max|get_width|get_height)\s*\(')
+    pattern = re.compile(re.escape(image) + r'\.(atomic_fetch_max|get_width|get_height|get_array_size)\s*\(')
     edits, atomics = [], 0
     for match in pattern.finditer(clean):
         end = closing(clean, match.end() - 1)
         args = arguments(clean[match.end():end])
         if match[1] == 'atomic_fetch_max':
-            if len(args) != 2:
+            if len(args) != (3 if layered else 2):
                 raise ValueError('Unexpected atomic operation arguments')
-            replacement = f'dm_legacy_atomic_max_2d({image}, {args[0]}, {args[1]}, dm_legacy_atomic_layout)'
+            helper = 'dm_legacy_atomic_max_2d_array' if layered else 'dm_legacy_atomic_max_2d'
+            replacement = f'{helper}({image}, {", ".join(args)}, dm_legacy_atomic_layout)'
             atomics += 1
         else:
-            if args != ['']:
+            if args != [''] or (match[1] == 'get_array_size' and not layered):
                 raise ValueError('Only base-mip image dimensions are proven')
-            replacement = 'dm_legacy_atomic_layout[' + ('0' if match[1] == 'get_width' else '1') + ']'
+            layout_slot = {'get_width': 0, 'get_height': 1, 'get_array_size': 2}[match[1]]
+            replacement = f'dm_legacy_atomic_layout[{layout_slot}]'
         edits.append((match.start(), end + 1, replacement))
     if not atomics:
         raise ValueError('No supported atomic operation')
@@ -96,8 +111,8 @@ def lower(source):
         raise ValueError('Lowering removed the fragment entry')
     end = closing(out, entry.end() - 1)
     out = out[:end] + ', constant uint* dm_legacy_atomic_layout [[buffer(29)]]' + out[end:]
-    out = out[:entry.start()] + HELPER + '\n' + out[entry.start():]
-    return out, {'kind': 'fragment-uint-max-2d-v1', 'image_name': name,
+    out = out[:entry.start()] + (ARRAY_HELPER if layered else HELPER) + '\n' + out[entry.start():]
+    return out, {'kind': 'fragment-uint-max-2d-array-v1' if layered else 'fragment-uint-max-2d-v1', 'image_name': name,
                  'image_aid': int(aid), 'parameter_slot': 29, 'atomic_calls': atomics,
                  'original_sha256': hashlib.sha256(source.encode()).hexdigest(),
                  'lowered_sha256': hashlib.sha256(out.encode()).hexdigest()}
@@ -125,11 +140,13 @@ def reflection(source, native, library_sha256):
     if raster.get('colors') != [] or raster.get('sample_mask', 0):
         raise ValueError('Color or sample-mask output ordering is unsupported')
     out = copy.deepcopy(native)
+    layered = proof['kind'] == 'fragment-uint-max-2d-array-v1'
+    image_type = 'texture2d_array' if layered else 'texture2d'
     found = []; ids = set(); samplers = 0; borders = 0; bits = set()
     bindings = out.get('bindings', [])
     for b in bindings:
         aid, kind, ty = b.get('arg_id'), b.get('kind'), b.get('msl_type', '')
-        if type(aid) is not int or not 0 <= aid < 192 or aid in ids or 'array<' in ty:
+        if type(aid) is not int or not 0 <= aid < 192 or aid in ids or re.match(r'array\s*<', ty):
             raise ValueError('Argument IDs must be unique scalar bindings')
         ids.add(aid)
         limits = {'cbuf': 16, 'tex': 256, 'samp': 256, 'samp_tex': 256, 'samp_id': 4096}
@@ -147,7 +164,7 @@ def reflection(source, native, library_sha256):
                 raise ValueError('Unproven border sampler companion')
             bits.add(bit)
         if kind == 'img':
-            if b.get('msl_name') != proof['image_name'] or aid != proof['image_aid'] or b.get('atomic') is not True or re.sub(r'\s+', '', ty) != 'texture2d<uint,access::read_write>':
+            if b.get('msl_name') != proof['image_name'] or aid != proof['image_aid'] or b.get('atomic') is not True or re.sub(r'\s+', '', ty) != image_type + '<uint,access::read_write>':
                 raise ValueError('Image proof and reflection disagree')
             reg = b.get('reg')
             if type(reg) is not int or not 0 <= reg < 32:
@@ -176,7 +193,7 @@ def reflection(source, native, library_sha256):
     proof.update(schema=1, image_reg=b['reg'], pixel_format='R32Uint', library_sha256=library_sha256)
     if not re.fullmatch(r'[0-9a-f]{64}', library_sha256):
         raise ValueError('Missing compiled library digest')
-    b.update(kind='img_atomic_2d', msl_type='device atomic_uint*', rw=True)
+    b.update(kind='img_atomic_2d_array' if layered else 'img_atomic_2d', msl_type='device atomic_uint*', rw=True)
     b.pop('atomic', None)
     out['legacy_image_atomic'] = proof
     return out

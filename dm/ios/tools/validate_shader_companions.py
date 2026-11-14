@@ -79,7 +79,7 @@ def required_keys(spec, what):
     return keys
 
 
-def validate_manifest(root, chain, spec, cache):
+def validate_manifest(root, chain, spec, cache, audited_native):
     fields(spec, {"directory", "kind", "limit", "required_records", "original_directory"}, "manifest requirement")
     directory = component(spec.get("directory"), "companion directory")
     where = root / directory
@@ -126,11 +126,16 @@ def validate_manifest(root, chain, spec, cache):
         if key not in records:
             raise CompanionError(f"{directory} is missing required record {key}")
         if key not in active:
-            raise CompanionError(f"{directory} required record {key} is unsupported")
+            if (directory, key) not in audited_native:
+                raise CompanionError(f"{directory} required record {key} is unsupported")
+            verify_hash(records[key], "base_library_sha256", root / (key + ".metallib"),
+                        cache, f"{directory} native record {key}")
+            verify_hash(records[key], "reflection_sha256", root / (key + ".json"),
+                        cache, f"{directory} native record {key}")
     return len(active)
 
 
-def validate_record_directory(root, chain, spec, cache):
+def validate_record_directory(root, chain, spec, cache, audited_atomics):
     fields(spec, {"directory", "kind", "required_records"}, "record requirement")
     directory = component(spec.get("directory"), "record companion directory")
     kind = spec.get("kind")
@@ -139,6 +144,17 @@ def validate_record_directory(root, chain, spec, cache):
     where = root / directory
     count = 0
     for key in required_keys(spec, directory):
+        if directory == "atomic-v1" and kind == "bounded-image-atomics-v1" and key in audited_atomics:
+            metadata = read_json(root / (key + ".json"), f"legacy atomic reflection {key}")
+            proof = metadata.get("legacy_image_atomic", {})
+            if (metadata.get("chain") != chain or metadata.get("key") != key
+                    or proof.get("schema") != 1 or proof.get("kind") not in (
+                        "fragment-uint-max-2d-v1", "fragment-uint-max-2d-array-v1")):
+                raise CompanionError(f"legacy atomic proof mismatch: {key}")
+            verify_hash(proof, "library_sha256", root / (key + ".metallib"),
+                        cache, f"legacy atomic shadow {key}")
+            count += 1
+            continue
         record = read_json(where / (key + ".json"), f"{directory} record {key}")
         if record.get("schema") != 1 or record.get("chain") != chain or record.get("kind") != kind:
             raise CompanionError(f"{directory} record {key} schema/chain/kind mismatch")
@@ -148,7 +164,7 @@ def validate_record_directory(root, chain, spec, cache):
     return count
 
 
-def validate(profile, libraries, chain):
+def validate(profile, libraries, chain, audit=None):
     profile, libraries = Path(profile), Path(libraries)
     requirements = read_json(profile, "iOS companion requirements")
     fields(requirements, {"schema", "manifests", "records"}, "requirements")
@@ -161,9 +177,19 @@ def validate(profile, libraries, chain):
         raise CompanionError("requirements must contain at least one manifest companion")
     if not isinstance(records, list):
         raise CompanionError("record companions must be a list")
+    audited_native, audited_atomics = set(), set()
+    if audit is not None:
+        checked = read_json(audit, "legacy resource audit")
+        if (checked.get("chain") != chain or checked.get("issues")
+                or checked.get("resource_checks_passed") is not True):
+            raise CompanionError("legacy resource audit did not pass for this chain")
+        audited_atomics = set(checked.get("atomic_shadows", []))
+        if checked.get("target") == "m2" and checked.get("required_machine") == "iPad14,6":
+            audited_native = {(item["kind"], item["shader"]) for item in checked.get("native_companions_not_required", [])
+                              if item["kind"] in ("layered-v1", "sampler-limit-v1")}
     cache = {}
-    shaders = sum(validate_manifest(libraries, chain, item, cache) for item in manifests)
-    standalone = sum(validate_record_directory(libraries, chain, item, cache) for item in records)
+    shaders = sum(validate_manifest(libraries, chain, item, cache, audited_native) for item in manifests)
+    standalone = sum(validate_record_directory(libraries, chain, item, cache, audited_atomics) for item in records)
     return len(manifests), shaders, standalone
 
 
@@ -172,9 +198,10 @@ def main():
     parser.add_argument("profile", type=Path, help="profile ios_companions.json")
     parser.add_argument("libraries", type=Path, help="packaged b-CHAIN directory")
     parser.add_argument("chain", help="host DMSH_CHAIN")
+    parser.add_argument("--legacy-audit", type=Path, help="verified native capabilities and atomic shadows")
     args = parser.parse_args()
     try:
-        manifests, shaders, standalone = validate(args.profile, args.libraries, args.chain)
+        manifests, shaders, standalone = validate(args.profile, args.libraries, args.chain, args.legacy_audit)
     except CompanionError as error:
         parser.exit(1, f"[RED] shader companions: {error}\n")
     print(f"shader companions: {manifests} manifests, {shaders} usable shader records, "

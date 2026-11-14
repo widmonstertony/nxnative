@@ -135,6 +135,35 @@ class ShaderCompanionValidationTests(unittest.TestCase):
         with self.assertRaises(VALIDATOR.CompanionError):
             VALIDATOR.validate(self.profile, self.libraries, "test")
 
+    def test_m2_audit_allows_native_sampler_and_proven_array_atomic(self):
+        sampler = self.keys["sampler"]
+        p = self.libraries / "sampler-limit-v1/manifest.json"
+        manifest = json.loads(p.read_text())
+        manifest["shaders"][sampler]["supported"] = False
+        # Keep another usable record in the manifest.
+        key = self.keys["layered"]
+        record = json.loads((self.libraries / "layered-v1/manifest.json").read_text())["shaders"][key]
+        (p.parent / (key + ".metal")).write_bytes((self.libraries / "layered-v1" / (key + ".metal")).read_bytes())
+        manifest["shaders"][key] = record
+        p.write_text(json.dumps(manifest))
+        atomic = self.keys["atomic"]
+        (self.libraries / "atomic-v1" / (atomic + ".json")).unlink()
+        (self.libraries / (atomic + ".json")).write_text(json.dumps({
+            "chain": "test", "key": atomic,
+            "legacy_image_atomic": {"schema": 1, "kind": "fragment-uint-max-2d-array-v1",
+                                    "library_sha256": digest((self.libraries / (atomic + ".metallib")).read_bytes())},
+        }))
+        audit_path = p.parent / "audit.json"
+        audit = {"chain": "test", "target": "m2", "required_machine": "iPad14,6",
+                 "resource_checks_passed": True, "issues": [], "atomic_shadows": [atomic],
+                 "native_companions_not_required": [{"kind": "sampler-limit-v1", "shader": sampler}]}
+        audit_path.write_text(json.dumps(audit))
+        self.assertEqual(VALIDATOR.validate(self.profile, self.libraries, "test", audit_path), (5, 5, 1))
+        for changes in ({"target": "a10x"}, {"chain": "other"}, {"resource_checks_passed": False}):
+            audit_path.write_text(json.dumps({**audit, **changes}))
+            with self.subTest(changes=changes), self.assertRaises(VALIDATOR.CompanionError):
+                VALIDATOR.validate(self.profile, self.libraries, "test", audit_path)
+
     def test_every_emitted_source_and_hash_is_checked(self):
         (self.libraries / "layered-v1" / (self.keys["layered"] + ".metal")).unlink()
         with self.assertRaisesRegex(VALIDATOR.CompanionError, "missing or unreadable companion file"):

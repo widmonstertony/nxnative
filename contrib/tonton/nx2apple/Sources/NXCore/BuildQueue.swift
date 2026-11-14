@@ -14,6 +14,7 @@ package struct QueueEntry: Codable, Identifiable, Equatable, Sendable {
     package var target: String
     package var iosMinimum: String?
     package var iosLegacyGPU: String?
+    package var compatibilityDeviceConfig: String?
     /// Slot id (base, update, dlc, keys) to paths, as the library keeps them.
     package var inputs: [String: [String]]
     /// A game folder (GameLibrary.folderInput) the inputs came from, else nil.

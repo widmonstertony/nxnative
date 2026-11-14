@@ -118,10 +118,10 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 r->kind = [k isEqualToString:@DMSH_KIND_TEX_C2A] ? NVN_RB_TEXA : NVN_RB_SAMPA; r->n = (uint16_t)n; r->off = (uint16_t)[b[@"off"] intValue]; r->soff = (uint16_t)soff;
                 if (r->kind == NVN_RB_TEXA) dummy_kind(el, &r->dtt, &r->dpf);
             }
-            else if ([k isEqualToString:@"img_atomic_2d"]) {
+            else if ([k isEqualToString:@"img_atomic_2d"] || [k isEqualToString:@"img_atomic_2d_array"]) {
                 NSString *reason = nvn_atomic_image_record_error(j, nil);
                 if (reason) FAIL("%s", reason.UTF8String);
-                r->kind = NVN_RB_IMGA; r->rw = 1; r->dtt = MTLTextureType2D; r->dpf = NVN_DPF_UINT;
+                r->kind = NVN_RB_IMGA; r->rw = 1; r->dtt = [k isEqualToString:@"img_atomic_2d_array"] ? MTLTextureType2DArray : MTLTextureType2D; r->dpf = NVN_DPF_UINT;
             }
             else if ([k isEqualToString:@DMSH_KIND_IMG]) { r->kind = NVN_RB_IMG; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf);   // rw: the shader writes it (access::write / read_write; a load-only view of the slot is not)
                 r->rw = [ty isKindOfClass:[NSString class]] && ([ty containsString:@"access::write"] || [ty containsString:@"access::read_write"]); r->atom = [b[@"atomic"] boolValue]; }

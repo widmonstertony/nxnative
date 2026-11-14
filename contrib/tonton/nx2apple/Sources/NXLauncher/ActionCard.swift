@@ -23,6 +23,7 @@ package struct ActionCard: View {
     private var buttonLabel: String {
         if build.running { return loc.t(build.stopping ? "library.stopping" : "btn.stop") }
         if build.hasQueuedBuilds { return loc.t("build.start") }
+        if !build.compatibilityInstallConfig.isEmpty { return loc.t("tonton.compatBuildInstall") }
         return build.done ? loc.t("btn.rebuild") : loc.t("build.startGame")
     }
 

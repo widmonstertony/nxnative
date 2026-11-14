@@ -196,8 +196,17 @@ func hop(_ body: @escaping @MainActor () -> Void) {
     package var hasTonTonIOSBuilder: Bool {
         FileManager.default.fileExists(atPath: EngineLayout.root(repo.path) + "/scripts/build_tonton_ios.py")
     }
-    /// The 16/17 compatibility runtime exports complete single-game IPAs. It does
-    /// not pass a modern shell-framework ABI to the classic renderer.
+    @Published package var compatibilityDeviceConfig: String {
+        didSet { defaults.set(compatibilityDeviceConfig, forKey: "tontonCompatibilityDeviceConfig") }
+    }
+    // Queued builds retain their chosen destination even if the form changes.
+    package var queuedCompatibilityConfig: String?
+    package var compatibilityInstallConfig: String {
+        guard target != BuildTarget.mac, hasTonTonIOSBuilder, iosBuildTarget.compatibility else { return "" }
+        return queuedCompatibilityConfig ?? compatibilityDeviceConfig
+    }
+    /// The classic driver exports a complete IPA or updates the existing TonTon
+    /// library through its own signed independent-host ABI.
     package var requiresCompatibilityIPA: Bool {
         target != BuildTarget.mac && hasTonTonIOSBuilder && (iosBuildTarget.compatibility || !RepoLayout.supportsShellFramework(repo.path))
     }
@@ -369,6 +378,7 @@ func hop(_ body: @escaping @MainActor () -> Void) {
         runningTarget = savedTarget
         iosMinimum = IOSBuildTarget.normalized(defaults.string(forKey: "tontonIOSMinimum")).rawValue
         iosLegacyGPU = defaults.string(forKey: "tontonIOSLegacyGPU") == "m2" ? "m2" : "a10x"
+        compatibilityDeviceConfig = defaults.string(forKey: "tontonCompatibilityDeviceConfig") ?? ""
         bcOnCPU = defaults.bool(forKey: Self.bcOnCPUKey)
         experimentalBuilder = ExperimentalBuilder.featureEnabled && defaults.bool(forKey: Self.experimentalBuilderKey)
         experimentalBuilderPath = defaults.string(forKey: Self.experimentalBuilderPathKey) ?? ""

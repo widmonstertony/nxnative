@@ -119,7 +119,7 @@ import NXCore
     // MARK: Running
 
     /// Starts the waiting queue, optionally applying the player's current target and shared-app packaging choice to the queued batch.
-    package func start(target: String? = nil, iosMinimum: String? = nil, iosLegacyGPU: String? = nil, packageAfter: Bool? = nil, exportIPA: Bool? = nil, destinationName: String? = nil) {
+    package func start(target: String? = nil, iosMinimum: String? = nil, iosLegacyGPU: String? = nil, compatibilityDeviceConfig: String? = nil, packageAfter: Bool? = nil, exportIPA: Bool? = nil, destinationName: String? = nil) {
         guard hasWaiting else { return }
         if target != nil || packageAfter != nil || exportIPA != nil {
             let existingDoneBatch = entries.last(where: { $0.status == .done })?.batch
@@ -128,6 +128,7 @@ import NXCore
                 if let target { entries[index].target = target }
                 if let iosMinimum { entries[index].iosMinimum = iosMinimum }
                 if let iosLegacyGPU { entries[index].iosLegacyGPU = iosLegacyGPU }
+                entries[index].compatibilityDeviceConfig = compatibilityDeviceConfig
                 if let packageAfter { entries[index].packageAfter = packageAfter }
                 if let exportIPA { entries[index].exportIPA = exportIPA }
                 entries[index].destinationName = destinationName

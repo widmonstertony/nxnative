@@ -3734,7 +3734,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     NSData *jd = nvn_shader_data(g_msl_dir, [NSString stringWithFormat:@"%@/%@.json", g_msl_dir, pc]);
     NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (j[@"legacy_image_atomic"]) {
-        NSData *bytes = [NSData dataWithContentsOfFile:lp options:NSDataReadingMappedIfSafe error:nil];
+        NSData *bytes = nvn_shader_data(g_msl_dir, lp);
         NSString *reason = nvn_atomic_image_record_error(j, nonpoint_digest(bytes));
         if (stage != 1 || !bytes || reason) {
             MLOG("[RED] Atomic-image library %s rejected before loading: %s", pc.UTF8String, reason.UTF8String ?: "wrong stage or missing library");
@@ -3749,7 +3749,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
         NSDictionary *manifest = nonpoint_sources_manifest();
         NSDictionary *record = manifest[@"fragment_depth_outputs"][pc];
         if (record && [manifest[@"schema"] isEqual:@1] && [manifest[@"chain"] isEqual:@DMSH_CHAIN]) {
-            NSData *bytes = [NSData dataWithContentsOfFile:lp options:NSDataReadingMappedIfSafe error:nil];
+            NSData *bytes = nvn_shader_data(g_msl_dir, lp);
             if (![record[@"library_sha256"] isEqual:nonpoint_digest(bytes)]) {
                 MLOG("[RED] Shader %s depth-output metadata does not match its library", pc.UTF8String);
                 return nil;
@@ -3779,7 +3779,8 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (j[@"legacy_image_atomic"]) {
         NSDictionary *proof = j[@"legacy_image_atomic"];
-        o->zero_image_variant = 3; o->zero_image_aid = [proof[@"image_aid"] intValue];
+        o->zero_image_variant = [proof[@"kind"] isEqual:@"fragment-uint-max-2d-array-v1"] ? 4 : 3;
+        o->zero_image_aid = [proof[@"image_aid"] intValue];
         o->zero_image_reg = [proof[@"image_reg"] intValue]; o->zero_image_format = MTLPixelFormatR32Uint;
         o->specialized = 1;
     }

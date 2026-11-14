@@ -65,6 +65,7 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
     NSUInteger bytes = 0; uint32_t layout[6];
     int valid = tid > 0 && tid < g_ntreg && g_treg[tid].ok &&
         (fragment->zero_image_variant == 3 ? nvn_atomic_2d_layout(texture, layout, &bytes) :
+            fragment->zero_image_variant == 4 ? nvn_atomic_array_layout(texture, layout, &bytes) :
             (nvn_zero_image_layout(texture, layout, &bytes) && layout[2] >= 3)) &&
         (!fragment->zero_image_format || texture.pixelFormat == (MTLPixelFormat)fragment->zero_image_format) &&
         texture.storageMode != MTLStorageModeMemoryless;
@@ -85,7 +86,7 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
     // buffers still refer to guest memory, so check their ranges as well as
     // sampled texture views and attachments before capturing the image.
     // The digest-verified Violet 2D companion also reads border constants.
-    if (valid && fragment->zero_image_variant == 3) {
+    if (valid && fragment->zero_image_variant >= 3) {
         for (int i = 0; i < fragment->rf.nb && valid; i++) {
             const nvn_rbind *b = &fragment->rf.b[i];
             if (b->kind == NVN_RB_TEX) {
@@ -105,9 +106,7 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
             } else {
                 valid = b->kind == NVN_RB_SUPPORT || b->kind == NVN_RB_C1 ||
                     b->kind == NVN_RB_DRV0 || b->kind == NVN_RB_DRV2 ||
-                    (b->kind == NVN_RB_BORDER &&
-                     DM_GAME_PROGRAM_ID == 0x01008F6008C5E000ull &&
-                     strcmp(fragment->key, "318346b137ae3a33_b") == 0) ||
+                    b->kind == NVN_RB_BORDER ||
                     b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPI;
             }
         }

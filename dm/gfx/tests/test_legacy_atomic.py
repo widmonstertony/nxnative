@@ -52,8 +52,9 @@ int main(int argc,const char**argv) { @autoreleasepool {
  NSString*why=nvn_atomic_image_record_error(j,[NSString stringWithUTF8String:argv[2]]);
  if(why) return 2;
  nvn_refl r; char error[256]; if(nvn_refl_from_json(j,&r,error,sizeof error)) return 3;
+ MTLTextureType expected=[j[@"legacy_image_atomic"][@"kind"] isEqual:@"fragment-uint-max-2d-array-v1"] ? MTLTextureType2DArray : MTLTextureType2D;
  int images=0; for(int i=0;i<r.nb;i++) if(r.b[i].kind==NVN_RB_IMGA) {
-   if(r.b[i].aid!=5||r.b[i].reg!=1||!r.b[i].rw||r.b[i].dtt!=MTLTextureType2D) return 4; images++;
+   if(r.b[i].aid!=5||r.b[i].reg!=1||!r.b[i].rw||r.b[i].dtt!=expected) return 4; images++;
  }
  free(r.c1); return images!=1;
 } }
@@ -76,6 +77,22 @@ int main(int argc,const char**argv) { @autoreleasepool {
         self.assertEqual(record['bindings'][-1]['kind'],'img_atomic_2d')
         self.assertTrue(self.native_accepts(record))
         self.assertFalse(self.native_accepts(record,'b'*64))
+    def test_array_layers_are_part_of_the_shadow_abi(self):
+        source = SOURCE.replace('texture2d<uint', 'texture2d_array<uint').replace(
+            'atomic_fetch_max(xy,a.constants[0])', 'atomic_fetch_max(xy,uint(p.z),a.constants[0])')
+        metadata = copy.deepcopy(META)
+        metadata['bindings'][3]['msl_type'] = 'texture2d_array<uint, access::read_write>'
+        lowered, proof = ATOMIC.lower(source)
+        self.assertEqual(proof['kind'], 'fragment-uint-max-2d-array-v1')
+        self.assertIn('layer >= layout[2]', lowered)
+        self.assertIn('ulong(layer) * ulong(layout[5])', lowered)
+        self.assertIn('dm_legacy_atomic_max_2d_array(a.target, xy, uint(p.z), a.constants[0]', lowered)
+        record = ATOMIC.reflection(source, metadata, DIGEST)
+        self.assertTrue(self.native_accepts(record))
+        record['legacy_image_atomic']['kind'] = 'fragment-uint-max-2d-v1'
+        # The parser must reject inconsistent proof and reflection, not silently treat a slice as 2D.
+        self.assertFalse(self.native_accepts(record))
+
     def test_unproven_sources_are_rejected(self):
         for old,new in [('atomic_fetch_max','atomic_fetch_add'),('uint, access::read_write','int, access::read_write'),('texture2d<uint','texture2d_array<uint'),('fragment void','kernel void'),('buffer(0)','buffer(29)'),('uint previous=', 'uint escaped=a.target.read(xy).x; uint previous=')]:
             with self.subTest(new=new),self.assertRaises(ValueError): ATOMIC.reflection(SOURCE.replace(old,new),META,DIGEST)

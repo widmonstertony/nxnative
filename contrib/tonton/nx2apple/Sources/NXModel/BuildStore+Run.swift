@@ -10,12 +10,14 @@ extension BuildStore {
         selectedTitleID = nil
         queuedExportIPA = nil
         queuedExportOneGame = nil
+        queuedCompatibilityConfig = nil
         runBuild()
     }
 
     func runBuild() {
         guard !running else { return }
         guard prepareBuildPreflight() else { return }
+        let compatibilityInstall = compatibilityInstallConfig
         // The shared app needs a device this Mac knows. Found out here, before an hour of building, not after it.
         if target != BuildTarget.mac, !shellDeviceChecked, !exportsShell {
             guard installsDirectly else { doneNote = t("shell.needsDevice"); done = false; return }
@@ -158,6 +160,7 @@ extension BuildStore {
                     ? [compatibilityDriver, "--minimum-ios", iosBuildTarget.rawValue, "--legacy-target", iosLegacyGPU, "--engine-cache", buildRoot + "/.tonton-engines", inputDir]
                     : [engine + "/" + RepoLayout.buildScript, inputDir]) + (folder != nil ? [] : ["-k", keysPath]) + ["--progress", "json"]
         if let selectedTitleID { args += ["--title-id", selectedTitleID] }
+        if !compatibilityInstall.isEmpty { args += ["--existing-gamebox", compatibilityInstall] }
         // A small env file the pipeline copies into the app bundle (main.m sets one variable per line at boot). Only for an iPhone or
         // iPad build: the in-game menu's words in the launcher's language (GameMenuText, #1129), and the CPU decode of BC textures when
         // the player turned that compatibility switch on (a Mac app runs on this Mac's GPU, which always has BC support).
@@ -187,8 +190,10 @@ extension BuildStore {
         oneGameIPAPath = ""
         if exportsOneGame {
             // One game's own IPA with its game data inside (BuildStore+OneGame.swift, #540)
-            oneGameIPAPath = OneGameIPA.path(folder: outDir.isEmpty ? baseDir : outDir, titleID: tidHex + (requiresCompatibilityIPA ? iosBuildTarget.outputSuffix + (iosBuildTarget.compatibility ? "-" + iosLegacyGPU : "") : ""))
-            args += OneGameIPA.arguments(ipa: oneGameIPAPath)
+            oneGameIPAPath = OneGameIPA.path(folder: outDir.isEmpty ? baseDir : outDir, titleID: tidHex + (requiresCompatibilityIPA ? iosBuildTarget.outputSuffix + (iosBuildTarget.compatibility ? "-" + iosLegacyGPU : "") : "") + (compatibilityInstall.isEmpty ? "" : "-gamebox-runtime"))
+            args += compatibilityInstall.isEmpty
+                ? OneGameIPA.arguments(ipa: oneGameIPAPath)
+                : ["--platform", "ios", "-o", oneGameIPAPath]
         } else if let macOutput {
             macAppPath = ""
             args += ["--platform", "mac-app", "-o", macOutput.builderURL.path]
@@ -244,7 +249,11 @@ extension BuildStore {
                 }
                 if status == 0 {
                     self.markAllDone()
-                    if !self.oneGameIPAPath.isEmpty {
+                    if !compatibilityInstall.isEmpty {
+                        self.done = true
+                        self.doneNote = self.t("tonton.compatInstallDone")
+                        self.cleanupStaging()
+                    } else if !self.oneGameIPAPath.isEmpty {
                         self.finishOneGameIPA()
                     } else {
                         // The game's archive, then its framework into the one shared app on the device

@@ -41,6 +41,10 @@ static int nvn_atomic_2d_layout(id<MTLTexture> texture, uint32_t layout[6], NSUI
     return texture.textureType == MTLTextureType2D && texture.pixelFormat == MTLPixelFormatR32Uint &&
         texture.arrayLength == 1 && nvn_image_shadow_layout(texture, layout, bytes);
 }
+static int nvn_atomic_array_layout(id<MTLTexture> texture, uint32_t layout[6], NSUInteger *bytes) {
+    return texture.textureType == MTLTextureType2DArray && texture.pixelFormat == MTLPixelFormatR32Uint &&
+        nvn_image_shadow_layout(texture, layout, bytes);
+}
 static void nvn_zero_image_copy(id<MTLBlitCommandEncoder> blit, id<MTLTexture> texture,
         id<MTLBuffer> buffer, const uint32_t layout[6], BOOL to_texture) {
     NSUInteger row = (NSUInteger)layout[4] * 4, image = (NSUInteger)layout[5] * 4;

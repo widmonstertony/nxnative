@@ -24,12 +24,38 @@ pinned engine, shader translator and ABI together; new modern builds use the
 current engine. The experimental Rust builder is not used for the validated
 classic export contract.
 
-These exports contain a single game's runtime, shaders, base data and selected
-add-ons, for external signing and sideloading. They do not replace an existing
-multi-game Gamebox or give legacy engines an in-process return to the library.
-Very large IPAs may exceed a sideloader's extraction limit. The compile/link
-fixtures for 16.1 and 17 were verified with Xcode; they do not constitute
-per-game or on-device gameplay tests.
+Under **Install on device**, select **Install in existing TonTon Gamebox** to
+build and sign an independent classic engine for a game already in the device
+library. Select a local signing configuration, then choose **Build & install**.
+TonTon checks the installed version and the game image, sends only the changed
+signed framework and matching shader resources when the baseline archive is
+already on the device, and installs over the same bundle ID. It checks that the
+data container, game image and save files were retained. Keep the signing
+configuration and the baseline IPA outside version control. The device needs
+the TonTon local device bridge and a library build that supports independent hosts.
+
+A local signing configuration is a JSON file with these fields:
+
+| Field | Value |
+|---|---|
+| `bridge` | Local device bridge HTTP address |
+| `bundle_id` | Bundle ID of the TonTon library installed on the device |
+| `baseline_ipa` | Absolute path to the signed IPA for that exact installed library version |
+| `provisioning_profile` | Absolute path to a profile covering the device and the existing app capabilities |
+| `device_udid` | Device registered on that profile |
+| `app_version` | A newer internal bundle build number |
+
+The matching signing certificate and private key must already be in the Mac
+keychain. An optional `baseline_device_ipa` points to a retained copy in the
+device bridge's upload cache; TonTon verifies it byte for byte before reuse.
+The installed RomFS must match the build. A different update or DLC set is not
+installed by this route. A locally generated build report records successful
+installation separately from gameplay verification.
+
+Choose **Export standalone IPA** for a single-game IPA with its game data and
+selected add-ons for external signing. Classic independent builds do not add
+in-process return to the library. The compile/link fixtures for 16.1 and 17
+alone do not constitute on-device gameplay tests.
 
 To build the same Mac application from the repository:
 

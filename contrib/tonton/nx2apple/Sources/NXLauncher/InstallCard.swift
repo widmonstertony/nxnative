@@ -23,9 +23,25 @@ package struct InstallCard: View {
         if build.target != BuildTarget.mac, !build.running || sending || showLocked {
             if build.requiresCompatibilityIPA {
                 CardGroup(loc.t("dev.section"), footnote: "") {
-                    CardRow(loc.t("shell.ipaOneGame")) { EmptyView() }
-                    CardDivider()
-                    ExportSteps(build: build, devices: devices)
+                    if build.iosBuildTarget.compatibility {
+                        CardRow(loc.t(build.compatibilityDeviceConfig.isEmpty ? "shell.ipaOneGame" : "tonton.compatInstall"),
+                                detail: build.compatibilityDeviceConfig.isEmpty ? "" :
+                                    URL(fileURLWithPath: build.compatibilityDeviceConfig).lastPathComponent) {
+                            if !build.compatibilityDeviceConfig.isEmpty {
+                                Button(loc.t("shell.modeExport")) { build.compatibilityDeviceConfig = "" }
+                                    .buttonStyle(LauncherSecondaryButtonStyle())
+                            }
+                            Button(loc.t("tonton.compatChooseDevice")) {
+                                if let path = build.choosePaths(.init(allowsMultiple: false, fileTypes: ["json"])).first {
+                                    build.compatibilityDeviceConfig = path
+                                }
+                            }.buttonStyle(LauncherSecondaryButtonStyle())
+                        }
+                    }
+                    if !build.iosBuildTarget.compatibility || build.compatibilityDeviceConfig.isEmpty {
+                        CardDivider()
+                        ExportSteps(build: build, devices: devices)
+                    }
                 }.disabled(build.running)
             } else {
                 card.disabled(build.running && !sending)

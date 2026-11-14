@@ -60,6 +60,21 @@ Each item was found from a red line or a pass dump on the way through the langua
 - **Current: the atomic max runs on texture 302 itself** (native texture atomics, [Image atomics](../../../docs/reference/shaders.md#image-atomics)), so its results reach the passes that read the image; before, they went to a scratch buffer that nothing read. Chain `0ce4b5e8aefb` builds all 28,603 shaders. Update 2.0.2 from a fresh save on the docs' route, headless on the Mac under Metal API validation (2026-10-27): `image atomics on image slot 1, texture ID 302 (target 4, block-linear, 2211840 bytes)`, then on to frame 12,000 with no validation error, GPU fault or new red line. The picture of that scene was not compared, and the iPhone freeze of GitHub issue #149 is not re-checked.
 - **Current validation (2026-10-25):** with the bounds fix and strict descriptor-format/bindless-handle checks, chain `467efdfd0b62` rebuilt all 28,603 shaders for Mac and iPhone with zero failures and no undecoded bindings. After rebuilding the host, update 2.0.2 ran for 240.1 seconds / 6,987 frames around the station from an isolated copy of the save, with movement and camera changes, shader validation disabled, and no observed freeze, GPU page fault, missing shader or atomic-binding rejection. The log confirmed the new chain and the 480x270, three-layer image using 3 MiB scratch. This is a Mac smoke test, not confirmation of the reported iPhone/version cases or the station-to-world transition. Artifacts are in the NSP folder's `0100F43008C44000-work/pr178/` (shader libraries and `gameplay/`).
 
+### iPadOS 16.1 M2 compatibility build
+
+The iOS legacy runtime lowers the transparent-material pass's unsigned
+fragment atomic max on an R32Uint 2D array (shader `2bd5037003980716`) to
+a buffer shadow on M2. The shader bounds the slice and coordinates, and the
+runtime copies each layer in and out in GPU order. The modern Metal path
+retains the native texture atomic. The packaging audit verifies the compiled
+shadow and only accepts a missing Tier 1 sampler companion where the M2 audit
+proves the native Tier 2 path applies.
+
+All 28,603 shaders and their required resources passed the compatibility
+audit for 2.0.2. The Mac build page can sign and update the independently
+linked engine in the existing gamebox. See the
+[installation guide](../../../docs/ios16-ios17.md#build-in-tonton-gamebox-on-mac).
+
 ## Pipeline bases made before the game runs
 
 - **Resolved: the Mac app's bundled pipeline archive was built for the wrong depth mode** (GitHub issue #614, MacBook Air M4, Mac app at `38b8907`). The game calls `nvnDeviceSetDepthMode` with near = 0 (`[nvn] depth mode near=0` in the Mac report and in both iPhone logs of issues #149 and #292), and the profile had no `depth_mode`, so the NSP script's prebuild made the bundled archive's 1.2 GB of bases for near = −w (`main0` vertex entries). The host follows the game's mode and found none of them: `pipeline archive bundled with the app: made for … depth near=-w … this run needs … depth near=0 … the device builds the bases it does not hold`. Every base then compiled on the Mac while playing (`archive lookups … found none 6`, `bases compiled 3 / 258.6 ms` up to frame 1200), one cause of the hitches on new moves and effects that the report describes. **Current:** `depth_mode zero`, as Legends: Arceus, Scarlet and Violet set; it changes only the bases made offline (the shader input digest and the libraries are unchanged), so an app or IPA packed again gets an archive the game uses. **Open:** not yet re-measured with a repacked app; shader library loads (`shader libraries 12` in the report's 105 ms frame) are not covered by the archive. The report's other symptom, frame intervals alternating 33 / 50 ms in fullscreen with the GPU at 23–25 ms a frame (`old frames dropped by merging 157` per 300 ticks, gone while macOS screen capture runs), is not explained by this; see [Frame latency 2 for the display link in fullscreen](../../../docs/reference/frame-rate.md#frame-latency-2-for-the-display-link-in-fullscreen).

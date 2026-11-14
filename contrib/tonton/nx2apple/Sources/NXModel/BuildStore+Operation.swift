@@ -76,7 +76,9 @@ extension BuildStore {
             let destination = (target == BuildTarget.mac || exportsShell) ? nil : devices.deviceName(devices.installDevice)
             deferredExportsIPA = exportsShell
             if deferredShell.isEmpty {
-                queue.start(target: target, iosMinimum: iosMinimum, iosLegacyGPU: iosLegacyGPU, packageAfter: packageOnce, exportIPA: batchExportsIPA, destinationName: destination)
+                queue.start(target: target, iosMinimum: iosMinimum, iosLegacyGPU: iosLegacyGPU,
+                            compatibilityDeviceConfig: compatibilityDeviceConfig,
+                            packageAfter: packageOnce, exportIPA: batchExportsIPA, destinationName: destination)
             } else {
                 queue.resume()
             }
@@ -103,6 +105,7 @@ extension BuildStore {
         target = entry.target
         iosMinimum = IOSBuildTarget.normalized(entry.iosMinimum).rawValue
         iosLegacyGPU = entry.iosLegacyGPU == "m2" ? "m2" : "a10x"
+        queuedCompatibilityConfig = entry.compatibilityDeviceConfig ?? ""
         if entry.target != BuildTarget.mac, let entryExport = entry.exportIPA {
             queuedExportIPA = entryExport
             queuedExportOneGame = entryExport ? !entry.packageAfter : false

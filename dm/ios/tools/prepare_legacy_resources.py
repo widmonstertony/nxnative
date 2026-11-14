@@ -67,7 +67,7 @@ def prepare(source, cache, libraries, report):
             raise ValueError('Missing library: ' + key)
         if any(b.get('atomic') for b in meta.get('bindings', [])):
             result['issues'].append({'native_texture_atomics_unsupported_on_a10x': key})
-        has_shadow = any(b.get('kind') == 'img_atomic_2d' for b in meta.get('bindings', []))
+        has_shadow = any(b.get('kind') in ('img_atomic_2d', 'img_atomic_2d_array') for b in meta.get('bindings', []))
         if has_shadow or 'legacy_image_atomic' in meta:
             native = json.loads((cache / (key + '.json')).read_text())
             original = (cache / (key + '.metal')).read_text()
