@@ -18,13 +18,19 @@ The former branch name was `ios16-pokemon-za-port`; it was renamed, preserving i
 
 The [upstream optimization audit](docs/tonton-upstream-audit.md) covers every installed title and the new Fate/EXTELLA LINK request: upstream source coverage, classic-device backport boundaries, TonTon-only fixes, measured scenes and unresolved issues. The audit now includes upstream through `df9ca262` (November 13): sparse-binding cache updates, dynamic-resolution MetalFX input ranges, GL/Vulkan texture-lifetime repairs, and geometry/tessellation fixes. Source integration is distinct from device installation. The classic frame-step controller also has a targeted upstream backport, with 86 simulated timing checks passing; installation and performance validation are pending.
 
-The [iOS feature deployment matrix](docs/tonton-upstream-audit.md#ios-shell-functions-november-13) records the NX2Apple snapshot, return-to-library boundary, controller/menu features and remaining device checks. Air 60.78 carries the new optional lifecycle without changing any existing game framework. Older engines do not acquire teardown support merely from a shell update.
+The [iOS feature deployment matrix](docs/tonton-upstream-audit.md#ios-shell-functions-november-13) records the NX2Apple snapshot, return-to-library boundary, controller/menu features and remaining device checks. The Air glass update pairs the new bookshelf with the safe return menu in Fate/EXTELLA LINK. Older engines do not acquire teardown support merely from a shell update.
 
 The TonTon bookshelf follows the iOS appearance or an explicit light/dark
 choice. It uses native Liquid Glass controls on iOS 26/27 and system
 buttons on iOS/iPadOS 16.1. The modern independent host's game menu can
 return to the same library process after teardown; see the
 [engine integration and validation limits](dm/ios/Engines/NxNative/README.md#independent-engine-return-to-the-library-air-6078).
+
+Air 60.81 was installed over 60.79 and opened on the device. The refreshed
+catalog reported all 27 games ready. The update reused 25 signed frameworks,
+rebuilt only the Fate/EXTELLA LINK framework and the affected shell objects,
+and transferred no game images or retail payloads. Fate's return-to-library
+action is included; the in-game quit and relaunch still need a player check.
 
 Add each published game fix here with its affected device, what changed, and
 the deepest scene actually verified. A signed install or a successful shader

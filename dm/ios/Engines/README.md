@@ -32,6 +32,19 @@ The current adapter does not implement MetalFX upscaling or frame generation.
 
 ## Optional Red Alert runtime
 
+The separate native adapter, `TonTonRedAlert.m`, can also use an existing
+`Documents/Games/<id>/UserData/ra2-native-<edition>/EngineFiles` workspace.
+For a retained update, keep the signed `NativeEngines.json` and
+`NativeRetailManifest.json` and their matching plist revision. Verify both
+on-device workspaces against the manifest before omitting `NativeRetail`.
+Use a signed `NativeWorkspaceOnly` directory containing a regular marker and
+a relative symbolic link to that marker as the framework's non-copyable seed.
+The framework accepts the existing matching workspace and rejects copying the
+seed into an empty one. The launcher checks the selected workspace's exact
+edition/revision and immutable retail hashes; that edition's editable INI is
+preserved. Fresh installs still require the full retail source. The retained
+package must never be used as a fresh install.
+
 Define `DM_WEB_RUNTIME`, compile `TonTonWebRuntime.m`, link WebKit, and bundle
 the official BoxedWine browser runtime under `Runtimes/RedAlert2`. Include its
 GPL license and corresponding source reference (https://github.com/danoon2/Boxedwine).

@@ -159,7 +159,9 @@ interactive and waits for the framework callback to unwind before restoring
 its static data. For a framework with the capability, the ellipsis menu's
 **Return to Gamebox** action uses the upstream confirmation dialog. Holding
 controller Home also opens the confirmation when iOS routes that button to
-the app. The updated menu and lifecycle have not been installed and
-play-tested on Air. The iOS 27.2 bookshelf preview uses the real UIKit glass
+the app. Air 60.81 was installed over 60.79 using 25 byte-identical signed
+frameworks and the rebuilt Fate framework. The new library launched and
+reported 27 games ready. The in-game quit and relaunch have not been
+play-tested on this build. The iOS 27.2 bookshelf preview uses the real UIKit glass
 button styles; the iOS 16.1 bookshelf build uses its availability-checked
 fallback.
