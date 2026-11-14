@@ -18,7 +18,7 @@
 #import "tv_gamebox.h"
 
 UIViewController *front_tv_root(void);
-UIViewController *front_tv_library_root(NSString *game, NSString *titleID, void (^flush)(void (^)(BOOL)));
+UIViewController *front_tv_library_root(NSString *game, NSString *titleID, NSArray *previews, void (^flush)(void (^)(BOOL)));
 BOOL front_tv_game_visible(void);
 void front_tv_focus(int active);
 void front_tv_resources_ready(NSString *failure);
@@ -279,7 +279,8 @@ static void boot(void) {
     if ([NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxTV"]) {
         NSString *title = [NSString stringWithFormat:@"%016llX", (unsigned long long)DM_GAME_PROGRAM_ID];
         NSString *displayName = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxTitle"] ?: @DM_GAME_NAME;
-        self.window.rootViewController = front_tv_library_root(displayName, title, ^(void (^completed)(BOOL)) {
+        NSArray *previews=[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxPreviews"];
+        self.window.rootViewController = front_tv_library_root(displayName, title, previews, ^(void (^completed)(BOOL)) {
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
                 BOOL synchronized = !host_started || save_sync_flush(5000);
                 dispatch_async(dispatch_get_main_queue(), ^{ completed(synchronized); });

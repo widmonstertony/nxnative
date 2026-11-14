@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "save_sync.h"
 UIViewController *front_tv_root(void);
-UIViewController *front_tv_library_root(NSString *, NSString *, void (^)(void (^)(BOOL)));
+UIViewController *front_tv_library_root(NSString *, NSString *, NSArray *, void (^)(void (^)(BOOL)));
 void front_tv_focus(int active);
 static UILabel *stateLabel, *historyLabel;
 static NSMutableArray *history;
@@ -33,7 +33,8 @@ int save_sync_report(const char *save, const char *title, const char *folder, in
     self.window=[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     if ([NSProcessInfo.processInfo.arguments containsObject:@"-ton-ton-shelf"]) {
         setenv("DM_SAVE", "/fake-save-path", 1);
-        self.window.rootViewController=front_tv_library_root(@"宝可梦传说 Z-A", @"0100F43008C44000", ^(void (^complete)(BOOL)) { complete(YES); });
+        NSArray *previews = getenv("TV_MOCK_PREVIEW") ? @[@{@"id":@"01001f5010dfa000",@"title":@"宝可梦传说：阿尔宙斯"}] : nil;
+        self.window.rootViewController=front_tv_library_root(@"宝可梦传说 Z-A", @"0100F43008C44000", previews, ^(void (^complete)(BOOL)) { complete(YES); });
         [self.window makeKeyAndVisible];
         return;
     }

@@ -55,6 +55,23 @@ def prepare_save_sync(gen: Path, host: Path, require_hooks: bool) -> None:
     filesystem.write_text(fs)
 
 
+def prepare_preview_assets(catalog: Path, entries) -> list:
+    games = []
+    seen = set()
+    for key, title, artwork in entries:
+        key = key.lower()
+        if not re.fullmatch(r'[0-9a-f]{16}', key) or key in seen or not title.strip():
+            raise ValueError(f'Invalid or repeated preview title: {key}')
+        seen.add(key)
+        asset = catalog / f'GameboxTitle-{key}.imageset'
+        asset.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['/usr/bin/sips', '-s', 'format', 'png', '-Z', '1280', str(Path(artwork).resolve()),
+                        '--out', str(asset / 'cover.png')], check=True, capture_output=True)
+        (asset / 'Contents.json').write_text('{"images":[{"idiom":"universal","filename":"cover.png"}],"info":{"author":"xcode","version":1}}\n')
+        games.append({'id': key, 'title': title})
+    return games
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--ios-project', type=Path, required=True)
@@ -66,13 +83,15 @@ def main():
     p.add_argument('--gamebox', action='store_true', help='Use the focusable TonTon game library')
     p.add_argument('--artwork', type=Path, help='Use the Mac shelf hero image in the Apple TV shelf')
     p.add_argument('--display-title', help='Localized game name for the Gamebox shelf')
+    p.add_argument('--preview-game', action='append', default=[], nargs=3, metavar=('TITLE_ID', 'TITLE', 'ARTWORK'),
+                   help='Show an additional game and its cover in the library without enabling launch')
     p.add_argument('--cloud-container', help='CloudKit container already authorized by the tvOS provisioning profile')
     p.add_argument('--cloud-environment', default='Development', choices=('Development', 'Production'))
     a = p.parse_args()
     if not re.fullmatch('[0-9a-f]{64}', a.shader_archive_sha256):
         p.error('--shader-archive-sha256 must be a lowercase SHA-256 digest')
-    if (a.artwork or a.display_title) and not a.gamebox:
-        p.error('--artwork and --display-title require --gamebox')
+    if (a.artwork or a.display_title or a.preview_game) and not a.gamebox:
+        p.error('--artwork, --display-title and --preview-game require --gamebox')
     tv = Path(__file__).resolve().parents[1]
     if a.cloud_container and not re.fullmatch(r'iCloud\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', a.cloud_container):
         p.error('expected an explicit iCloud container identifier')
@@ -178,6 +197,8 @@ def main():
         cloud_info = f'DMCloudSaveContainer: {a.cloud_container}'
         cloud_sign = 'CODE_SIGN_ENTITLEMENTS: Gen/TV-Cloud.entitlements'
     localized_game = f'DMGameboxTitle: {json.dumps(a.display_title, ensure_ascii=False)}' if a.display_title else ''
+    previews = prepare_preview_assets(gen / 'TVAssets.xcassets', a.preview_game)
+    preview_info = f'DMGameboxPreviews: {json.dumps(previews, ensure_ascii=False)}' if previews else ''
     (out / 'project.yml').write_text(f'''name: DmTV
 configFiles:
   Release: Gen/dm-tv.xcconfig
@@ -203,6 +224,7 @@ targets:
         CFBundleDisplayName: {'TonTon 游戏匣' if a.gamebox else 'Pokémon Legends Z-A'}
         {'DMGameboxTV: true' if a.gamebox else ''}
         {localized_game}
+        {preview_info}
         {cloud_info}
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)

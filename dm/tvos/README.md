@@ -36,16 +36,18 @@ image as the Mac, fills the card without stretching, and accepts an optional
 `--display-title` for the localized title. The shelf uses system glass controls
 on tvOS 26 and later and standard focusable controls on earlier versions.
 
-Pass `--gamebox` to give the build a TonTon game shelf with a card for its
-prepared title. It retains the standalone tvOS app's bundle identifier and
-does not change its save path. “本游戏设置” stores the controller button
+Pass `--gamebox` to open the prepared title in the TonTon game shelf. Add a
+catalogue entry with `--preview-game 01001F5010DFA000 '宝可梦传说：阿尔宙斯' /path/to/banner.jpg`.
+The gamebox then opens a gallery of 16:9 cover cards navigable with the remote.
+Selecting the prepared title opens its settings and Start page; preview cards
+are marked “仅供预览” and cannot launch another title or access its save.
+The app keeps its existing bundle identifier and save path. “本游戏设置” stores the controller button
 mapping and controller help preferences for that title. Press Play/Pause on
 the Siri Remote or hold Options on a supported gamepad to open the panel.
 After saving normally in the game, choose
 “存档并返回游戏匣” from the controls panel to pause the session.
-“继续游戏” resumes the same process. The shelf does not load additional
-games or read an executable bundle from iOS. Each title needs a prepared
-tvOS host, game files and compatible shader libraries.
+“继续游戏” resumes the same process. Additional games require a tvOS host,
+game files and compatible shaders; the gallery does not load iOS frameworks.
 
 ## Static signed module layout
 

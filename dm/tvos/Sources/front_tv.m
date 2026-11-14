@@ -20,6 +20,7 @@ static CAMetalLayer *tv_layer;
 static UIViewController *tv_root;
 static UINavigationController *tv_library;
 static UIViewController *tv_library_home;
+static UIViewController *tv_gallery_home;
 static UIButton *tv_play;
 static UIButton *tv_settings;
 static UILabel *tv_cloud_status;
@@ -380,7 +381,8 @@ static void tv_return_to_library(void) {
         tv_exit_pending = NO;
         tv_game_visible = NO;
         UIApplication.sharedApplication.idleTimerDisabled = NO;
-        [tv_library setViewControllers:@[tv_library_home] animated:YES];
+        UIViewController *shelf = tv_gallery_home ?: tv_library_home;
+        [tv_library setViewControllers:@[shelf] animated:YES];
         UIButtonConfiguration *cfg = tv_play.configuration;
         cfg.title = @"继续游戏"; tv_play.configuration = cfg;
         tv_refresh_cloud_status();
@@ -389,7 +391,7 @@ static void tv_return_to_library(void) {
               message:@"本机进度已保留。可以先继续游戏，或稍后再检查同步。" preferredStyle:UIAlertControllerStyleAlert];
             [notice addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
-                if (!tv_game_visible) [tv_library_home presentViewController:notice animated:YES completion:nil];
+                if (!tv_game_visible) [shelf presentViewController:notice animated:YES completion:nil];
             });
         }
     };
@@ -448,7 +450,127 @@ static void tv_play_selected(void) {
     });
 }
 
-UIViewController *front_tv_library_root(NSString *game, NSString *titleID, void (^flush)(void (^)(BOOL))) {
+@interface TVShelfCard : UIButton
+@property(nonatomic,strong) CAGradientLayer *shade;
+@end
+@implementation TVShelfCard
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.shade.frame=self.bounds;
+}
+- (void)didUpdateFocusInContext:(UIFocusUpdateContext *)context withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
+    [super didUpdateFocusInContext:context withAnimationCoordinator:coordinator];
+    [coordinator addCoordinatedAnimations:^{
+        self.layer.borderWidth=self.isFocused?5:0;
+        self.transform=self.isFocused?CGAffineTransformMakeScale(1.045,1.045):CGAffineTransformIdentity;
+    } completion:nil];
+}
+@end
+
+static TVShelfCard *tv_gallery_card(NSString *title, NSString *titleID, BOOL primary, BOOL ready) {
+    TVShelfCard *card=[TVShelfCard buttonWithType:UIButtonTypeCustom];
+    card.translatesAutoresizingMaskIntoConstraints=NO;
+    card.layer.cornerRadius=28;
+    card.layer.borderColor=UIColor.whiteColor.CGColor;
+    card.clipsToBounds=YES;
+    card.backgroundColor=[UIColor colorWithRed:.16 green:.21 blue:.29 alpha:1];
+    UIImageView *art=[[UIImageView alloc] initWithImage:TVGameArtwork(titleID,primary)];
+    art.translatesAutoresizingMaskIntoConstraints=NO;
+    art.contentMode=UIViewContentModeScaleAspectFill;
+    [card addSubview:art];
+    card.shade=[CAGradientLayer layer];
+    card.shade.colors=@[(id)UIColor.clearColor.CGColor,(id)[UIColor colorWithWhite:0 alpha:.84].CGColor];
+    card.shade.locations=@[@.18,@1];
+    [card.layer addSublayer:card.shade];
+    NSString *status=primary?(ready?@"可打开":@"资源未就绪"):@"仅供预览";
+    UILabel *name=libraryLabel(title,34,UIFontWeightBold);
+    UILabel *state=libraryLabel(status,24,UIFontWeightSemibold);
+    state.textColor=primary&&ready?[UIColor colorWithRed:.59 green:1 blue:.79 alpha:1]:[UIColor colorWithWhite:1 alpha:.78];
+    UIStackView *labels=[[UIStackView alloc] initWithArrangedSubviews:@[name,state]];
+    labels.axis=UILayoutConstraintAxisVertical; labels.spacing=6;
+    labels.translatesAutoresizingMaskIntoConstraints=NO;
+    labels.userInteractionEnabled=NO;
+    [card addSubview:labels];
+    [NSLayoutConstraint activateConstraints:@[
+        [card.widthAnchor constraintEqualToConstant:560], [card.heightAnchor constraintEqualToConstant:315],
+        [art.leadingAnchor constraintEqualToAnchor:card.leadingAnchor], [art.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [art.topAnchor constraintEqualToAnchor:card.topAnchor], [art.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+        [labels.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:26],
+        [labels.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-26],
+        [labels.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-25]
+    ]];
+    card.isAccessibilityElement=YES; card.accessibilityTraits=UIAccessibilityTraitButton;
+    card.accessibilityIdentifier=[@"shelf-card-" stringByAppendingString:titleID];
+    card.accessibilityLabel=title; card.accessibilityValue=status;
+    return card;
+}
+
+static UIViewController *tv_build_gallery(NSString *game, NSString *titleID, NSArray *previews, BOOL ready) {
+    if (![previews isKindOfClass:NSArray.class] || !previews.count) return nil;
+    NSMutableSet *seen=[NSMutableSet setWithObject:titleID.lowercaseString];
+    NSMutableArray<UIButton *> *cards=[NSMutableArray array];
+    TVShelfCard *first=tv_gallery_card(game,titleID,YES,ready);
+    [first addAction:[UIAction actionWithHandler:^(__unused UIAction *action){
+        [tv_library pushViewController:tv_library_home animated:YES];
+    }] forControlEvents:UIControlEventPrimaryActionTriggered];
+    [cards addObject:first];
+    for (id row in previews) {
+        if (![row isKindOfClass:NSDictionary.class]) continue;
+        NSString *key=row[@"id"], *title=row[@"title"];
+        if (![key isKindOfClass:NSString.class] || key.length!=16 ||
+            ![title isKindOfClass:NSString.class] || !title.length) continue;
+        key=key.lowercaseString;
+        if ([seen containsObject:key] || [key rangeOfCharacterFromSet:
+            [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location!=NSNotFound) continue;
+        [seen addObject:key];
+        TVShelfCard *card=tv_gallery_card(title,key,NO,NO);
+        [card addAction:[UIAction actionWithHandler:^(__unused UIAction *action){
+            UIAlertController *dialog=[UIAlertController alertControllerWithTitle:title
+                message:@"这是游戏库预览。这款游戏的 Apple TV 运行组件尚未安装。"
+                preferredStyle:UIAlertControllerStyleAlert];
+            [dialog addAction:[UIAlertAction actionWithTitle:@"返回游戏库" style:UIAlertActionStyleCancel handler:nil]];
+            [tv_gallery_home presentViewController:dialog animated:YES completion:nil];
+        }] forControlEvents:UIControlEventPrimaryActionTriggered];
+        [cards addObject:card];
+    }
+    if (cards.count==1) return nil;
+
+    UIViewController *controller=[UIViewController new];
+    UIView *view=controller.view;
+    view.backgroundColor=[UIColor colorWithRed:.055 green:.075 blue:.11 alpha:1];
+    UILabel *brand=libraryLabel(@"TonTon 游戏匣",36,UIFontWeightSemibold);
+    brand.textColor=[UIColor colorWithWhite:1 alpha:.70];
+    UILabel *heading=libraryLabel(@"游戏库",76,UIFontWeightHeavy);
+    UILabel *summary=libraryLabel([NSString stringWithFormat:@"%lu 款游戏  ·  %d 款可打开",(unsigned long)cards.count,ready?1:0],27,UIFontWeightMedium);
+    summary.textColor=[UIColor colorWithWhite:1 alpha:.68];
+    UILabel *all=libraryLabel(@"所有游戏",32,UIFontWeightBold);
+    UIStackView *tiles=[[UIStackView alloc] initWithArrangedSubviews:cards];
+    tiles.axis=UILayoutConstraintAxisHorizontal; tiles.spacing=40;
+    tiles.translatesAutoresizingMaskIntoConstraints=NO;
+    UIScrollView *scroll=[UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints=NO; scroll.clipsToBounds=NO;
+    scroll.showsHorizontalScrollIndicator=NO; scroll.showsVerticalScrollIndicator=NO;
+    [scroll addSubview:tiles];
+    UIStackView *body=[[UIStackView alloc] initWithArrangedSubviews:@[brand,heading,summary,all,scroll]];
+    body.axis=UILayoutConstraintAxisVertical; body.spacing=17;
+    [body setCustomSpacing:75 afterView:summary]; [body setCustomSpacing:25 afterView:all];
+    body.translatesAutoresizingMaskIntoConstraints=NO;
+    [view addSubview:body];
+    UILayoutGuide *safe=view.safeAreaLayoutGuide, *content=scroll.contentLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [body.topAnchor constraintEqualToAnchor:safe.topAnchor constant:75],
+        [body.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:52],
+        [body.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-50],
+        [scroll.heightAnchor constraintEqualToConstant:345],
+        [tiles.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:5],
+        [tiles.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-25],
+        [tiles.topAnchor constraintEqualToAnchor:content.topAnchor constant:10],
+        [tiles.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-20]
+    ]];
+    return controller;
+}
+
+UIViewController *front_tv_library_root(NSString *game, NSString *titleID, NSArray *previews, void (^flush)(void (^)(BOOL))) {
     tv_flush_game = [flush copy];
     tv_title_id = [titleID copy];
     tv_swap_face = [NSUserDefaults.standardUserDefaults boolForKey:TVGamePreference(tv_title_id,@"SwapFace")];
@@ -456,7 +578,7 @@ UIViewController *front_tv_library_root(NSString *game, NSString *titleID, void 
     UIView *view = tv_library_home.view;
     view.backgroundColor = [UIColor colorWithRed:.06 green:.07 blue:.10 alpha:1];
     UILabel *brand = libraryLabel(@"TonTon 游戏匣", 45, UIFontWeightBold);
-    UIImageView *art = [[UIImageView alloc] initWithImage:TVGameArtwork(titleID)];
+    UIImageView *art = [[UIImageView alloc] initWithImage:TVGameArtwork(titleID, YES)];
     art.translatesAutoresizingMaskIntoConstraints = NO;
     art.contentMode = UIViewContentModeScaleAspectFill;
     art.clipsToBounds = YES;
@@ -519,7 +641,8 @@ UIViewController *front_tv_library_root(NSString *game, NSString *titleID, void 
         [actions.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor constant:42],
         [actions.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor constant:-42]
     ]];
-    tv_library = [[UINavigationController alloc] initWithRootViewController:tv_library_home];
+    tv_gallery_home = tv_build_gallery(game, titleID, previews, canOpen);
+    tv_library = [[UINavigationController alloc] initWithRootViewController:tv_gallery_home ?: tv_library_home];
     [tv_library setNavigationBarHidden:YES animated:NO];
     tv_refresh_cloud_status();
     return tv_library;

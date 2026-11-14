@@ -7,6 +7,24 @@ static BOOL anyFocused(XCUIElementQuery *query) {
 @interface RemoteUITests:XCTestCase
 @end
 @implementation RemoteUITests
+- (void)testGalleryShowsBothTitlesAndPreviewCannotOpenTheGuest {
+    self.continueAfterFailure=NO;
+    XCUIApplication *app=[[XCUIApplication alloc] initWithBundleIdentifier:@"org.nxnative.tvremote-harness"];
+    app.launchArguments=@[@"-ton-ton-shelf"];
+    app.launchEnvironment=@{@"TV_MOCK_PREVIEW":@"1"};
+    [app launch];
+    XCUIElement *za=app.buttons[@"shelf-card-0100F43008C44000"];
+    XCUIElement *arceus=app.buttons[@"shelf-card-01001f5010dfa000"];
+    XCTAssertTrue([za waitForExistenceWithTimeout:10]);
+    XCTAssertTrue(za.hasFocus);
+    XCTAssertEqualObjects(arceus.value,@"仅供预览");
+    [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonRight];
+    XCTAssertTrue(arceus.hasFocus);
+    [XCUIRemote.sharedRemote pressButton:XCUIRemoteButtonSelect];
+    XCTAssertTrue([app.buttons[@"返回游戏库"].firstMatch waitForExistenceWithTimeout:5]);
+    XCTAssertFalse(app.buttons[@"gamebox-play"].exists);
+}
+
 - (void)testGameboxSettings {
     self.continueAfterFailure=NO;
     XCUIApplication *app=[[XCUIApplication alloc] initWithBundleIdentifier:@"org.nxnative.tvremote-harness"];
