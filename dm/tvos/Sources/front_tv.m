@@ -16,6 +16,14 @@ int front_tv_ready(void);
 int front_tv_preparing(void);
 static CAMetalLayer *tv_layer;
 static UIViewController *tv_root;
+static UINavigationController *tv_library;
+static UIViewController *tv_library_home;
+static UIButton *tv_play;
+static BOOL tv_game_visible;
+static BOOL tv_game_opened;
+static BOOL tv_exit_pending;
+static void (^tv_flush_game)(void (^completed)(BOOL));
+static void tv_return_to_library(void);
 static BOOL tv_active = YES;
 static TVRemoteState remote_state;
 static TVRemoteOutput physical_state;
@@ -178,10 +186,12 @@ void front_tv_focus(int active) {
     NSArray *labels = @[@"Resume / Move", @"Camera stick", @"D-pad", @"Release held buttons",
         @"A", @"B", @"X", @"Y", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"L stick click", @"R stick click",
         @"Hold L", @"Hold R", @"Hold ZL", @"Hold ZR"];
+    if (tv_library) labels = [labels arrayByAddingObject:@"存档并返回游戏匣"];
+    NSUInteger rows = (labels.count + 3) / 4;
     CGFloat width = (panel.bounds.size.width - 180) / 4;
     for (NSUInteger i = 0; i < labels.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(35 + (i % 4) * (width + 35), 150 + (i / 4) * ((panel.bounds.size.height - 175) / 5), width, (panel.bounds.size.height - 175) / 5 - 23);
+        b.frame = CGRectMake(35 + (i % 4) * (width + 35), 150 + (i / 4) * ((panel.bounds.size.height - 175) / rows), width, (panel.bounds.size.height - 175) / rows - 23);
         b.tag = i; [b setTitle:labels[i] forState:UIControlStateNormal];
         b.titleLabel.font = [UIFont systemFontOfSize:26 weight:UIFontWeightSemibold];
         b.accessibilityIdentifier = [@"remote-" stringByAppendingString:labels[i]];
@@ -193,6 +203,19 @@ void front_tv_focus(int active) {
 }
 - (void)remoteAction:(UIButton *)button {
     NSInteger i = button.tag;
+    if (i == 20 && tv_library) {
+        if (tv_exit_pending) return;
+        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"返回游戏匣？"
+            message:@"请先在游戏内存档。返回后本局暂停，可以继续玩。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"继续玩" style:UIAlertActionStyleCancel handler:nil]];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"保存并返回" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [self hideRemotePanel];
+            tv_return_to_library();
+        }]];
+        [self presentViewController:confirm animated:YES completion:nil];
+        return;
+    }
     if (i < 3) {
         tv_remote_mode(&remote_state, (int)i);
         [NSUserDefaults.standardUserDefaults setInteger:i forKey:@"TVRemoteMode"];
@@ -247,6 +270,110 @@ void front_tv_focus(int active) {
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; [self becomeFirstResponder]; front_tv_start(); }
 @end
 UIViewController *front_tv_root(void) { tv_root = [TVRootVC new]; return tv_root; }
+static UILabel *libraryLabel(NSString *text, CGFloat size, UIFontWeight weight) {
+    UILabel *label = [UILabel new];
+    label.text = text;
+    label.font = [UIFont systemFontOfSize:size weight:weight];
+    label.numberOfLines = 0;
+    label.textColor = UIColor.whiteColor;
+    return label;
+}
+
+static void tv_return_to_library(void) {
+    if (!tv_library || !tv_game_visible || tv_exit_pending) return;
+    tv_exit_pending = YES;
+    front_tv_focus(0);
+    void (^done)(BOOL) = ^(BOOL synchronized) {
+        tv_exit_pending = NO;
+        tv_game_visible = NO;
+        UIApplication.sharedApplication.idleTimerDisabled = NO;
+        [tv_library setViewControllers:@[tv_library_home] animated:YES];
+        UIButtonConfiguration *cfg = tv_play.configuration;
+        cfg.title = @"继续游戏"; tv_play.configuration = cfg;
+        if (!synchronized) {
+            UIAlertController *notice = [UIAlertController alertControllerWithTitle:@"云存档还在同步"
+              message:@"本机进度已保留。可以先继续游戏，或稍后再检查同步。" preferredStyle:UIAlertControllerStyleAlert];
+            [notice addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+                if (!tv_game_visible) [tv_library_home presentViewController:notice animated:YES completion:nil];
+            });
+        }
+    };
+    if (tv_flush_game) tv_flush_game(done); else done(YES);
+}
+
+BOOL front_tv_game_visible(void) { return !tv_library || tv_game_visible; }
+UIViewController *front_tv_library_root(NSString *game, void (^flush)(void (^)(BOOL))) {
+    tv_flush_game = [flush copy];
+    tv_library_home = [UIViewController new];
+    UIView *view = tv_library_home.view;
+    view.backgroundColor = [UIColor colorWithRed:.06 green:.07 blue:.10 alpha:1];
+    UILabel *brand = libraryLabel(@"TonTon 游戏匣", 54, UIFontWeightBold);
+    UIImageView *art = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"GameboxFeature"]];
+    art.translatesAutoresizingMaskIntoConstraints = NO;
+    art.contentMode = UIViewContentModeScaleAspectFit;
+    art.clipsToBounds = YES;
+    art.layer.cornerRadius = 32;
+    art.backgroundColor = [UIColor colorWithWhite:.12 alpha:1];
+    if (!art.image) {
+        art.image = [UIImage systemImageNamed:@"gamecontroller.fill"];
+        art.tintColor = [UIColor colorWithWhite:1 alpha:.75];
+    }
+    UIVisualEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+    if (@available(tvOS 26.0,*)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+    UIVisualEffectView *panel = [[UIVisualEffectView alloc] initWithEffect:effect];
+    panel.translatesAutoresizingMaskIntoConstraints = NO;
+    panel.layer.cornerRadius = 32; panel.clipsToBounds = YES;
+    UILabel *title = libraryLabel(game, 46, UIFontWeightBold);
+    UILabel *device = libraryLabel(@"Apple TV 版", 26, UIFontWeightSemibold);
+    device.textColor = [UIColor colorWithWhite:1 alpha:.72];
+    BOOL canOpen = front_tv_ready() || front_tv_preparing();
+    UILabel *hint = libraryLabel(canOpen
+        ? @"用遥控器或手柄游玩。游戏中按播放／暂停可打开控制面板，保存后返回游戏匣。"
+        : @"这台 Apple TV 缺少此游戏的本地文件。恢复游戏文件后，重新打开游戏匣即可。", 24, UIFontWeightRegular);
+    hint.textColor = [UIColor colorWithWhite:1 alpha:.74];
+    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+    if (@available(tvOS 26.0,*)) configuration = [UIButtonConfiguration prominentGlassButtonConfiguration];
+    configuration.title = canOpen ? @"开始游戏" : @"游戏文件未就绪";
+    configuration.image = [UIImage systemImageNamed:canOpen ? @"play.fill" : @"externaldrive.badge.exclamationmark"];
+    configuration.imagePadding = 14;
+    tv_play = [UIButton buttonWithConfiguration:configuration primaryAction:[UIAction actionWithHandler:^(UIAction *action){
+        if (tv_game_visible) return;
+        tv_game_visible = YES;
+        UIViewController *gameView = tv_game_opened ? tv_root : front_tv_root();
+        tv_game_opened = YES;
+        [tv_library pushViewController:gameView animated:NO];
+        front_tv_focus(1);
+        UIApplication.sharedApplication.idleTimerDisabled = YES;
+    }]];
+    tv_play.enabled = canOpen;
+    tv_play.accessibilityIdentifier = @"gamebox-play";
+    UIStackView *actions = [[UIStackView alloc] initWithArrangedSubviews:@[title,device,tv_play,hint]];
+    actions.axis = UILayoutConstraintAxisVertical; actions.spacing = 28;
+    actions.alignment = UIStackViewAlignmentLeading;
+    actions.translatesAutoresizingMaskIntoConstraints = NO;
+    [panel.contentView addSubview:actions];
+    UIStackView *hero = [[UIStackView alloc] initWithArrangedSubviews:@[art,panel]];
+    hero.axis = UILayoutConstraintAxisHorizontal; hero.spacing = 52;
+    UIStackView *layout = [[UIStackView alloc] initWithArrangedSubviews:@[brand,hero]];
+    layout.axis = UILayoutConstraintAxisVertical; layout.spacing = 42;
+    layout.translatesAutoresizingMaskIntoConstraints = NO;
+    [view addSubview:layout];
+    UILayoutGuide *safe = view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [layout.centerYAnchor constraintEqualToAnchor:safe.centerYAnchor],
+        [layout.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:48],
+        [layout.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-48],
+        [art.widthAnchor constraintEqualToAnchor:hero.widthAnchor multiplier:.51],
+        [art.heightAnchor constraintEqualToAnchor:safe.heightAnchor multiplier:.60],
+        [actions.centerYAnchor constraintEqualToAnchor:panel.contentView.centerYAnchor],
+        [actions.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor constant:42],
+        [actions.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor constant:-42]
+    ]];
+    tv_library = [[UINavigationController alloc] initWithRootViewController:tv_library_home];
+    [tv_library setNavigationBarHidden:YES animated:NO];
+    return tv_library;
+}
 void front_tv_resources_ready(NSString *failure) {
     TVRootVC *root = (TVRootVC *)tv_root;
     if (failure) {

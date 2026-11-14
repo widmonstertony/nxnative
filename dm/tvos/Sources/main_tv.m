@@ -17,6 +17,8 @@
 #import "romfs_patch.h"
 
 UIViewController *front_tv_root(void);
+UIViewController *front_tv_library_root(NSString *game, void (^flush)(void (^)(BOOL)));
+BOOL front_tv_game_visible(void);
 void front_tv_focus(int active);
 void front_tv_resources_ready(NSString *failure);
 BOOL tv_unpack_shaders(NSString *writable, NSString *expectedSHA256, NSString **failure);
@@ -268,7 +270,15 @@ static void boot(void) {
 @implementation TVSceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-    self.window.rootViewController = front_tv_root(); [self.window makeKeyAndVisible];
+    if ([NSBundle.mainBundle objectForInfoDictionaryKey:@"DMGameboxTV"]) {
+        self.window.rootViewController = front_tv_library_root(@DM_GAME_NAME, ^(void (^completed)(BOOL)) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+                BOOL synchronized = !host_started || save_sync_flush(5000);
+                dispatch_async(dispatch_get_main_queue(), ^{ completed(synchronized); });
+            });
+        });
+    } else self.window.rootViewController = front_tv_root();
+    [self.window makeKeyAndVisible];
 }
 - (void)sceneWillResignActive:(UIScene *)scene { front_tv_focus(0); }
 - (void)sceneDidEnterBackground:(UIScene *)scene {
@@ -288,7 +298,7 @@ static void boot(void) {
         dispatch_async(dispatch_get_main_queue(), end);
     });
 }
-- (void)sceneDidBecomeActive:(UIScene *)scene { front_tv_focus(1); }
+- (void)sceneDidBecomeActive:(UIScene *)scene { if (front_tv_game_visible()) front_tv_focus(1); }
 @end
 @interface TVApp : UIResponder <UIApplicationDelegate>
 @end

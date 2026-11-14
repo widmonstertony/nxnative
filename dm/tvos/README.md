@@ -34,6 +34,14 @@ requires verification on the target TV; installation alone does not prove it.
 prepared iOS icon. The original artwork is fitted whole on a dark TV canvas; it
 is not replaced by a generic icon or cropped through its title.
 
+Pass `--gamebox` to give the build a TonTon game shelf with a card for its
+prepared title. It retains the standalone tvOS app's bundle identifier and
+does not change its save path. After saving normally in the game, choose
+“存档并返回游戏匣” from the Remote controls panel to pause the session.
+“继续游戏” resumes the same process. The shelf does not load additional
+games or read an executable bundle from iOS. Each title needs a prepared
+tvOS host, game files and compatible shader libraries.
+
 ## Static signed module layout
 
 The linker places each module in contiguous 16 KiB-aligned RX/RW/RX segments.

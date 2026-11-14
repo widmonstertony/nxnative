@@ -25,6 +25,7 @@ def main():
     p.add_argument('--bundle-id', default='org.nxnative.0100f43008c44000.tv')
     p.add_argument('--shader-archive-sha256', required=True)
     p.add_argument('--build-number', default='1')
+    p.add_argument('--gamebox', action='store_true', help='Use the focusable TonTon game library')
     a = p.parse_args()
     if not re.fullmatch('[0-9a-f]{64}', a.shader_archive_sha256):
         p.error('--shader-archive-sha256 must be a lowercase SHA-256 digest')
@@ -109,6 +110,11 @@ def main():
     if not icon.is_file():
         raise ValueError('Prepared iOS icon artwork is missing')
     create_icon(icon, gen / 'TVAssets.xcassets')
+    if a.gamebox:
+        cover = gen / 'TVAssets.xcassets' / 'GameboxFeature.imageset'
+        cover.mkdir(exist_ok=True)
+        shutil.copyfile(icon, cover / 'cover.png')
+        (cover / 'Contents.json').write_text('{"images":[{"idiom":"universal","filename":"cover.png"}],"info":{"author":"xcode","version":1}}\n')
     sources = out / 'Sources'
     replace_symlink(sources, tv / 'Sources', directory=True)
     (out / 'project.yml').write_text(f'''name: DmTV
@@ -133,7 +139,8 @@ targets:
     info:
       path: Gen/TV-Info.plist
       properties:
-        CFBundleDisplayName: Pokémon Legends Z-A
+        CFBundleDisplayName: {'TonTon 游戏匣' if a.gamebox else 'Pokémon Legends Z-A'}
+        {'DMGameboxTV: true' if a.gamebox else ''}
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         DMLanguage: zh-CN
