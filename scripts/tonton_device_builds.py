@@ -21,7 +21,7 @@ def load(path):
 
 
 def processes():
-    text = subprocess.check_output(['/bin/ps', '-axo', 'pid=,args='], text=True)
+    text = subprocess.check_output(['/bin/ps', '-ww', '-axo', 'pid=,args='], text=True)
     result = []
     for line in text.splitlines():
         try:
@@ -35,6 +35,22 @@ def processes():
 def matches(rows, argument):
     # An exact argv member, not a substring that could match an editor or shell.
     return [pid for pid, args in rows if str(argument) in args[1:]]
+
+
+def pipeline_alive(rows, pid, state_file):
+    if type(pid) is not int or pid <= 0:
+        return False
+    # Darwin ps prints argv values containing spaces (including Application
+    # Support) without quotes. Only permit that looser match for this read-only
+    # observer and only for the PID reported by the publisher.
+    path = str(state_file)
+    parts = path.split()
+    for process_id, argv in rows:
+        if process_id != pid:
+            continue
+        args = argv[1:]
+        return path in args or any(args[i:i + len(parts)] == parts for i in range(len(args)))
+    return False
 
 
 def checked_job(config, identifier):
@@ -65,8 +81,7 @@ def observe(job, rows):
         done, total = state.get('completed', 0), state.get('total', 0)
         assert type(done) is int and type(total) is int and 0 <= done <= total
         worker = state.get('pid')
-        if status == 'running' and (type(worker) is not int or worker <= 0
-                                    or worker not in matches(rows, job['state_file'])):
+        if status == 'running' and not pipeline_alive(rows, worker, job['state_file']):
             status, detail = 'needs_attention', 'pipeline_not_running'
         return dict(base, state=status, detail=detail, completed=done, total=total,
                     updated=state.get('updated'), canResume=False, canPause=False)

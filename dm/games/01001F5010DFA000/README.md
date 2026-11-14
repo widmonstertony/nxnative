@@ -229,12 +229,15 @@ No save data is modified by the update.
 
 ## Apple TV Gamebox
 
-Build 31 was installed in place on a physical Apple TV and tested from the
-library through language selection, character creation, and the first 3D beach
-scene. The boot abort required the registered SDK 11.4 large-region alignment
-cut: the older cached native modules contained only the two node-area cuts.
-Reusing the original game image and supplying the digest-matched non-point
-raster companions removed the startup black output. The playtest used a separate
-QA save with CloudKit writes disabled; the Z-A shader marker and save listing
-matched before and after the update. Later areas and long sessions were not
-tested.
+Build 31 fixed the startup abort with the registered SDK 11.4 large-region
+alignment cut; the older cached native modules contained only the two node-area
+cuts. Digest-matched non-point raster companions removed the black output,
+but animated models were still missing.
+
+Build 32 binds Arceus's 64-byte transform feedback capture arguments at Metal
+vertex buffer slot 14 on tvOS. A physical Apple TV loaded the game from the
+library through character creation and into the first 3D beach scene, where
+the starter Pokémon rendered again. The update reused the game image and
+shaders already on the device. The playtest used a separate QA save with
+CloudKit writes disabled; the Z-A shader marker and save listing matched
+before and after the update. Later areas and long sessions were not tested.

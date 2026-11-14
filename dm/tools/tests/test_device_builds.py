@@ -72,6 +72,10 @@ class DeviceBuilds(unittest.TestCase):
         live = [(9, ['python', 'compile_shaders.py', '--progress', job['state_file']])]
         row = M.observe(job, live)
         self.assertEqual((row['completed'], row['state']), (50, 'running'))
+        path_with_spaces = self.root / 'Application Support' / 'state.json'
+        self.assertTrue(M.pipeline_alive(
+            [(9, ['python', '--progress', *str(path_with_spaces).split()])],
+            9, path_with_spaces))
         self.assertFalse(row['canPause'] or row['canResume'])
         self.assertEqual(M.observe(job, [(9, ['unrelated-worker'])])['state'], 'needs_attention')
         self.state(state='installed', detail='tv_playtest', completed=100, total=100)

@@ -7735,6 +7735,11 @@ _Static_assert(sizeof(legacy_tf_capture) == 64 && offsetof(legacy_tf_capture, fi
                "Metal dm_tf_capture buffer layout");
 static BOOL tf_uses_capture_reflection(void) {
     const uint64_t program = DM_GAME_PROGRAM_ID;
+#if TARGET_OS_TV
+    // The tvOS Arceus archive uses dm_tf_capture (slot 14) for skinning;
+    // older mobile Arceus archives retain their original capture path.
+    if (program == 0x01001F5010DFA000ull) return YES;
+#endif
     return program == 0x0100F43008C44000ull || program == 0x01008F6008C5E000ull;
 }
 static __unsafe_unretained id<MTLRenderPipelineState> tf_pso(NvShader *vs) {
