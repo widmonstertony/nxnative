@@ -52,6 +52,23 @@ The installed RomFS must match the build. A different update or DLC set is not
 installed by this route. A locally generated build report records successful
 installation separately from gameplay verification.
 
+### Rebuild from source or update the installed Gamebox
+
+Git contains the library UI, runtime sources, integration patches and build
+tools. A clean build does not require a previous IPA. It does require the
+matching local game inputs. To recreate a custom multi-game Gamebox, retain the
+build manifest and recipe for that exact device version, including the engine
+and shader versions and the set of compiled game frameworks. A single-game
+export or a library UI preview does not recreate that Gamebox.
+
+An in-place update built by the current installer starts from that device's
+matching signed Gamebox bundle. This lets it reuse the compiled frameworks and
+preserve game files and saves in the existing data container. Keep one
+verified copy of the latest working signed bundle per device configuration,
+with its build receipt and checksums, outside the scratch build tree. Verify
+the retained copy before clearing build intermediates. Store game inputs,
+compiled packages, signing material and saves outside Git.
+
 Mario Kart World v0 has a separate retained-host route for the audited M2
 classic installation. It requires a `retained_kart.romfs_sha256` entry matching
 the device's existing image, a retained device baseline archive, and the
