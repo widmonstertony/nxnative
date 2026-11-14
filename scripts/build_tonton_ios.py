@@ -291,6 +291,24 @@ def main():
         work = Path(forwarded[forwarded.index('--work-dir') + 1]).resolve()
         if '--shell-framework' in forwarded or '--framework' in forwarded:
             parser.error('use --existing-gamebox to install via the TonTon independent-host ABI')
+    if args.existing_gamebox:
+        from tonton_compatible_install import load_config
+        retained = load_config(args.existing_gamebox)
+        if 'retained_kart' in retained:
+            from tonton_retained_kart import TITLE, deliver
+            from tonton_compatible_install import preflight
+            if (args.minimum_ios != '16.1' or args.legacy_target != 'm2'
+                    or '--title-id' not in forwarded
+                    or forwarded[forwarded.index('--title-id') + 1].upper() != TITLE
+                    or any(flag.split('=', 1)[0] in ('--update', '--dlc', '--romfs', '--base')
+                           for flag in forwarded)):
+                parser.error('the retained Kart configuration only builds the installed v0 cartridge for M2 / iPadOS 16.1')
+            preflight(retained, args.minimum_ios, args.legacy_target)
+            work.mkdir(parents=True, exist_ok=True)
+            with (work / 'install.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                deliver(retained, work, Path(forwarded[forwarded.index('-o') + 1]))
+            return 0
     cache = args.engine_cache or work.parent / '.tonton-engines'
     engine = REPO if args.minimum_ios == '26.0' else classic_engine(cache.resolve())
     renderer = 'metal4' if args.minimum_ios == '26.0' else 'legacy'

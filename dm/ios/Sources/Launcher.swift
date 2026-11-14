@@ -219,7 +219,6 @@ private struct LauncherView: View {
                 .frame(width: geometry.size.width * 2 / 3)
             }
         }
-        .preferredColorScheme(.dark)
         .confirmationDialog(SaveSyncReport.chooseTitle, isPresented: isAsking(.choose), titleVisibility: .visible, presenting: report) { r in
             Button(r.localLabel(here: "iPhone")) { go(r.localChoice) }
             Button(r.cloudLabel) { go(r.cloudChoice) }

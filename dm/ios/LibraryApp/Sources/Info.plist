@@ -11,10 +11,22 @@
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>CFBundleVersion</key><string>20261030.14</string>
 <key>LSRequiresIPhoneOS</key><true/>
+<key>UIApplicationSceneManifest</key>
+<dict>
+  <key>UIApplicationSupportsMultipleScenes</key><false/>
+  <key>UISceneConfigurations</key>
+  <dict>
+    <key>UIWindowSceneSessionRoleApplication</key>
+    <array><dict>
+      <key>UISceneConfigurationName</key><string>Library</string>
+      <key>UISceneDelegateClassName</key><string>LibrarySceneDelegate</string>
+    </dict></array>
+  </dict>
+</dict>
 <key>UIRequiresFullScreen</key><true/>
 <key>UIStatusBarHidden</key><true/>
 <key>UIViewControllerBasedStatusBarAppearance</key><false/>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
-<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 </dict></plist>

@@ -124,7 +124,16 @@ void *dm_game_menu(void) {
         }
         [items addObject:[UIMenu menuWithTitle:@"\xe5\x88\x87\xe6\x8d\xa2\xe5\xbc\x8f\xe6\x8c\x89\xe9\x94\xae" children:toggles]];
     }
-    [items addObject:(__bridge_transfer UIMenu *)dm_quit_menu()];
+    UIMenu *quit = (__bridge_transfer UIMenu *)dm_quit_menu();
+    if (tonton_returned && quit.children.count == 1 && [quit.children.firstObject isKindOfClass:UIAction.class]) {
+        // Keep upstream's confirmation handler. Offer a shelf return only
+        // when this particular game has a complete teardown callback.
+        UIAction *action = [(UIAction *)quit.children.firstObject copy];
+        action.title = @"\u8FD4\u56DE\u6E38\u620F\u5323";
+        action.image = [UIImage systemImageNamed:@"rectangle.portrait.and.arrow.right"];
+        quit = [quit menuByReplacingChildren:@[action]];
+    }
+    [items addObject:quit];
     return (__bridge_retained void *)[UIMenu menuWithTitle:@"" children:items];
 }
 __attribute__((used,visibility("default"))) const unsigned char dm_game_image_marker = 1;

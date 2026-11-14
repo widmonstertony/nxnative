@@ -69,6 +69,9 @@ static void TonTonIndependentReturned(void *context) {
         tonton_return_window = nil;
         tonton_return_library = nil;
         tonton_did_return = nil;
+        // Clear the selected game and restore the library environment before
+        // its view is visible and can accept another controller action.
+        if (returned) returned();
         if (window && library) {
             window.rootViewController = library;
             [library setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -78,11 +81,10 @@ static void TonTonIndependentReturned(void *context) {
                     errorHandler:nil];
             [window makeKeyAndVisible];
         }
-        if (returned) returned();
         fprintf(stderr, "boot: independent game teardown completed; returned to library\n");
     };
-    if (NSThread.isMainThread) finished();
-    else dispatch_async(dispatch_get_main_queue(), finished);
+    // Let the framework's teardown callback unwind before restoring its globals.
+    dispatch_async(dispatch_get_main_queue(), finished);
 }
 
 static BOOL TonTonPrepareIndependentReturn(TonTonGameHost host, const void *image,

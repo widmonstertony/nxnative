@@ -136,7 +136,10 @@ namespaced for that framework. It requires NX2Apple's complete teardown patch
 `0041` at engine base `0c078130` plus its dependent patch queue, not a classic
 host with a no-op shutdown stub. Adapt that engine's `front_ios.m` to obtain
 its callback from `dm_tonton_shell_return_handler()` instead of looking up a
-process-global `dm_shell_return_to_library`. Export the stable v1 symbols plus
+process-global `dm_shell_return_to_library`. The
+`air-framework-game-menu.patch` applies that binding and the compact glass
+menu to the pinned NX2Apple source after its teardown queue has been applied.
+Apply it only when building an independent TonTon framework. Export the stable v1 symbols plus
 `dm_glue_shell_lifecycle` and `dm_glue_set_return`; retain the exact shader chain.
 
 The shell accepts the optional return callback only when both symbols belong
@@ -150,3 +153,13 @@ start rather than retaining an incomplete snapshot. No framework is unloaded.
 The Air 60.78 installation preserves all existing frameworks and 27 game
 directories; the new Fate card is ready. The new quit/relaunch path has not
 been player-tested. M2 60.102 separately installs the classic Fate host with all matched resources and 58 DLC; its card is ready. Classic M2 hosts do not advertise this lifecycle capability yet.
+
+The November 14 shell restores its library environment before the shelf is
+interactive and waits for the framework callback to unwind before restoring
+its static data. For a framework with the capability, the ellipsis menu's
+**Return to Gamebox** action uses the upstream confirmation dialog. Holding
+controller Home also opens the confirmation when iOS routes that button to
+the app. The updated menu and lifecycle have not been installed and
+play-tested on Air. The iOS 27.2 bookshelf preview uses the real UIKit glass
+button styles; the iOS 16.1 bookshelf build uses its availability-checked
+fallback.

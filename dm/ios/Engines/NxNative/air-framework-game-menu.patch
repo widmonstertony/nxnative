@@ -1,0 +1,53 @@
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -24,6 +24,7 @@
+ void dm_gamepad_pads_read(void);
+ void dm_host_teardown_for_shell(void);             // hle_lifecycle.c
+ typedef void (*dm_shell_return_fn)(void);
++extern dm_shell_return_fn dm_tonton_shell_return_handler(void);
+ static void quit_close(void);
+ #import "DmLayout.h"
+ #import "DmGameMenu.h"
+@@ -715,7 +716,7 @@
+ // The prompt's quit: the cloud saves go out (as when the app goes to the background), then in the shell the host tears down its threads, GPU resources and 5 GB address space and returns the window to the library, or in a single-game app the host ends as on a SIGTERM. Off the main queue: both wait
+ static void quit_now(void) {
+     if (atomic_exchange(&g_quitting, 1)) return;
+-    dm_shell_return_fn shell_return = (dm_shell_return_fn)dlsym(RTLD_DEFAULT, "dm_shell_return_to_library");
++    dm_shell_return_fn shell_return = dm_tonton_shell_return_handler();
+     LOG("front end: quit from the quit prompt, %s", shell_return ? "returning to the shell library" : "the app closes (one game per process)");
+     g_hq_view.userInteractionEnabled = NO;
+     [CATransaction begin]; [CATransaction setAnimationDuration:0.2]; g_hq_view.actions.opacity = 0.4; [CATransaction commit];
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -258,6 +258,15 @@
+         _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
+         _menu.layer.shadowColor = UIColor.blackColor.CGColor; _menu.layer.shadowOpacity = 0.2; _menu.layer.shadowRadius = 3; _menu.layer.shadowOffset = CGSizeMake(0, 1);
+         _menu.tintColor = k_text; _menu.accessibilityLabel = @"Menu";
++#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 260000
++        if (@available(iOS 26.0, *)) {
++            _menu.configuration = [UIButtonConfiguration glassButtonConfiguration];
++            _menu.backgroundColor = UIColor.clearColor;
++            _menu.layer.borderWidth = 0;
++            _menu.layer.shadowOpacity = 0;
++        }
++#endif
++        _menu.accessibilityLabel = @"\u6E38\u620F\u83DC\u5355";
+         _menu.menu = CFBridgingRelease(dm_game_menu()); _menu.showsMenuAsPrimaryAction = YES;
+         __weak DmGamepad *weakSelf = self;
+         [_menu addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [weakSelf reset]; }] forControlEvents:UIControlEventMenuActionTriggered];   // the menu opens: release every key and touch first
+@@ -575,7 +584,14 @@
+     CGFloat mr = self.geo->swapR; CGPoint mc = self.menuCenter;
+     _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
+     _menu.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
+-    [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
++    UIImage *menuImage = [UIImage systemImageNamed:@"ellipsis" withConfiguration:
++        [UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]];
++    if (_menu.configuration) {
++        UIButtonConfiguration *style = _menu.configuration;
++        style.image = menuImage;
++        style.contentInsets = NSDirectionalEdgeInsetsMake(0, 0, 0, 0);
++        _menu.configuration = style;
++    } else [_menu setImage:menuImage forState:UIControlStateNormal];
+     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
+     CGFloat k = self.geo->knobR; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+     setPath(_knob, circlePath(CGPointMake(k, k), k));

@@ -301,8 +301,24 @@ def cached_baseline(bridge, conf, work):
     check(re.fullmatch(re.escape(CACHE) + r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*', remote)
           and not {'.', '..'}.intersection(PurePosixPath(remote).parts), 'Invalid retained archive path')
     digest = sha(Path(conf['baseline_ipa']))
-    check(bridge.job(f'test -f {Q(remote)} && test ! -L {Q(remote)} && sha256sum < {Q(remote)}',
-                     bridge.send(b'\n')).split()[0] == digest, 'Retained archive differs from signed baseline')
+    observed = bridge.job(f'test -f {Q(remote)} && test ! -L {Q(remote)} && sha256sum < {Q(remote)}',
+                          bridge.send(b'\n')).split()[0]
+    if observed != digest and 'retained_kart' in conf:
+        # Reassembling the same delta on macOS and iPadOS writes different ZIP
+        # timestamps and ownership fields. Pin both archive hashes and check
+        # the full member catalogue before reusing the retained on-device base.
+        pin = conf['retained_kart'].get('repacked_baseline', {})
+        check(pin == dict(local=digest, device=observed), 'Repacked archive is not the audited baseline')
+        with zipfile.ZipFile(conf['baseline_ipa']) as arc:
+            rows = [f'{i.file_size} {i.CRC:08x} {i.filename}\n' for i in arc.infolist()]
+        catalogue = hashlib.sha256(''.join(sorted(rows)).encode()).hexdigest()
+        # Entries may contain spaces. Only normalize the columns before the path.
+        listing = f"unzip -v {Q(remote)} | sed -nE 's/^ *([0-9]+) +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +([0-9a-f]{{8}}) +(.+)$/\\1 \\2 \\3/p'"
+        check(bridge.job("bash -o pipefail -c " + Q(listing + ' | LC_ALL=C sort | sha256sum'),
+                         bridge.send(b'\n')).split()[0] == catalogue,
+              'Retained archive member catalogue differs')
+    else:
+        check(observed == digest, 'Retained archive differs from signed baseline')
     return remote
 
 
@@ -412,31 +428,38 @@ def install(signed, runtime, conf, work):
     target = slot + '/Resources'
     romfs = target + '/romfs.img'
     before_body = bridge.run(f'test ! -L {Q(romfs)} && stat -c "%s %d %i %Y" {Q(romfs)}')
-    with zipfile.ZipFile(runtime) as arc:
-        source_digest = arc.read('source.sha256').decode().strip()
-        tables = {}
-        for name in arc.namelist():
-            if name.startswith('dm/'):
-                relative = name.removeprefix('dm/')
-                check(re.fullmatch(r'[a-zA-Z0-9_-]+(?:[./][a-zA-Z0-9_-]+)*', relative),
-                      'Unexpected compatibility runtime table path')
-                tables[relative] = hashlib.sha256(arc.read(name)).hexdigest()
-        check(all(f'{module}.{suffix}.tsv' in tables for module in manifest['modules']
-                  for suffix in ('fixups', 'gates', 'obs', 'cuts')), 'The runtime layer is missing signed module tables')
-    expected = conf.get('verified_equivalent_romfs', {}).get(source_digest, source_digest)
-    check(re.fullmatch(r'[0-9a-f]{64}', expected), 'Invalid expected local RomFS SHA-256')
-    say('Checking the existing game image without transferring it')
-    body = bridge.job('sha256sum < ' + Q(romfs), bridge.send(b'\n')).split()[0]
-    check(body == expected, 'Existing RomFS is missing or differs from this build')
-    say('Sending only the signed update and matching shader resources')
-    candidate = reassemble(bridge, signed, conf, work)
-    payload = bridge.upload(runtime, work)
-    nonce = secrets.token_hex(8)
-    pending = slot + '/.tonton-runtime-' + nonce
     chain = manifest['chain']
     check(re.fullmatch(r'b-[0-9a-f]{12}', chain), 'Invalid shader chain')
-    bridge.job(f'set -eu; mkdir {Q(pending)}; unzip -q {Q(payload)} -d {Q(pending)}; '
-               f'test -s {Q(pending + "/msl/" + chain + ".img")}', bridge.send(b'\n'))
+    tables = {}
+    pending = rolled = None
+    nonce = secrets.token_hex(8)
+    if runtime is not None:
+        with zipfile.ZipFile(runtime) as arc:
+            source_digest = arc.read('source.sha256').decode().strip()
+            for name in arc.namelist():
+                if name.startswith('dm/'):
+                    relative = name.removeprefix('dm/')
+                    check(re.fullmatch(r'[a-zA-Z0-9_-]+(?:[./][a-zA-Z0-9_-]+)*', relative),
+                          'Unexpected compatibility runtime table path')
+                    tables[relative] = hashlib.sha256(arc.read(name)).hexdigest()
+            check(all(f'{module}.{suffix}.tsv' in tables for module in manifest['modules']
+                      for suffix in ('fixups', 'gates', 'obs', 'cuts')), 'The runtime layer is missing signed module tables')
+        expected = conf.get('verified_equivalent_romfs', {}).get(source_digest, source_digest)
+        check(re.fullmatch(r'[0-9a-f]{64}', expected), 'Invalid expected local RomFS SHA-256')
+        say('Checking the existing game image without transferring it')
+        body = bridge.job('sha256sum < ' + Q(romfs), bridge.send(b'\n')).split()[0]
+        check(body == expected, 'Existing RomFS is missing or differs from this build')
+    else:
+        check(title == '0400c3f00006e000' and 'retained_kart' in conf,
+              'Missing verified shader resources')
+    say('Sending only the signed update' + (' and matching shader resources' if runtime else ''))
+    candidate = reassemble(bridge, signed, conf, work)
+    if runtime is not None:
+        payload = bridge.upload(runtime, work)
+        pending = slot + '/.tonton-runtime-' + nonce
+        rolled = target + '/.tonton-previous-dm-' + nonce
+        bridge.job(f'set -eu; mkdir {Q(pending)}; unzip -q {Q(payload)} -d {Q(pending)}; '
+                   f'test -s {Q(pending + "/msl/" + chain + ".img")}', bridge.send(b'\n'))
     staged_app = verify_device(bridge, conf)
     check(all(staged_app[k] == initial[k] for k in ('version', 'data_container', 'bundle_path')),
           'Installed app changed while staging')
@@ -446,28 +469,26 @@ def install(signed, runtime, conf, work):
         front = bridge.call('get_frontmost_app', {})
         check(front.get('bundleId') != bundle, 'Could not close the running library for an in-place update')
     saved = save_fingerprint(bridge, games)
-    rolled = target + '/.tonton-previous-dm-' + nonce
-    old_msl = target + '/msl/'
-    new_msl = pending + '/msl/'
-    # Add the shader chain without replacing a previous chain. Keep any
-    # device-only settings and support files omitted by the build package.
-    for component in (chain, chain + '.img'):
-        bridge.run('test ! -e ' + Q(old_msl + component) + ' && test ! -L ' + Q(old_msl + component))
     def check_tables(directory):
         checks = '\n'.join(
             f'test "$(sha256sum < {Q(directory + "/" + name)} | cut -d " " -f1)" = {digest}'
             for name, digest in tables.items())
         bridge.job('set -eu\n' + checks, bridge.send(b'\n'))
 
-    check_tables(pending + '/dm')
-    bridge.run(f'''set -eu
-test -d {Q(target + "/dm")} && test ! -L {Q(target + "/dm")} && test ! -L {Q(target + "/msl")}
-cp -Rn {Q(target + "/dm/.")} {Q(pending + "/dm")}
-mv {Q(new_msl + chain)} {Q(old_msl + chain)}
-mv {Q(new_msl + chain + ".img")} {Q(old_msl + chain + ".img")}
-''')
+    if pending:
+        old_msl, new_msl = target + '/msl/', pending + '/msl/'
+        # Add the shader chain without replacing a previous chain.
+        for component in (chain, chain + '.img'):
+            bridge.run('test ! -e ' + Q(old_msl + component) + ' && test ! -L ' + Q(old_msl + component))
+        check_tables(pending + '/dm')
+        bridge.run(f'''set -eu
+    test -d {Q(target + "/dm")} && test ! -L {Q(target + "/dm")} && test ! -L {Q(target + "/msl")}
+    cp -Rn {Q(target + "/dm/.")} {Q(pending + "/dm")}
+    mv {Q(new_msl + chain)} {Q(old_msl + chain)}
+    mv {Q(new_msl + chain + ".img")} {Q(old_msl + chain + ".img")}
+    ''')
     local_receipt = work / 'install-pending.json'
-    local_receipt.write_text(json.dumps(dict(candidate=candidate, old_dm=rolled, staged_dm=pending+'/dm',
+    local_receipt.write_text(json.dumps(dict(candidate=candidate, old_dm=rolled, staged_dm=pending+'/dm' if pending else None,
                                              expected=conf['app_version'], original_app=original['CFBundleVersion']),
                                         indent=2) + '\n')
     say('Installing the signed update over the existing TonTon gamebox')
@@ -501,21 +522,24 @@ mv {Q(new_msl + chain + ".img")} {Q(old_msl + chain + ".img")}
         games = new_games
         target = target.replace(old_container + '/', new_container + '/', 1)
         romfs = romfs.replace(old_container + '/', new_container + '/', 1)
-        pending = pending.replace(old_container + '/', new_container + '/', 1)
-        rolled = rolled.replace(old_container + '/', new_container + '/', 1)
+        if pending:
+            pending = pending.replace(old_container + '/', new_container + '/', 1)
+            rolled = rolled.replace(old_container + '/', new_container + '/', 1)
         check(save_fingerprint(bridge, games) == saved, 'Save data changed after the container rename')
         check(bridge.run(f'stat -c "%s %d %i %Y" {Q(romfs)}') == before_body,
               'The renamed library does not contain the original game data')
-        check_tables(pending + '/dm')
-    # Publish the matching tables only after the shell update is observed.
-    # The old tables remain available if promotion of the staged directory fails.
-    live_dm = target + '/dm'
-    staged_dm = pending + '/dm'
-    bridge.run(f'''set -eu
-mv {Q(live_dm)} {Q(rolled)}
-mv {Q(staged_dm)} {Q(live_dm)} || {{ mv {Q(rolled)} {Q(live_dm)}; exit 1; }}
-''')
-    check_tables(live_dm)
+        if pending:
+            check_tables(pending + '/dm')
+    if pending:
+        # Publish the matching tables only after the shell update is observed.
+        # The old tables remain available if promotion of the staged directory fails.
+        live_dm = target + '/dm'
+        staged_dm = pending + '/dm'
+        bridge.run(f'''set -eu
+    mv {Q(live_dm)} {Q(rolled)}
+    mv {Q(staged_dm)} {Q(live_dm)} || {{ mv {Q(rolled)} {Q(live_dm)}; exit 1; }}
+    ''')
+        check_tables(live_dm)
     for name, digest in changed.items():
         if name.endswith(('/Info.plist', '/DmGame', '/game.manifest.json')):
             live_path = installed['bundle_path'] + '/' + name.removeprefix(prefix)

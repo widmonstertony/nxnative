@@ -52,6 +52,16 @@ The installed RomFS must match the build. A different update or DLC set is not
 installed by this route. A locally generated build report records successful
 installation separately from gameplay verification.
 
+Mario Kart World v0 has a separate retained-host route for the audited M2
+classic installation. It requires a `retained_kart.romfs_sha256` entry matching
+the device's existing image, a retained device baseline archive, and the
+matching v0 cartridge and shader tables. If the local baseline was rebuilt
+with different ZIP metadata, `retained_kart.repacked_baseline` pins the
+`local` and `device` archive hashes and the installer also compares the complete ZIP member
+listing. The build page verifies the retained host, prepares and signs the
+540p cartridge, and updates the existing app. It neither uploads a new
+game image nor replaces the shader chain.
+
 Choose **Export standalone IPA** for a single-game IPA with its game data and
 selected add-ons for external signing. Classic independent builds do not add
 in-process return to the library. The compile/link fixtures for 16.1 and 17
@@ -68,6 +78,8 @@ A fresh app is signed locally and uses the existing TonTon application identity.
 Use `--existing` to preserve an existing bundle's metadata and resources and
 `--sign` with the authorized Mac identity when repackaging a provisioned app.
 The fresh local build does not acquire CloudKit entitlements on its own.
+Use `--device-build-config` to attach local checkpoint jobs or verified
+installation receipts to the same build page's **Device builds** card.
 
 ## Get the compatibility source
 

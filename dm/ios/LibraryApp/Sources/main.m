@@ -671,6 +671,12 @@ UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
         card.controllerFocused=self.menuController!=nil&&path.item==index;
     }
 }
+- (void)activateControllerSelection:(NSIndexPath *)path {
+    [self collectionView:self.grid didSelectItemAtIndexPath:path];
+}
+- (UICollectionViewScrollPosition)controllerScrollPosition {
+    return UICollectionViewScrollPositionCenteredVertically;
+}
 - (void)pollMenuController {
     if(!self.view.window||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive||self.presentedViewController||self.removalInProgress){self.menuInput=(TTMenuInput){0};return;}
     NSArray<GCController *> *controllers=GCController.controllers;
@@ -709,14 +715,14 @@ UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
         }
         self.controllerIndex=TTMenuNavigate(points,count,self.controllerIndex,event.move);
         self.controllerTitleID=self.displayGames[self.controllerIndex][@"id"];[self updateControllerSelection];
-        [self.grid scrollToItemAtIndexPath:[NSIndexPath indexPathForItem:self.controllerIndex inSection:0] atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES];
+        [self.grid scrollToItemAtIndexPath:[NSIndexPath indexPathForItem:self.controllerIndex inSection:0] atScrollPosition:self.controllerScrollPosition animated:YES];
     }
     NSIndexPath *path=[NSIndexPath indexPathForItem:self.controllerIndex inSection:0];NSDictionary *game=self.displayGames[path.item];
     // Poll only while the library is visible; never replace the game's handlers.
     if(event.pressed&TTMenuSettings){
         if(![game[@"id"] hasPrefix:@"import:"])[self presentViewController:TonTonGameSettingsController(game[@"id"],game[@"name"]) animated:YES completion:nil];
     }else if(event.pressed&TTMenuOpen){
-        [self collectionView:self.grid didSelectItemAtIndexPath:path];
+        [self activateControllerSelection:path];
     }
 }
 
@@ -870,7 +876,7 @@ UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
         self.catalog=catalog;self.installed=ids;
         NSUInteger playable=0;for(NSDictionary *g in catalog)if([ids containsObject:bundleForGame(g)])playable++;
         self.countLabel.text=[NSString stringWithFormat:@"%02lu\n\u6B3E\u5361\u5E26",(unsigned long)catalog.count];
-        NSString *summary=catalog.count?[NSString stringWithFormat:@"%lu \u6B3E\u5DF2\u6536\u5F55 \u00B7 %lu \u6B3E\u53EF\u6253\u5F00",(unsigned long)catalog.count,(unsigned long)playable]:@"\u70B9\u53F3\u4E0B\u89D2\u6DFB\u52A0\u6E38\u620F";
+        NSString *summary=catalog.count?[NSString stringWithFormat:@"%lu \u6B3E\u5DF2\u6536\u5F55 \u00B7 %lu \u6B3E\u53EF\u6253\u5F00",(unsigned long)catalog.count,(unsigned long)playable]:@"\u70B9\u6309\u300C\uFF0B\u300D\u6DFB\u52A0\u6E38\u620F";
         self.status.text=importing?[summary stringByAppendingString:@" \u00B7 \u6B63\u5728\u5BFC\u5165\u8D44\u6E90"]:summary;
         if(!importing)self.refreshInProgress=NO;
         [self.grid reloadData];[self updateControllerSelection];
@@ -981,13 +987,14 @@ UIViewController *TonTonLibraryController(void (^startGame)(NSString *titleID)){
     TTLibrary16 *view=[TTLibrary16 new];view.startGame=startGame;return view;
 }
 #ifndef DM_LIBRARY_HOST
-@interface LibraryDelegate:UIResponder<UIApplicationDelegate>
+@interface LibrarySceneDelegate:UIResponder<UIWindowSceneDelegate>
 @property(nonatomic,strong)UIWindow *window;
 @end
-@implementation LibraryDelegate
-- (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
-    (void)app; (void)options;
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+@implementation LibrarySceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    (void)session; (void)options;
+    if (![scene isKindOfClass:UIWindowScene.class]) return;
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     // The library and presented games share a window and read GameController profiles.
     // Request delivery through those profiles even when UIKit holds the current responder.
     if (@available(iOS 18.0, *)) {
@@ -995,10 +1002,13 @@ UIViewController *TonTonLibraryController(void (^startGame)(NSString *titleID)){
         gamepadEvents.handledEventTypes = GCUIEventTypeGamepad;
         [self.window addInteraction:gamepadEvents];
     }
-    self.window.rootViewController = [LibraryView new];
+    self.window.rootViewController = TonTonLibraryController(nil);
     [self.window makeKeyAndVisible];
-    return YES;
 }
+@end
+@interface LibraryDelegate:UIResponder<UIApplicationDelegate>
+@end
+@implementation LibraryDelegate
 @end
 int main(int argc,char **argv){@autoreleasepool{return UIApplicationMain(argc,argv,nil,NSStringFromClass(LibraryDelegate.class));}}
 #endif

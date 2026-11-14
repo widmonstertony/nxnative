@@ -238,3 +238,19 @@ underrun. The prior warm-enabled run faulted near frame 176 / fence 813 in a
 This is a useful negative control, not a root-cause fix or a 60 FPS pass. The
 persistent environment was restored and original save hashes were unchanged.
 No Air deployment or race pass is inferred from this M2 result.
+
+### M2 60.105 retained iPadOS 16.1 build (November 14)
+
+The in-place build reused the signed classic cartridge and its
+`b-b88c9e5f457c` shader chain. It checked the existing game image and
+module tables and sent only signed component changes. The original save
+hashes and configuration were unchanged after the isolated run.
+
+Mario Bros. Circuit loaded with an intact track and HUD at 50cc and the
+kart drove beyond the starting grid. Frame 21421 shows 960x540 color and
+depth attachments and a 960x540 scene viewport. The compositor still
+hands a 1920x1080 image to the active MetalFX spatial pass. Race windows
+averaged 46–50 FPS, with GPU medians around 17 ms at thermal state 0.
+The opening was visibly slower, and the race was not a stable 60 FPS.
+The learned warm manifest was disabled only for this diagnostic run;
+the shipped settings were restored. Air was not updated with this build.

@@ -58,9 +58,11 @@ def observe(job, rows):
     base = {key: job[key] for key in ['id', 'title', 'name', 'devices', 'log', 'folder']}
     if job.get('receipt'):
         valid = all(state.get(k) == v for k, v in job['receipt'].items())
+        detail = 'receipt_mismatch' if not valid else (
+            'gameplay_sample_recorded' if state.get('runtime_tested') is True else 'awaiting_playtest')
         return dict(base, state='installed' if valid else 'needs_attention',
                     completed=job.get('total', 0) if valid else 0, total=job.get('total', 0),
-                    detail='awaiting_playtest' if valid else 'receipt_mismatch', canResume=False,
+                    detail=detail, canResume=False,
                     updated=state.get('updated'))
     assert state['chain'] == job['chain'], 'Shader lineage changed'
     total = int(state['expected'])
@@ -127,7 +129,8 @@ def main():
     with args.config.with_suffix('.control.lock').open('a') as control:
         fcntl.flock(control, fcntl.LOCK_EX)
         jobs = [checked_job(config, j['id']) for j in config['jobs']]
-        rows = processes()
+        # An installed-only view reads receipts and never needs process access.
+        rows = processes() if any(job.get('controller') for job in jobs) else []
         if args.operation != 'status':
             assert args.job, 'Choose a build'
             job = next(j for j in jobs if j['id'] == args.job)
