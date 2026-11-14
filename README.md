@@ -32,12 +32,12 @@ rebuilt only the Fate/EXTELLA LINK framework and the affected shell objects,
 and transferred no game images or retail payloads. Fate's return-to-library
 action is included; the in-game quit and relaunch still need a player check.
 
-The redesigned TonTon bookshelf uses a full-width artwork backdrop, a
-vertical collection on phones, and a split artwork and collection layout
-in landscape. The Play and per-game settings controls remain easy to reach.
-On iOS, cover art fills the cards just as on the Mac. The paired Mac launcher
+The TonTon library uses a vertical collection on phones and a Mac-style
+layout on roomy iPad windows: a large artwork banner above the library,
+with Play and per-game settings on the banner. Compact iPad windows adapt
+to the space available. Cover art fills the 16:9 cards just as on the Mac. The paired Mac launcher
 can send its chosen cover to the device without rebuilding or resending the game.
-The iOS 16.1 deployment target uses the same layout with system button
+The iOS 16.1 deployment target uses these layouts with system button
 materials; supported iOS versions use Liquid Glass. See the [library build
 and integration notes](dm/ios/LibraryApp/README.md).
 

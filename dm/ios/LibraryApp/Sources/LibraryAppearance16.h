@@ -84,7 +84,7 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
 @property(nonatomic,strong) UIImageView *hero,*brandIcon,*emptyHeroIcon;
 @property(nonatomic,strong) UIView *heroPanel,*footer;
 @property(nonatomic,strong) CAGradientLayer *heroShade,*heroTopShade,*heroEdge,*footerShade;
-@property(nonatomic) BOOL wideLayout;
+@property(nonatomic) BOOL wideLayout,tabletShelf;
 @property(nonatomic,strong) UIButton *play,*gameSettings,*appSettings,*importButton,*appearanceButton;
 @property(nonatomic,copy) NSString *paintedGame;
 @property(nonatomic,copy) NSString *paintedVersion;
@@ -177,25 +177,33 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     BOOL dark=self.traitCollection.userInterfaceStyle==UIUserInterfaceStyleDark;
     BOOL art=self.hero.image!=nil;
     self.heroPanel.backgroundColor=background;
-    self.heroShade.colors=@[(id)[background colorWithAlphaComponent:0].CGColor,
-        (id)[background colorWithAlphaComponent:0.13].CGColor,(id)[background colorWithAlphaComponent:0.79].CGColor,(id)background.CGColor];
-    self.heroShade.locations=dark?@[@0,@0.39,@0.72,@0.98]:@[@0,@0.37,@0.70,@0.97];
+    BOOL tabletDarkArt=self.tabletShelf&&dark&&art;
+    self.heroShade.colors=tabletDarkArt?
+        @[(id)[UIColor colorWithWhite:0 alpha:0].CGColor,(id)[UIColor colorWithWhite:0 alpha:0.12].CGColor,
+          (id)[UIColor colorWithWhite:0 alpha:0.63].CGColor,(id)[UIColor colorWithWhite:0 alpha:0.87].CGColor]:
+        @[(id)[background colorWithAlphaComponent:0].CGColor,(id)[background colorWithAlphaComponent:0.13].CGColor,
+          (id)[background colorWithAlphaComponent:0.79].CGColor,(id)background.CGColor];
+    self.heroShade.locations=self.tabletShelf?@[@0,@0.42,@0.73,@1]:
+        dark?@[@0,@0.39,@0.72,@0.98]:@[@0,@0.37,@0.70,@0.97];
     self.heroTopShade.colors=@[(id)[UIColor colorWithWhite:0 alpha:0.70].CGColor,
                                (id)[UIColor colorWithWhite:0 alpha:0.36].CGColor,
                                (id)[UIColor colorWithWhite:0 alpha:0].CGColor];
     self.heroTopShade.locations=@[@0,@0.5,@1];
-    self.heroTopShade.hidden=!art;
+    self.heroTopShade.hidden=!art||self.tabletShelf;
     self.heroEdge.startPoint=CGPointMake(0,0.5);self.heroEdge.endPoint=CGPointMake(1,0.5);
     self.heroEdge.colors=@[(id)[background colorWithAlphaComponent:0].CGColor,(id)background.CGColor];
     self.heroEdge.locations=@[@0.66,@1];self.heroEdge.hidden=!self.wideLayout;
     self.footerShade.colors=@[(id)[background colorWithAlphaComponent:0].CGColor,(id)background.CGColor,(id)background.CGColor];
     self.footerShade.locations=@[@0,@0.32,@1];
-    self.brand.textColor=art?UIColor.whiteColor:UIColor.labelColor;
-    self.brandIcon.tintColor=art?UIColor.whiteColor:TTLibraryAccent16();
+    BOOL headerOverArt=art&&!self.tabletShelf;
+    self.brand.textColor=headerOverArt?UIColor.whiteColor:UIColor.labelColor;
+    self.brandIcon.tintColor=headerOverArt?UIColor.whiteColor:TTLibraryAccent16();
+    self.heroTitle.textColor=tabletDarkArt?UIColor.whiteColor:UIColor.labelColor;
+    self.heroVersion.textColor=tabletDarkArt?[UIColor colorWithWhite:1 alpha:0.82]:UIColor.secondaryLabelColor;
     self.emptyHeroIcon.hidden=art;
     self.emptyHeroIcon.tintColor=[TTLibraryAccent16() colorWithAlphaComponent:dark?0.20:0.16];
     for(UIButton *button in @[self.appearanceButton,self.appSettings,self.importButton]){
-        UIColor *ink=art?UIColor.whiteColor:UIColor.labelColor;
+        UIColor *ink=headerOverArt?UIColor.whiteColor:UIColor.labelColor;
         if([button.configuration.baseForegroundColor isEqual:ink])continue;
         UIButtonConfiguration *configuration=button.configuration;
         configuration.baseForegroundColor=ink;button.configuration=configuration;
@@ -204,6 +212,41 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     [super traitCollectionDidChange:previous];[self refreshPalette];[self.view setNeedsLayout];
 }
+- (void)layoutTabletShelf:(CGRect)safe {
+    CGFloat margin=MAX(20,MIN(44,safe.size.width*0.035));
+    CGFloat x=CGRectGetMinX(safe)+margin,y=CGRectGetMinY(safe)+8;
+    CGFloat right=CGRectGetMaxX(safe)-margin,w=right-x;
+    CGFloat heroY=y+56,heroH=MIN(526,MAX(223,MIN(safe.size.height*0.48,w*0.52)));
+    CGFloat heroBottom=heroY+heroH,padding=w>=900?32:24;
+    self.brandIcon.frame=CGRectMake(x,y+12,22,20);
+    self.brand.frame=CGRectMake(x+32,y,w-184,44);
+    self.appearanceButton.frame=CGRectMake(right-144,y,44,44);
+    self.appSettings.frame=CGRectMake(right-94,y,44,44);
+    self.importButton.frame=CGRectMake(right-44,y,44,44);
+    self.heroPanel.frame=CGRectMake(x,heroY,w,heroH);
+    self.hero.frame=self.heroPanel.bounds;
+    self.emptyHeroIcon.frame=CGRectMake(w-175,heroH*0.22,143,86);
+    [CATransaction begin];[CATransaction setDisableActions:YES];
+    self.heroShade.frame=self.heroPanel.bounds;
+    [CATransaction commit];
+
+    CGFloat contentX=x+padding,contentW=w-padding*2;
+    CGFloat actionY=heroBottom-padding-48,metaY=actionY-30;
+    CGFloat titleLimit=MIN(heroH*0.38,self.heroTitle.font.lineHeight*2+4);
+    CGRect title=[self.heroTitle textRectForBounds:CGRectMake(0,0,contentW,titleLimit) limitedToNumberOfLines:2];
+    CGFloat titleH=MIN(titleLimit,MAX(self.heroTitle.font.lineHeight,ceil(title.size.height)+3));
+    self.heroTitle.frame=CGRectMake(contentX,metaY-titleH-4,contentW,titleH);
+    self.heroAvailability.frame=CGRectMake(contentX,CGRectGetMinY(self.heroTitle.frame)-24,contentW,20);
+    self.heroVersion.frame=CGRectMake(contentX,metaY,contentW,23);
+    CGFloat actionW=MIN(228,contentW-60);
+    self.play.frame=CGRectMake(contentX,actionY,actionW,48);
+    self.gameSettings.frame=CGRectMake(contentX+actionW+12,actionY,48,48);
+
+    CGFloat shelfY=heroBottom+20,gridY=shelfY+43;
+    self.shelfHeading.frame=CGRectMake(x,shelfY,w*0.46,33);
+    self.status.frame=CGRectMake(x+w*0.46,shelfY+5,w*0.54,25);
+    self.grid.frame=CGRectMake(x,gridY,w,MAX(1,CGRectGetMaxY(safe)-gridY));
+}
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect bounds=self.view.bounds,safe=UIEdgeInsetsInsetRect(bounds,self.view.safeAreaInsets);
@@ -211,7 +254,13 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     CGFloat x=safe.origin.x+margin,y=safe.origin.y;
     CGFloat right=CGRectGetMaxX(safe)-margin,bottom=CGRectGetMaxY(safe);
     CGFloat w=MAX(1,right-x),h=MAX(1,safe.size.height);
-    self.wideLayout=w>h*1.14&&w>=570;
+    self.tabletShelf=self.traitCollection.userInterfaceIdiom==UIUserInterfaceIdiomPad&&safe.size.width>=590&&h>=495;
+    self.wideLayout=!self.tabletShelf&&w>h*1.14&&w>=570;
+    self.footer.hidden=self.tabletShelf;
+    self.heroPanel.layer.cornerRadius=self.tabletShelf?24:0;
+    if(self.tabletShelf){
+        [self layoutTabletShelf:safe];
+    }else{
     CGFloat heroRight=self.wideLayout?CGRectGetMidX(safe)+14:bounds.size.width;
     CGFloat heroBottom=self.wideLayout?bounds.size.height:MIN(bottom-274,y+MAX(228,MIN(380,h*0.47)));
     CGFloat shelfX=self.wideLayout?CGRectGetMidX(safe)+24:x;
@@ -249,11 +298,14 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
     [CATransaction begin];[CATransaction setDisableActions:YES];self.footerShade.frame=self.footer.bounds;[CATransaction commit];
     self.play.frame=CGRectMake(x,footerY,MAX(1,detailsW-64),51);
     self.gameSettings.frame=CGRectMake(x+detailsW-51,footerY,51,51);
+    }
     UICollectionViewFlowLayout *flow=(UICollectionViewFlowLayout *)self.grid.collectionViewLayout;
     flow.scrollDirection=UICollectionViewScrollDirectionVertical;
     self.grid.alwaysBounceHorizontal=NO;
     self.grid.alwaysBounceVertical=YES;
-    flow.minimumLineSpacing=15;flow.minimumInteritemSpacing=12;flow.sectionInset=UIEdgeInsetsMake(0,0,0,0);
+    self.grid.showsVerticalScrollIndicator=self.tabletShelf;
+    flow.minimumLineSpacing=self.tabletShelf?20:15;flow.minimumInteritemSpacing=self.tabletShelf?16:12;
+    flow.sectionInset=UIEdgeInsetsMake(0,0,self.tabletShelf?12:0,0);
     if(!CGSizeEqualToSize(self.lastGridSize,self.grid.bounds.size)){
         self.lastGridSize=self.grid.bounds.size;[flow invalidateLayout];
     }
@@ -262,8 +314,9 @@ static UILabel *TTShelfLabel(UIFontTextStyle style, CGFloat size, UIFontWeight w
 - (CGSize)collectionView:(UICollectionView *)view layout:(UICollectionViewLayout *)layout sizeForItemAtIndexPath:(NSIndexPath *)path {
     CGFloat area=MAX(1,view.bounds.size.width);
     (void)layout;(void)path;
-    NSInteger columns=MAX(1,MIN(4,(NSInteger)((area+12)/156)));
-    CGFloat width=floor((area-12*(columns-1))/columns);
+    CGFloat gap=self.tabletShelf?16:12,minWidth=self.tabletShelf?225:156;
+    NSInteger columns=MAX(1,MIN(4,(NSInteger)((area+gap)/minWidth)));
+    CGFloat width=floor((area-gap*(columns-1))/columns);
     return CGSizeMake(width,width*9/16+64);
 }
 - (UICollectionViewCell *)collectionView:(UICollectionView *)view cellForItemAtIndexPath:(NSIndexPath *)path {

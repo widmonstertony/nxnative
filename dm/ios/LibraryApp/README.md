@@ -28,10 +28,11 @@ remain on that device or in its local build. Game resources, saves and signing
 material must not be committed. The separate `NXGameLibrary` target remains a
 UI-only prototype and is not evidence that the shared host can run a game.
 
-`Sources/LibraryAppearance16.h` draws the same TonTon catalog with a
-full-width artwork backdrop on phones and a split composition in landscape.
-The artwork grid scrolls vertically, including on phones. Cover images fill
-their cards at their original aspect ratio; the card crops any excess. Cover
+`Sources/LibraryAppearance16.h` draws the same TonTon catalogue across
+devices. A roomy iPad window uses the Mac-style composition: a wide artwork
+banner with launch and settings actions above the game grid. Narrow iPad
+windows use the compact layout. The artwork grid scrolls vertically,
+including on phones. Cover images fill their 16:9 cards without stretching. Cover
 selection updates the artwork and details; Play validates
 the existing game before opening it. Long-press actions and controller
 navigation still use the shared library implementation. iOS 26 or later
