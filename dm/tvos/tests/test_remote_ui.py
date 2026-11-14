@@ -85,7 +85,7 @@ schemes:
         with (out / 'test.log').open('w') as log:
             run(['xcodebuild', '-project', str(out / 'TVRemoteHarness.xcodeproj'), '-scheme', 'TVRemoteHarness',
                 '-destination', 'id=' + owned, '-derivedDataPath', str(out / 'Derived'),
-                '-resultBundlePath', str(out / 'Remote.xcresult'), 'CODE_SIGNING_ALLOWED=NO', 'test'],
+                '-resultBundlePath', str(out / 'Remote.xcresult'), '-parallel-testing-enabled', 'NO', 'CODE_SIGNING_ALLOWED=NO', 'test'],
                 stdout=log, stderr=subprocess.STDOUT, timeout=600)
     finally:
         # Only the simulator created above is eligible for cleanup.

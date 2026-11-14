@@ -66,6 +66,19 @@ class DeviceBuilds(unittest.TestCase):
                 M.action(self.job, 'resume', [])
             spawn.assert_not_called()
 
+    def test_pipeline_distinguishes_live_work_from_an_abandoned_progress_file(self):
+        job = dict(self.job, pipeline=True, controller=None)
+        self.state(state='running', detail='tv_shaders', completed=50, total=100, pid=9)
+        live = [(9, ['python', 'compile_shaders.py', '--progress', job['state_file']])]
+        row = M.observe(job, live)
+        self.assertEqual((row['completed'], row['state']), (50, 'running'))
+        self.assertFalse(row['canPause'] or row['canResume'])
+        self.assertEqual(M.observe(job, [(9, ['unrelated-worker'])])['state'], 'needs_attention')
+        self.state(state='installed', detail='tv_playtest', completed=100, total=100)
+        self.assertEqual(M.observe(job, [])['state'], 'installed')
+        self.state(state='tested', detail='gameplay_sample_recorded', completed=100, total=100)
+        self.assertEqual(M.observe(job, [])['state'], 'tested')
+
     def test_complete_shaders_are_not_claimed_installed(self):
         self.state(reused=95, finished=5, expected=100, failed=[], chain='testchain',
                    phase='missing_shader_pass_finished_final_table_merge_pending')

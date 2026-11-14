@@ -95,8 +95,12 @@ A fresh app is signed locally and uses the existing TonTon application identity.
 Use `--existing` to preserve an existing bundle's metadata and resources and
 `--sign` with the authorized Mac identity when repackaging a provisioned app.
 The fresh local build does not acquire CloudKit entitlements on its own.
-Use `--device-build-config` to attach local checkpoint jobs or verified
-installation receipts to the same build page's **Device builds** card.
+The same build page’s **Device builds** card shows registered checkpoint jobs,
+installation receipts, and supervised Apple TV builds. The default registry is
+`~/Library/Application Support/TonTon Gamebox/device-builds.json`; use
+`--device-build-config` to load a different registry. Read-only TV progress
+does not pause or restart an external build. See [tvOS](../dm/tvos/README.md)
+for registering a pipeline.
 
 ## Get the compatibility source
 

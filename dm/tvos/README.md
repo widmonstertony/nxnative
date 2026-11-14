@@ -30,9 +30,27 @@ from every phone Remote version. The production handler has portable state and
 tvOS simulator UIKit/focus regression tests. Physical phone/Remote input still
 requires verification on the target TV; installation alone does not prove it.
 
-`prepare_project.py` derives the tvOS layered icon and top-shelf assets from the
-prepared iOS icon. The original artwork is fitted whole on a dark TV canvas; it
-is not replaced by a generic icon or cropped through its title.
+`prepare_project.py` derives the tvOS layered icon and system Top Shelf assets
+from the prepared iOS icon. The in-app shelf uses `--artwork` with the same hero
+image as the Mac, fills the card without stretching, and accepts an optional
+`--display-title` for the localized title. The shelf uses system glass controls
+on tvOS 26 and later and standard focusable controls on earlier versions.
+
+Pass `--gamebox` to open the prepared title in the TonTon game shelf. Add a
+catalogue entry with `--preview-game 01001F5010DFA000 '宝可梦传说：阿尔宙斯' /path/to/banner.jpg`.
+The gamebox then opens a gallery of 16:9 cover cards navigable with the remote.
+Selecting a game opens its settings and Start page. A card is only a preview
+when it has no bundled tvOS runtime. The same app can launch Z-A or a signed
+native Arceus 1.1.1 framework. Arceus has independent game files, shaders,
+controller settings and saves. Z-A retains its bundle identifier, resources,
+and save path. “本游戏设置” stores the controller button
+mapping and controller help preferences for that title. Press Play/Pause on
+the Siri Remote or hold Options on a supported gamepad to open the panel.
+After saving normally in the game, choose
+“存档并返回游戏匣” from the controls panel to pause the session.
+“继续游戏” resumes the same process. One game can own the process at a time:
+to start a different title, first save and reopen the gamebox. A card never
+loads an iOS framework.
 
 ## Static signed module layout
 
@@ -76,6 +94,43 @@ clang -std=c11 -I dm/host dm/tvos/tests/test_remote.c -o /tmp/test-tv-remote
 python3 dm/tvos/tests/test_remote_ui.py --output /path/to/remote-ui-qa
 ```
 
+### Add a native game to the shared library
+
+1. Prepare that title's rewritten modules, fixups and profile for a matching
+   runtime checkout. Use `compile_shaders.py --runtime-source … --package …
+   --source-cache … --output …` with that checkout and the same game profile.
+   Use dedicated tvOS shader and translation caches. The tool preserves the
+   translator's version and generates tvOS libraries, including its variants
+   and matching reflection. Carry over the tables from the completed build.
+2. Package the tvOS output under `msl/` as USTAR/gzip and compute its SHA-256.
+   Build the game framework with `prepare_project.py --runner-title-id …`,
+   `--romfs-identity …` (from `romfs_image.py --identity`) and the archive SHA.
+   Set the same native runtime's title ID in the profile and framework. Run
+   `verify_segments.py` on the framework before signing.
+3. Prepare the main app with its existing configuration and add the built
+   framework with `--runner-framework …` and an artwork entry with
+   `--preview-game TITLE_ID DISPLAY_NAME ARTWORK`. Sign the embedded
+   framework before signing the app. Stage the title's `RomFS.img` and
+   `msl.tar.gz` under `Library/Caches/TonTonGames/<UPPERCASE_TITLE_ID>/`.
+   The runtime checks the image's identity and verifies the shader archive
+   before running the game. Each title uses the title ID in CloudKit and
+   the isolated `save/` directory in its own local root.
+
+To use automatic save sync, pass `--cloud-container` with the existing shared
+private CloudKit container and `--cloud-environment` with the environment used
+by the other platforms. The tvOS App ID and development profile must authorize
+that container. Use the same iCloud account on each device. No folder picker
+is used. Before opening a game, the shelf offers a choice if the local and
+cloud saves disagree, and “离线游玩” keeps that session from changing the cloud
+copy. If the profile is unsigned for CloudKit, or the user switches syncing
+off, local saves remain usable. Changing the automatic sync option after a game
+has started takes effect on the next app launch.
+
+Build 27 was installed in place on all three paired Apple TVs. The living-room
+device opened the shelf with the shared Z-A artwork and connected to CloudKit.
+The simulator exercises library return/resume and conflicting save choices
+with a fixture. A real cross-device save round trip is not yet verified.
+
 Normal Xcode development signing uses the configured team and paired Apple TV.
 Only install when the user has authorized device deployment. The verifier checks
 the native tvOS platform, nonoverlapping segment ranges, RX/RW protections,
@@ -97,12 +152,34 @@ is not subtracted from the allowance. It defaults to `0` (disabled) on every
 platform: a living-room b18 experiment showed that refusing small runtime maps
 at 640 MiB propagated the error into the game instead of freeing enough cache.
 
+## Progress in the Mac Gamebox
+
+Open **Build → Device builds** to see registered TV jobs in TonTon, including
+shader counts, signing/installation, and whether the device was playtested.
+Register a job in the Mac device-build registry (`schema: 1`, `jobs` array)
+with an ID, title ID (`title`), display `name`, `devices`, `pipeline: true`,
+and absolute `folder`, `log`, and `state_file` paths. Give each job its own
+state file. The registry is local and should not be checked in.
+
+Pass `--progress /absolute/state.json` to `tools/compile_shaders.py`. It reports
+completed base libraries while compiling, then verifies them against the
+translator report. Use `tools/build_progress.py --state-file /absolute/state.json`
+to report later phases. For a running phase pass the PID of the supervisor
+with the absolute state file as a separate argument; this lets the UI
+distinguish an exited job from active work. Installation and playtesting are
+separate states; a successful shader build does not imply either one.
+
 ## Resources and saves
 
 The thin app contains code, module tables and font resources. Copy the owned
 RomFS directory into its app-data container at
 `Library/Caches/nxnative/romfs`. Compile shader libraries for tvOS;
-iOS or macOS metallibs are not substitutes. Put a USTAR/gzip archive with only
+iOS or macOS metallibs are not substitutes. The classic runtime needs
+digest-bound raster companions for affected non-point draws. For Arceus, use
+the pinned runtime's `dm/ios/tools/export_nonpoint_sources.py` with the matching
+translated sources and the tvOS libraries. Put the resulting `nonpoint-v1`
+directory beside those libraries inside the same `b-<chain>` directory.
+Put a USTAR/gzip archive with only
 ordinary `msl/` files/directories at
 `Library/Caches/nxnative/msl.tar.gz`. Its SHA-256 must match the
 build's `DMShaderArchiveSHA256`. The app imports it on a background thread after
@@ -124,10 +201,11 @@ writable by the app. CoreDevice listing a Support file is not evidence that the
 application sandbox can read it. A resource bundle is also accepted.
 `DM_MSL_DIR` and other explicit
 environment options take precedence. Pipeline cache is disabled initially and
-the original game present interval is retained. Saves currently live only in
-the local cache, with no automatic backup or cross-device synchronization.
-tvOS can purge cache data while the app is not running or storage is low, so
-these files are not persistent saves and must be backed up separately. See
+the original game present interval is retained. Saves still live in the local
+cache, which tvOS can purge while the app is not running or storage is low.
+With authorized CloudKit signing, the shared save engine syncs committed saves
+and requests an upload when returning to the shelf or backgrounding. Without
+working CloudKit, back up local saves separately. See
 [Apple's archived local-storage guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/AppleTV_PG/index.html#//apple_ref/doc/uid/TP40015241-CH12-SW7).
 
 An offline relocated RomFS patch is opt-in. Put its verified schema-4

@@ -92,6 +92,7 @@ def main():
     (tools / 'bin').mkdir(parents=True, exist_ok=True)
     cross = REPO / 'dm/gfx/tools/spirv_cross_bin'
     shutil.copy2(cross / 'spirv-cross', tools / 'bin/spirv-cross')
+    shutil.copyfile(REPO / 'scripts/tonton_device_builds.py', tools / 'tonton_device_builds.py')
     shutil.copytree(cross / 'LICENSES', tools / 'licenses/spirv-cross', dirs_exist_ok=True)
     shutil.copy2(cross / 'LICENSE', tools / 'licenses/spirv-cross/LICENSE')
     shutil.copyfile(FRONT / 'LICENSE', resources / 'NX2Apple-LICENSE.txt')

@@ -7,10 +7,18 @@ import NXLauncher
 /// Device jobs are separate from the native new-build queue below this card.
 struct TonTonDeviceBuilds: View {
     var body: some View {
-        if let config = Bundle.main.object(forInfoDictionaryKey: "TonTonDeviceBuildConfig") as? String,
-           let script = Bundle.main.object(forInfoDictionaryKey: "TonTonDeviceBuildController") as? String,
-           let python = Bundle.main.object(forInfoDictionaryKey: "TonTonPython") as? String {
-            DeviceBuildCard(python: python, script: script, config: config)
+        let defaultConfig = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("TonTon Gamebox/device-builds.json").path
+        let configuredScript = Bundle.main.object(forInfoDictionaryKey: "TonTonDeviceBuildController") as? String
+        let python = Bundle.main.object(forInfoDictionaryKey: "TonTonDeviceBuildPython") as? String ?? "/usr/bin/python3"
+        if let config = Bundle.main.object(forInfoDictionaryKey: "TonTonDeviceBuildConfig") as? String ?? defaultConfig,
+           FileManager.default.fileExists(atPath: config),
+           let script = configuredScript ??
+               Bundle.main.url(forResource: "tonton_device_builds", withExtension: "py", subdirectory: "tools")?.path {
+            // Python doesn't need access to the directory containing the app or its build venv.
+            // Load the signed bundled controller ourselves, while honoring explicit local overrides.
+            let bundledSource = configuredScript == nil ? try? String(contentsOfFile: script, encoding: .utf8) : nil
+            DeviceBuildCard(python: python, script: script, config: config, bundledSource: bundledSource)
         }
     }
 }
@@ -21,8 +29,8 @@ private struct DeviceBuildCard: View {
     @State private var showingLog = false
     @State private var selectedName = ""
 
-    init(python: String, script: String, config: String) {
-        _store = StateObject(wrappedValue: DeviceBuildStore(python: python, script: script, config: config))
+    init(python: String, script: String, config: String, bundledSource: String?) {
+        _store = StateObject(wrappedValue: DeviceBuildStore(python: python, script: script, config: config, bundledSource: bundledSource))
     }
 
     var body: some View {
