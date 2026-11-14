@@ -152,12 +152,34 @@ is not subtracted from the allowance. It defaults to `0` (disabled) on every
 platform: a living-room b18 experiment showed that refusing small runtime maps
 at 640 MiB propagated the error into the game instead of freeing enough cache.
 
+## Progress in the Mac Gamebox
+
+Open **Build → Device builds** to see registered TV jobs in TonTon, including
+shader counts, signing/installation, and whether the device was playtested.
+Register a job in the Mac device-build registry (`schema: 1`, `jobs` array)
+with an ID, title ID (`title`), display `name`, `devices`, `pipeline: true`,
+and absolute `folder`, `log`, and `state_file` paths. Give each job its own
+state file. The registry is local and should not be checked in.
+
+Pass `--progress /absolute/state.json` to `tools/compile_shaders.py`. It reports
+completed base libraries while compiling, then verifies them against the
+translator report. Use `tools/build_progress.py --state-file /absolute/state.json`
+to report later phases. For a running phase pass the PID of the supervisor
+with the absolute state file as a separate argument; this lets the UI
+distinguish an exited job from active work. Installation and playtesting are
+separate states; a successful shader build does not imply either one.
+
 ## Resources and saves
 
 The thin app contains code, module tables and font resources. Copy the owned
 RomFS directory into its app-data container at
 `Library/Caches/nxnative/romfs`. Compile shader libraries for tvOS;
-iOS or macOS metallibs are not substitutes. Put a USTAR/gzip archive with only
+iOS or macOS metallibs are not substitutes. The classic runtime needs
+digest-bound raster companions for affected non-point draws. For Arceus, use
+the pinned runtime's `dm/ios/tools/export_nonpoint_sources.py` with the matching
+translated sources and the tvOS libraries. Put the resulting `nonpoint-v1`
+directory beside those libraries inside the same `b-<chain>` directory.
+Put a USTAR/gzip archive with only
 ordinary `msl/` files/directories at
 `Library/Caches/nxnative/msl.tar.gz`. Its SHA-256 must match the
 build's `DMShaderArchiveSHA256`. The app imports it on a background thread after

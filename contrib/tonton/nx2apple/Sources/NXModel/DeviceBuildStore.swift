@@ -12,8 +12,10 @@ import NXCore
     private let command: [String]
     private let config: String
 
-    package init(python: String, script: String, config: String, runner: ProcessRunner = SystemProcessRunner()) {
-        self.runner = runner; self.command = [python, script]; self.config = config
+    package init(python: String, script: String, config: String, bundledSource: String? = nil, runner: ProcessRunner = SystemProcessRunner()) {
+        self.runner = runner
+        self.command = bundledSource.map { [python, "-c", $0] } ?? [python, script]
+        self.config = config
     }
 
     @discardableResult package func refresh() -> Task<Void, Never>? { perform("status") }
@@ -32,7 +34,9 @@ import NXCore
             }.value
             defer { busy = false }
             guard result.ok, let data = result.out.data(using: .utf8) else {
-                error = String((result.err + result.out).suffix(2000)); return
+                let detail = String((result.err + result.out).suffix(2000))
+                error = detail.isEmpty ? (result.timedOut ? "Device status timed out." : "Device status exited (\(result.status)).") : detail
+                return
             }
             do {
                 if operation == "log" {

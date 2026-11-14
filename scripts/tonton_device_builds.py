@@ -43,6 +43,8 @@ def checked_job(config, identifier):
     job = next(j for j in jobs if j['id'] == identifier)
     for key in ['state_file', 'log', 'folder']:
         assert Path(job[key]).is_absolute(), key
+    if job.get('pipeline'):
+        assert not job.get('controller') and not job.get('receipt'), 'Choose one job type'
     if job.get('controller'):
         controller = Path(job['controller'])
         assert controller.is_absolute() and controller.is_file()
@@ -56,6 +58,18 @@ def checked_job(config, identifier):
 def observe(job, rows):
     state = load(job['state_file'])
     base = {key: job[key] for key in ['id', 'title', 'name', 'devices', 'log', 'folder']}
+    if job.get('pipeline'):
+        status, detail = state['state'], state['detail']
+        assert status in {'running', 'compiled', 'installed', 'needs_attention', 'stopped', 'tested'}
+        assert isinstance(detail, str) and detail.strip()
+        done, total = state.get('completed', 0), state.get('total', 0)
+        assert type(done) is int and type(total) is int and 0 <= done <= total
+        worker = state.get('pid')
+        if status == 'running' and (type(worker) is not int or worker <= 0
+                                    or worker not in matches(rows, job['state_file'])):
+            status, detail = 'needs_attention', 'pipeline_not_running'
+        return dict(base, state=status, detail=detail, completed=done, total=total,
+                    updated=state.get('updated'), canResume=False, canPause=False)
     if job.get('receipt'):
         valid = all(state.get(k) == v for k, v in job['receipt'].items())
         detail = 'receipt_mismatch' if not valid else (
@@ -130,7 +144,7 @@ def main():
         fcntl.flock(control, fcntl.LOCK_EX)
         jobs = [checked_job(config, j['id']) for j in config['jobs']]
         # An installed-only view reads receipts and never needs process access.
-        rows = processes() if any(job.get('controller') for job in jobs) else []
+        rows = processes() if any(job.get('controller') or job.get('pipeline') for job in jobs) else []
         if args.operation != 'status':
             assert args.job, 'Choose a build'
             job = next(j for j in jobs if j['id'] == args.job)
