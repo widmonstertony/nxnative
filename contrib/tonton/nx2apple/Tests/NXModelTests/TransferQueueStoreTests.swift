@@ -64,6 +64,19 @@ import NXCore
         XCTAssertNil(q.entries[0].reason)
     }
 
+    func testManualRetryOfAWaitingDevicePreservesItsCheckpoint() {
+        let q = store()
+        q.enqueue([entry("A")])
+        progress["A"]?(30, 120)
+        finishers["A"]?(.deviceAbsent)
+        let id = q.entries[0].id
+        q.retry(id)
+        XCTAssertEqual(started, ["A@D1", "A@D1"])
+        XCTAssertEqual(q.entries[0].id, id)
+        XCTAssertEqual(q.entries[0].status, .sending)
+        XCTAssertEqual(q.entries[0].doneBytes, 30)
+    }
+
     func testCancelOfARunningSendSaysCancellingUntilTheToolReturnsThenRemovesTheRow() {
         let q = store()
         q.enqueue([entry("A"), entry("B")])

@@ -40,7 +40,8 @@ import NXCore
 
     /// Retry of a failed entry: it goes to the end of the line again and continues from the parts the device has.
     package func retry(_ id: UUID) {
-        guard let i = entries.firstIndex(where: { $0.id == id }), entries[i].status == .failed else { return }
+        guard let i = entries.firstIndex(where: { $0.id == id }),
+              entries[i].status == .failed || entries[i].status == .waiting else { return }
         entries[i].status = .queued; entries[i].reason = nil
         persist()
         processNext()

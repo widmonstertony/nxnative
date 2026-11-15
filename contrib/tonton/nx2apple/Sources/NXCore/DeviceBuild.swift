@@ -21,13 +21,16 @@ package struct DeviceBuildJob: Decodable, Identifiable, Sendable {
     package let freeBytes: Int64?
     package let reserveBytes: Int64?
     package let updated: String?
+    package let kind: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, title, name, devices, state, detail, completed, total, canResume
-        case log, folder, freeBytes, reserveBytes, updated
+        case log, folder, freeBytes, reserveBytes, updated, kind
         case canPauseOverride = "canPause"
     }
 
     package var fraction: Double { total > 0 ? Double(completed) / Double(total) : 0 }
+    package var remaining: Int { max(0, total - completed) }
+    package var isTransfer: Bool { kind == "transfer" }
     package var canPause: Bool { canPauseOverride ?? ["running", "waiting", "waiting_space"].contains(state) }
 }

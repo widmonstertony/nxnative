@@ -38,10 +38,12 @@ package struct TransferCard: View {
             }
             if entry.status == .sending || entry.status == .cancelling {
                 LauncherProgressBar(value: entry.totalBytes > 0 ? Double(entry.doneBytes) / Double(entry.totalBytes) : nil, height: 6)
-                if entry.totalBytes > 0 {
-                    Text(String(format: loc.t("transfer.progress"), ShellInstall.sizeText(entry.doneBytes), ShellInstall.sizeText(entry.totalBytes)))
-                        .font(.manrope(12.5)).monospacedDigit().foregroundStyle(.secondary)
-                }
+            }
+            if entry.totalBytes > 0 {
+                let remaining = ShellInstall.sizeText(max(0, entry.totalBytes - entry.doneBytes))
+                let progress = String(format: loc.t("transfer.progress"), ShellInstall.sizeText(entry.doneBytes), ShellInstall.sizeText(entry.totalBytes))
+                Text(progress + " · " + String(format: loc.t("deviceBuild.remaining"), remaining))
+                    .font(.manrope(12.5)).monospacedDigit().foregroundStyle(.secondary)
             }
             if entry.status == .waiting {
                 Text(String(format: loc.t("transfer.waitingNote"), entry.deviceName)).font(.manrope(12.5)).foregroundStyle(.secondary)
@@ -54,10 +56,11 @@ package struct TransferCard: View {
                 Text(reason).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                if entry.status == .failed {
+                if entry.status == .failed || entry.status == .waiting {
                     Button(loc.t("transfer.retry")) { transfers.retry(entry.id) }
-                        .disabled(entry.status == .cancelling)
                         .accessibilityLabel(String(format: loc.t("transfer.retryNamed"), entry.name))
+                }
+                if entry.status == .failed {
                     Button(loc.t("shell.showInFinder")) { showInFinder(entry) }
                         .accessibilityLabel(String(format: loc.t("transfer.finderNamed"), entry.name))
                 }

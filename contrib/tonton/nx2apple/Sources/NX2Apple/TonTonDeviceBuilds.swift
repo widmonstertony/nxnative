@@ -28,6 +28,7 @@ private struct DeviceBuildCard: View {
     @EnvironmentObject var loc: Localizer
     @State private var showingLog = false
     @State private var selectedName = ""
+    @State private var selectedDevice: String? = nil
 
     init(python: String, script: String, config: String, bundledSource: String?) {
         _store = StateObject(wrappedValue: DeviceBuildStore(python: python, script: script, config: config, bundledSource: bundledSource))
@@ -43,25 +44,40 @@ private struct DeviceBuildCard: View {
                 }
                 if !store.error.isEmpty { Text(store.error).foregroundStyle(.red).textSelection(.enabled) }
                 if store.jobs.isEmpty && store.error.isEmpty { Text(loc.t("deviceBuild.loading")).foregroundStyle(.secondary) }
-                ForEach(store.jobs) { job in
+                if !store.jobs.isEmpty {
+                    Picker(loc.t("deviceBuild.device"), selection: $selectedDevice) {
+                        Text(loc.t("deviceBuild.allDevices")).tag(nil as String?)
+                        ForEach(Set(store.jobs.flatMap(\.devices)).sorted(), id: \.self) { device in
+                            Text(device).tag(Optional(device))
+                        }
+                    }.fixedSize()
+                }
+                ForEach(store.jobs.filter { selectedDevice == nil || $0.devices.contains(selectedDevice ?? "") }) { job in
                     Divider()
                     VStack(alignment: .leading, spacing: 7) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(job.name).font(.headline)
                             Text(job.devices.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                            Text(loc.t(job.isTransfer ? "deviceBuild.transfer" : "deviceBuild.build"))
+                                .font(.caption).foregroundStyle(.secondary)
                             Spacer()
                             Text(loc.t("deviceBuild.state." + job.state))
                                 .foregroundStyle(job.state == "running" ? Color.accentColor : job.state == "needs_attention" ? .red : .secondary)
                         }
                         if job.total > 0 {
                             ProgressView(value: job.fraction)
-                            Text("\(job.completed.formatted()) / \(job.total.formatted()) · \(Int(job.fraction * 100))%")
+                            Text(progress(job))
                                 .monospacedDigit().font(.caption)
                         }
                         Text(detail(job)).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         HStack {
-                            Button(loc.t("deviceBuild.resume")) { store.resume(job) }.disabled(store.busy || !job.canResume)
-                            Button(loc.t("deviceBuild.pause")) { store.pause(job) }.disabled(store.busy || !job.canPause)
+                            if job.canResume {
+                                Button(loc.t(job.isTransfer ? "deviceBuild.resumeTransfer" : "deviceBuild.resume")) { store.resume(job) }
+                                    .disabled(store.busy)
+                            }
+                            if job.canPause {
+                                Button(loc.t("deviceBuild.pause")) { store.pause(job) }.disabled(store.busy)
+                            }
                             Button(loc.t("deviceBuild.log")) {
                                 selectedName = job.name
                                 Task { await store.showLog(job)?.value; showingLog = true }
@@ -89,6 +105,14 @@ private struct DeviceBuildCard: View {
                 Button(loc.t("deviceBuild.close")) { showingLog = false }.keyboardShortcut(.cancelAction)
             }.padding(20).frame(width: 850, height: 550)
         }
+    }
+
+    private func progress(_ job: DeviceBuildJob) -> String {
+        let caption: (Int) -> String = { amount in
+            job.isTransfer ? ByteCountFormatter.string(fromByteCount: Int64(amount), countStyle: .file) : amount.formatted()
+        }
+        let left = String(format: loc.t("deviceBuild.remaining"), caption(job.remaining))
+        return "\(caption(job.completed)) / \(caption(job.total)) · \(Int(job.fraction * 100))% · \(left)"
     }
 
     private func detail(_ job: DeviceBuildJob) -> String {

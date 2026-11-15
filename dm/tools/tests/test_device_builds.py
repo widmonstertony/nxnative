@@ -1,8 +1,10 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -19,9 +21,13 @@ class DeviceBuilds(unittest.TestCase):
         self.job = dict(id='game-m2', title='0123456789ABCDEF', name='Game', devices=['M2'],
                         folder=str(self.root), log=str(self.root / 'build.log'),
                         state_file=str(self.root / 'state.json'), chain='testchain',
-                        controller=str(self.root / 'continue.py'), python='/usr/bin/python3',
+                        controller=str(self.root / 'continue.py'), python=sys.executable,
                         build_config=str(self.root / 'config.json'), reserve_bytes=100,
                         lock_file=str(self.root / 'dispatch.lock'), pause_file=str(self.root / '.tonton-pause-request'))
+        controller = Path(self.job['controller'])
+        controller.write_text('exit(0)\n')
+        self.job['controller_sha256'] = hashlib.sha256(controller.read_bytes()).hexdigest()
+        Path(self.job['build_config']).write_text('{}')
         self.state(reused=70, finished=5, expected=100, failed=[], chain='testchain', phase='compiling')
 
     def state(self, **state):
@@ -88,6 +94,37 @@ class DeviceBuilds(unittest.TestCase):
                    phase='missing_shader_pass_finished_final_table_merge_pending')
         self.assertEqual(M.observe(self.job, [])['state'], 'compiled')
         with self.assertRaises(AssertionError): M.action(self.job, 'resume', [])
+
+    def test_lost_build_inputs_keep_progress_and_cannot_resume(self):
+        Path(self.job['build_config']).unlink()
+        observed = M.observe(self.job, [])
+        self.assertEqual((observed['state'], observed['completed'], observed['total']), ('blocked', 75, 100))
+        self.assertFalse(observed['canResume'])
+        with self.assertRaisesRegex(AssertionError, 'build_inputs_missing'), patch.object(M.subprocess, 'Popen') as start:
+            M.action(self.job, 'resume', [])
+        start.assert_not_called()
+
+    def test_resume_preserves_existing_checkpoint(self):
+        saved = Path(self.job['state_file']).read_bytes()
+        with patch.object(M.subprocess, 'Popen') as start:
+            M.action(self.job, 'resume', [])
+        self.assertEqual(start.call_args.args[0], [self.job['python'], '-u', self.job['controller']])
+        self.assertEqual(Path(self.job['state_file']).read_bytes(), saved)
+
+    def test_archived_checkpoint_and_transfer_use_different_units(self):
+        checkpoint = dict(self.job, controller=None, checkpoint_only=True)
+        observed = M.observe(checkpoint, [])
+        self.assertEqual((observed['state'], observed['completed'], observed['total']), ('blocked', 75, 100))
+        self.assertFalse(observed['canResume'])
+        transferred_bytes = 6_774_512_078
+        self.state(state='transferred', detail='verified receipt', completed=transferred_bytes, total=transferred_bytes)
+        transfer = dict(self.job, controller=None, pipeline=True, kind='transfer')
+        observed = M.observe(transfer, [])
+        self.assertEqual((observed['state'], observed['kind'], observed['completed']), ('transferred', 'transfer', transferred_bytes))
+        self.assertFalse(observed['canResume'])
+        with patch.object(M, 'processes') as ps:
+            self.assertIsNone(M.process_snapshot([transfer]))
+            ps.assert_not_called()
 
 
 if __name__ == '__main__':

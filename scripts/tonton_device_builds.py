@@ -59,30 +59,44 @@ def checked_job(config, identifier):
     job = next(j for j in jobs if j['id'] == identifier)
     for key in ['state_file', 'log', 'folder']:
         assert Path(job[key]).is_absolute(), key
-    if job.get('pipeline'):
-        assert not job.get('controller') and not job.get('receipt'), 'Choose one job type'
+    assert sum(bool(job.get(k)) for k in ('pipeline', 'receipt', 'checkpoint_only')) <= 1, 'Choose one job type'
+    assert job.get('kind', 'build') in ('build', 'transfer'), 'Unknown job kind'
+    if any(job.get(k) for k in ('pipeline', 'receipt', 'checkpoint_only')):
+        assert not job.get('controller'), 'A recorded milestone cannot run a checkpoint controller'
+    return job
+
+
+def validate_runner(job):
     if job.get('controller'):
         controller = Path(job['controller'])
-        assert controller.is_absolute() and controller.is_file()
+        assert controller.is_absolute() and controller.is_file(), 'controller_missing'
         assert hashlib.sha256(controller.read_bytes()).hexdigest() == job['controller_sha256'], 'Controller changed; review its registration'
-        assert Path(job['python']).is_file()
+        assert Path(job['python']).is_file(), 'controller_python_missing'
+        assert Path(job['build_config']).is_file(), 'build_inputs_missing'
         assert Path(job['pause_file']).parent == Path(job['folder'])
         assert Path(job['lock_file']).parent == Path(job['folder'])
-    return job
+
+
+def job_fields(job):
+    return {key: job[key] for key in ('id', 'title', 'name', 'devices', 'log', 'folder', 'kind') if key in job}
 
 
 def observe(job, rows):
     state = load(job['state_file'])
-    base = {key: job[key] for key in ['id', 'title', 'name', 'devices', 'log', 'folder']}
+    base = job_fields(job)
     if job.get('pipeline'):
         status, detail = state['state'], state['detail']
-        assert status in {'running', 'compiled', 'installed', 'needs_attention', 'stopped', 'tested'}
+        assert status in {'running', 'compiled', 'installed', 'needs_attention', 'stopped', 'tested',
+                          'blocked', 'transferring', 'transferred', 'waiting_device', 'waiting_import', 'present'}
         assert isinstance(detail, str) and detail.strip()
         done, total = state.get('completed', 0), state.get('total', 0)
         assert type(done) is int and type(total) is int and 0 <= done <= total
         worker = state.get('pid')
-        if status == 'running' and not pipeline_alive(rows, worker, job['state_file']):
-            status, detail = 'needs_attention', 'pipeline_not_running'
+        if status in {'running', 'transferring'}:
+            if rows is None:
+                status, detail = 'needs_attention', 'process_status_unavailable'
+            elif not pipeline_alive(rows, worker, job['state_file']):
+                status, detail = 'needs_attention', 'pipeline_not_running'
         return dict(base, state=status, detail=detail, completed=done, total=total,
                     updated=state.get('updated'), canResume=False, canPause=False)
     if job.get('receipt'):
@@ -97,6 +111,19 @@ def observe(job, rows):
     total = int(state['expected'])
     completed = int(state.get('reused', 0)) + int(state.get('finished', 0))
     assert 0 <= completed <= total and total > 0
+    if job.get('checkpoint_only'):
+        status = 'compiled' if completed == total and not state.get('failed') else 'blocked'
+        return dict(base, state=status, detail=job.get('detail', 'checkpoint_archived'),
+                    completed=completed, total=total, updated=state.get('updated'),
+                    canResume=False, canPause=False)
+    try:
+        validate_runner(job)
+    except (OSError, AssertionError, KeyError) as error:
+        return dict(base, state='blocked', detail=str(error), completed=completed, total=total,
+                    updated=state.get('updated'), canResume=False, canPause=False)
+    if rows is None:
+        return dict(base, state='blocked', detail='process_status_unavailable', completed=completed, total=total,
+                    updated=state.get('updated'), canResume=False, canPause=False)
     controllers = matches(rows, job['controller'])
     workers = matches(rows, job['build_config'])
     free = shutil.disk_usage(job['folder']).free
@@ -109,7 +136,7 @@ def observe(job, rows):
         status, detail = ('pausing', 'finishing_current_batch') if workers else ('paused', 'paused_by_player')
     elif workers:
         status, detail = 'running', 'missing_shaders_only'
-    elif controllers and free < job['reserve_bytes']:
+    elif free < job['reserve_bytes']:
         status, detail = 'waiting_space', 'disk_reserve'
     elif controllers:
         status, detail = 'waiting', 'next_batch'
@@ -124,12 +151,15 @@ def observe(job, rows):
 
 def action(job, operation, rows):
     assert job.get('controller'), 'This result is already delivered; use a new build for an engine update'
+    validate_runner(job)
     # Validate the current chain/counts before permitting a mutation.
     current = observe(job, rows)
     if operation == 'pause':
         Path(job['pause_file']).write_text('Pause after the current checkpointed batch.\n')
         return
-    assert current['state'] not in ['compiled', 'needs_attention'], 'Review this completed/failed job before resuming'
+    if current['state'] in ('running', 'waiting'):
+        return  # An existing worker remains in charge.
+    assert current['canResume'], 'This checkpoint cannot resume until its blocker is resolved'
     pause = Path(job['pause_file'])
     pause.unlink(missing_ok=True)
     # Use the same lock the original controller owns, not an unreliable saved PID.
@@ -146,6 +176,23 @@ def action(job, operation, rows):
                          start_new_session=True, close_fds=True)
 
 
+def process_snapshot(jobs):
+    def needs_processes(job):
+        if job.get('controller'):
+            return True
+        try:
+            return job.get('pipeline') and load(job['state_file']).get('state') in ('running', 'transferring')
+        except (KeyError, OSError, ValueError):
+            return False  # A malformed row is handled by observe; it must not hide the rest.
+
+    if not any(needs_processes(job) for job in jobs):
+        return None
+    try:
+        return processes()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--config', type=Path, required=True)
@@ -157,28 +204,29 @@ def main():
     # Serialize UI clicks from multiple windows and CLI callers.
     with args.config.with_suffix('.control.lock').open('a') as control:
         fcntl.flock(control, fcntl.LOCK_EX)
-        jobs = [checked_job(config, j['id']) for j in config['jobs']]
-        # An installed-only view reads receipts and never needs process access.
-        rows = processes() if any(job.get('controller') or job.get('pipeline') for job in jobs) else []
+        jobs = config['jobs']
+        identifiers = [j['id'] for j in jobs]
+        assert len(set(identifiers)) == len(identifiers), 'Duplicate build IDs'
         if args.operation != 'status':
             assert args.job, 'Choose a build'
-            job = next(j for j in jobs if j['id'] == args.job)
+            job = checked_job(config, args.job)
             if args.operation == 'log':
                 with Path(job['log']).open('rb') as log:
                     log.seek(0, 2)
                     log.seek(max(0, log.tell() - 32768))
                     print(json.dumps({'text': log.read().decode('utf-8', errors='replace')}))
                 return
+            rows = process_snapshot([job])
+            assert rows is not None, 'process_status_unavailable'
             action(job, args.operation, rows)
-            rows = processes()
+        rows = process_snapshot(jobs)
         report = []
         for job in jobs:
             try:
-                report.append(observe(job, rows))
+                report.append(observe(checked_job(config, job['id']), rows))
             except (OSError, ValueError, KeyError, AssertionError) as error:
-                report.append(dict(id=job['id'], title=job['title'], name=job['name'],
-                                   devices=job['devices'], state='needs_attention', detail=str(error),
-                                   completed=0, total=0, canResume=False, log=job['log'], folder=job['folder']))
+                report.append(dict(job_fields(job), state='needs_attention', detail=str(error),
+                                   completed=0, total=0, canResume=False, canPause=False))
         print(json.dumps({'jobs': report, 'updated': datetime.datetime.now().astimezone().isoformat()}))
 
 

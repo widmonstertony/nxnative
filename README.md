@@ -16,7 +16,7 @@ The former branch name was `ios16-pokemon-za-port`; it was renamed, preserving i
 
 The [Apple TV target](dm/tvos/README.md) includes a TV-native TonTon shelf, shared cover artwork, Remote and gamepad controls, per-title ABXY mapping, and private CloudKit save sync with an authorized profile. The shelf supports Pokémon Legends: Z-A and a separate native runtime for Pokémon Legends: Arceus 1.1.1. Returning to the TV shelf pauses the active game; the two titles retain separate local and CloudKit saves. Arceus was tested on physical Apple TV through the first 3D beach scene with an isolated save. Its TV startup fixes are documented in the [Arceus notes](dm/games/01001F5010DFA000/README.md).
 
-Open **Build → Device builds** in the Mac Gamebox to see registered TV pipeline progress and playtest status. The Mac runner now closes its output pipes after each refresh, fixing the “Bad file descriptor” error that could appear after leaving the page open.
+Open **Build → Device builds and transfers** in the Mac Gamebox to filter registered jobs by iPhone, iPad, or Apple TV. Build rows show completed and remaining items; transfer rows use bytes. Compilation, verified delivery, installation, and playtesting are separate milestones. Archived checkpoints still show their recorded counts when matching build inputs are missing. Resume only runs the registered checkpoint controller with its existing build inputs, and a refresh only reads status. The native build and transfer queues remain on the same page.
 
 ## TonTon Gamebox: game fixes and verification
 

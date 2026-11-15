@@ -27,6 +27,7 @@ struct BuildPage: View {
         let stagingQueue = !running && queue.hasWaiting
         CardPageHeading(loc.t("build.heading"), note: loc.t("build.intro"))
         TonTonDeviceBuilds()
+        TransferCard(transfers: transfers) { build.revealTransfer($0) }
         TonTonUpdates()
         if running {
             ProgressCard(build: build)
@@ -49,7 +50,6 @@ struct BuildPage: View {
         if !stagingQueue {
             BuildQueueCard(queue: queue, onSelectGames: onSelectGames)
         }
-        TransferCard(transfers: transfers) { build.revealTransfer($0) }
         LogCard(log: build.log, devices: devices, isOpen: $logOpen,
                 showRequests: BuildNotifier.shared.$showLog.eraseToAnyPublisher(),   // a clicked notification of a failed build
                 didShow: { BuildNotifier.shared.showLog = false })
