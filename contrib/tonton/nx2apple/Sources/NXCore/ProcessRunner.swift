@@ -125,10 +125,24 @@ package struct SystemProcessRunner: ProcessRunner {
         let p = process(launch)
         let stdin = launch.input == nil ? nil : Pipe()
         p.standardInput = stdin ?? FileHandle.nullDevice
-        let out = Pipe(), err = Pipe()
+        let out = Pipe()
+        let err = launch.mergesErrors ? out : Pipe()
         p.standardOutput = out
-        p.standardError = launch.mergesErrors ? out : err
-        do { try p.run() } catch { return .failedToStart(error.localizedDescription) }
+        p.standardError = err
+        defer {
+            // Process closes the child's write ends in this process on launch.
+            // We own the read ends: release them as soon as the readers finish,
+            // even if Foundation keeps the Process or its pipes alive.
+            try? out.fileHandleForReading.close()
+            if !launch.mergesErrors { try? err.fileHandleForReading.close() }
+        }
+        do { try p.run() } catch {
+            try? out.fileHandleForWriting.close()
+            if !launch.mergesErrors { try? err.fileHandleForWriting.close() }
+            try? stdin?.fileHandleForReading.close()
+            try? stdin?.fileHandleForWriting.close()
+            return .failedToStart(error.localizedDescription)
+        }
         let deadline = launch.timeout.map { Deadline(p, after: $0) }
         // Start draining stdout and stderr before writing stdin asynchronously so >64 KB inputs cannot deadlock both ends.
         let outData = LockedData(), errData = LockedData()
@@ -336,10 +350,15 @@ private final class Deadline: @unchecked Sendable {
     private var work: DispatchWorkItem?
 
     init(_ p: Process, after seconds: TimeInterval) {
-        let item = DispatchWorkItem { [self] in
+        // A cancelled timer can remain queued until its deadline. It must not
+        // retain the process (and its pipes) or form a cycle with this object.
+        let item = DispatchWorkItem { [weak self, weak p] in
+            guard let self, let p, p.isRunning else { return }
             lock.lock(); didFire = true; lock.unlock()
-            if p.isRunning { p.terminate() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if p.isRunning { kill(p.processIdentifier, SIGKILL) } }
+            p.terminate()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak p] in
+                if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
         }
         work = item
         DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)

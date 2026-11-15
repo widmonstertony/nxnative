@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import NXCore
 
@@ -124,6 +125,20 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertTrue(r.ok)
         XCTAssertFalse(r.timedOut)
         XCTAssertEqual(r.out, "quick\n")
+    }
+
+    func testRepeatedTimedCapturesReleaseTheirPipesBeforeTheDeadline() {
+        func openDescriptors() -> Int {
+            (0..<1024).filter { fcntl(Int32($0), F_GETFD) >= 0 }.count
+        }
+        let launch = ProcessLaunch(executable: "/bin/echo", arguments: ["checkpoint"], timeout: 60)
+        XCTAssertTrue(real.capture(launch).ok)  // Warm up Foundation's process runner.
+        let baseline = openDescriptors()
+        for _ in 0..<48 {
+            XCTAssertTrue(real.capture(launch).ok)
+        }
+        // Allow unrelated XCTest/runtime descriptors, but not one pipe per refresh.
+        XCTAssertLessThanOrEqual(openDescriptors(), baseline + 8)
     }
 
     func testCaptureWritesTheInputToStandardInputAndClosesIt() {

@@ -14,7 +14,9 @@ The **[TonTon Mac build page](docs/ios16-ios17.md#build-in-tonton-gamebox-on-mac
 
 The former branch name was `ios16-pokemon-za-port`; it was renamed, preserving its history. **Source builds are available; this repository does not distribute ready-to-play games or a universal compatibility guarantee.**
 
-The [Apple TV target](dm/tvos/README.md) includes a TV-native TonTon shelf, shared cover artwork, Remote and gamepad controls, per-title ABXY mapping, and private CloudKit save sync with an authorized profile. The shelf supports Pokémon Legends: Z-A and a separate native runtime for Pokémon Legends: Arceus 1.1.1. Returning to the TV shelf pauses the active game; the two titles retain separate local and CloudKit saves. Arceus was tested on physical Apple TV through the first 3D beach scene with an isolated save. Its TV startup fixes are documented in the [Arceus notes](dm/games/01001F5010DFA000/README.md). Open **Build → Device builds** in the Mac Gamebox to see registered TV pipeline progress and playtest status.
+The [Apple TV target](dm/tvos/README.md) includes a TV-native TonTon shelf, shared cover artwork, Remote and gamepad controls, per-title ABXY mapping, and private CloudKit save sync with an authorized profile. The shelf supports Pokémon Legends: Z-A and a separate native runtime for Pokémon Legends: Arceus 1.1.1. Returning to the TV shelf pauses the active game; the two titles retain separate local and CloudKit saves. Arceus was tested on physical Apple TV through the first 3D beach scene with an isolated save. Its TV startup fixes are documented in the [Arceus notes](dm/games/01001F5010DFA000/README.md).
+
+Open **Build → Device builds** in the Mac Gamebox to see registered TV pipeline progress and playtest status. The Mac runner now closes its output pipes after each refresh, fixing the “Bad file descriptor” error that could appear after leaving the page open.
 
 ## TonTon Gamebox: game fixes and verification
 
