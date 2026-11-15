@@ -86,6 +86,9 @@
 "PC keyboard controls" = "电脑键鼠方案";
 "Uses this game's keyboard profile. Escape or F8 releases the mouse; clicking the game captures it again." = "使用这款游戏的电脑键位。Esc 或 F8 释放鼠标，单击游戏画面重新捕获。";
 "Keep mouse in game" = "将鼠标限制在游戏中";
+"In camera mode, click the game to capture the mouse. Escape, F8 or switching windows releases it. Touch mode uses a free pointer." = "镜头模式下单击游戏画面锁定鼠标，按 Esc、F8 或切换窗口即可释放。触屏模式下光标可自由移动。";
+"Click the game to capture the camera. Escape, F8 or switching windows releases it." = "单击游戏画面锁定鼠标。按 Esc、F8 或切换窗口即可释放。";
+"Release mouse" = "释放鼠标";
 "Captures the pointer while playing so it cannot cross onto another display." = "游戏中捕获鼠标，防止移到另一块屏幕。";
 "Mouse / trackpad camera" = "鼠标／触控板控制视角";
 "Mouse motion drives the game's right stick. The game's own camera limits still apply." = "通过右摇杆控制视角，保留原作的视角范围限制。";

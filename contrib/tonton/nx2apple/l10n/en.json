@@ -1471,7 +1471,7 @@
   "launch.set.DM_LANG.note": "This game's files do not list its languages, so some of these may not be in the game. It may then show another one.",
   "launch.set.DM_METAL_HUD": "Performance HUD",
   "launch.set.DM_MOUSE_CAPTURE": "Keep mouse in game",
-  "launch.set.DM_MOUSE_CAPTURE.note": "Captures the pointer while playing so it cannot cross onto another display.",
+  "launch.set.DM_MOUSE_CAPTURE.note": "Controls mouse capture. Escape or F8 releases the captured pointer.",
   "launch.set.DM_MOUSE_INVERT_Y": "Invert mouse Y",
   "launch.set.DM_MOUSE_LOOK": "Mouse / trackpad camera",
   "launch.set.DM_MOUSE_LOOK.note": "Mouse motion drives the game's right stick. The game's own camera limits still apply.",

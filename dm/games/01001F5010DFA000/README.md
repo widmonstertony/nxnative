@@ -51,6 +51,8 @@ Open: the cause; the crash is worked around ([GitHub issue #712](https://github.
 
 ## Found on this game
 
+- [TonTon mouse capture lifecycle](../../../docs/reference/services.md#tonton-confines-the-mouse-in-touch-mode): click the game for mouse camera control. Window switches, Escape and F8 release it.
+
 General changes first needed here; each applies to every game:
 
 - **Function-matched cuts take branches inside the matched function, and read the trap word `0xe7ffdefe`** (`nso_match.py`): [Function-matched cuts](../../../docs/reference/rewriter.md#function-matched-cuts-for-unregistered-builds).

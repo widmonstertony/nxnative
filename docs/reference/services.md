@@ -695,6 +695,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Check:** `dm/host/tests/t_touch.c` reads in console mode between handheld reads (an empty state with the next number, the Start of a finger pressed meanwhile kept), and `dm/host/tests/t_hid.c` (`t_touch_sampling`) reads docked, handheld, docked and handheld again through both `GetTouchScreenState` and `GetTouchScreenStates` (every read reaches `touch_fill_n`, points asked for in handheld mode only). In Aokana on the Mac (the PR author's runs, headless, a tap every 1.5 s from 20 s, with the first form of the fix, which numbered both modes from the npad counter): a tap during the opening movie stops it and the title comes up, before the fix only when started handheld; with it, also started docked and switched with `DM_OE_SCRIPT=opmode=0@12`, and started handheld, docked at 12 s and back at 24 s. Not run on the iPad.
 - **Found on:** Aokana - Four Rhythms Across the Blue (`0100990011866000`, Unity 2018.4.22f1 IL2CPP; profile in PR #1372), on the iPad: started docked, then handheld and Tap in the in-game menu, and no tap reached the game.
 
+### TonTon confines the mouse in touch mode
+
+- **Symptom:** TonTon confines the pointer even in touch mode and takes it back when a camera game regains focus.
+- **Cause:** its capture request started enabled and survived focus loss. The touchscreen path then reconstructed a clamped pointer from relative movement.
+- **Fix:** adopt the capture lifecycle in [the mouse-stick patch](https://github.com/SanteeMarcel/nxnative/commit/0637a9c3ccdac52c1eeb56e8d71d281a5e3b47dd). Touch uses AppKit's absolute coordinates. In camera mode a click captures without sending a game button. Escape, F8, focus loss and modal prompts release the pointer and clear its held buttons and motion. The desktop profiles still supply stick response and mouse bindings.
+- **Found on:** TonTon touchscreen games and the camera profiles for [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md) and [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md).
+
 ### Mac pointer stays over the game
 
 - **Symptom:** on the Mac, the mouse pointer stays over the game picture while playing with a controller or the keyboard, in a window and in fullscreen ([issue #675](https://github.com/seedds/nxnative/issues/675)).

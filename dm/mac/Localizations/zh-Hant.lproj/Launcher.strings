@@ -115,6 +115,9 @@
 "Invert mouse Y" = "反轉視角垂直軸";
 "Jump" = "跳躍";
 "Keep mouse in game" = "將滑鼠限制在遊戲中";
+"In camera mode, click the game to capture the mouse. Escape, F8 or switching windows releases it. Touch mode uses a free pointer." = "鏡頭模式下點按遊戲畫面以鎖定滑鼠，按 Esc、F8 或切換視窗即可釋放。觸控模式下游標可自由移動。";
+"Click the game to capture the camera. Escape, F8 or switching windows releases it." = "點按遊戲畫面以鎖定滑鼠。按 Esc、F8 或切換視窗即可釋放。";
+"Release mouse" = "釋放滑鼠";
 "Keyboard and mouse controls" = "電腦鍵盤與滑鼠操作說明";
 "L button" = "L 鍵";
 "Left stick click" = "按下左搖桿";

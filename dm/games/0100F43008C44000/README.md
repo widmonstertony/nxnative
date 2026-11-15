@@ -121,6 +121,8 @@ This smoke test does not establish performance across the city or in combat.
 
 ## Found on this game
 
+- [TonTon mouse capture lifecycle](../../../docs/reference/services.md#tonton-confines-the-mouse-in-touch-mode): click the game for mouse camera control. Window switches, Escape and F8 release it.
+
 General host changes first needed here; each applies to every game:
 
 - **Shader extraction reuse after translation-only updates:** [Shader extraction reruns after translation-only updates](../../../docs/reference/shaders.md#shader-extraction-reruns-after-translation-only-updates).

@@ -127,89 +127,61 @@ void front_screen_match(int fps) {
     if (!g_layer || g_match_want == fps) return;   // no window (a windowless run's main thread runs the guest), or the rate as before
     g_match_want = fps; dispatch_async(dispatch_get_main_queue(), ^{ screen_match_apply(); });
 }
-// Public relative mouse capture keeps physical motion from crossing display boundaries. Absolute touch mode
-// integrates the same deltas into a pointer clamped to the content view; camera mode holds it at the centre.
+// Follow nxnative's mouse-stick proposal (issue #2346, SanteeMarcel's 0637a9c):
+// only camera mode captures, a click starts it, and focus loss releases it.
 static desktop_input g_desktop;
 static ctrl_prompt g_cp; static int g_cp_confirm, g_cp_cancel;   // the controller applet's prompt (front_ctrl_support) and a key pressed in it since its last step
 static home_quit g_hq;   // the Home button's hold and quit prompt (home_quit.h): while the prompt is open the controllers' input goes to it, not to the game
-static int g_mouse_lock, g_mouse_hidden, g_capture_requested = 1, g_capture_enabled = 1;
-static NSPoint g_capture_pointer;
+static int g_mouse_lock, g_capture_enabled = 1;
 static NSTimer *g_mouse_camera_timer;
 static double g_mouse_camera_time;
 static NSString *g_desktop_path;
 static void push(void);
-static void mouse_warp(NSPoint point) {
-    // AppKit global points have a bottom-left origin; Quartz global points have a
-    // top-left origin on the main display. Never use physical pixel height here:
-    // Retina scaling and screens above/left of the main display change it.
-    NSScreen *primary = NSScreen.screens.firstObject;
-    for (NSScreen *screen in NSScreen.screens)
-        if ([screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue] == CGMainDisplayID()) primary = screen;
-    CGRect bounds = CGDisplayBounds(CGMainDisplayID());
-    CGWarpMouseCursorPosition(CGPointMake(point.x - NSMinX(primary.frame) + bounds.origin.x,
-                                         NSMaxY(primary.frame) - point.y + bounds.origin.y));
+static int mouse_camera_capture_enabled(void) {
+    return g_capture_enabled && g_desktop.enabled && g_desktop.look;
 }
-static NSRect mouse_content_rect(void) {
-    return [g_win convertRectToScreen:[g_win.contentView convertRect:g_win.contentView.bounds toView:nil]];
-}
-static NSPoint mouse_inside(NSPoint p) {
-    NSRect r = mouse_content_rect();
-    return NSMakePoint(fmin(fmax(p.x, NSMinX(r) + 1), NSMaxX(r) - 1), fmin(fmax(p.y, NSMinY(r) + 1), NSMaxY(r) - 1));
+static int mouse_input_active(void) {
+    return g_input_on && g_win.isKeyWindow && NSApp.isActive && !g_win.miniaturized && !NSApp.modalWindow
+        && !cp_blocks_input(g_cp.phase) && !hq_blocks_input(g_hq.phase);
 }
 static void mouse_capture_end(void) {
-    if (g_mouse_lock) CGAssociateMouseAndMouseCursorPosition(true);
-    if (g_mouse_hidden) { [NSCursor unhide]; g_mouse_hidden = 0; }
-    if (g_mouse_camera_timer) { [g_mouse_camera_timer invalidate]; g_mouse_camera_timer = nil; }
+    if (!g_mouse_lock) return;
+    CGAssociateMouseAndMouseCursorPosition(true);
+    [NSCursor unhide];
+    [g_mouse_camera_timer invalidate];
+    g_mouse_camera_timer = nil;
     g_mouse_lock = 0;
-    g_desktop.dx = g_desktop.dy = g_desktop.rx = g_desktop.ry = 0;
+    g_desktop.dx = g_desktop.dy = g_desktop.rx = g_desktop.ry = g_desktop.quiet = 0;
+    for (int code = DESKTOP_MOUSE_LEFT; code <= DESKTOP_MOUSE_MIDDLE; code++) g_desktop.down[code] = 0;
+    push();
+    LOG("front end: mouse capture released");
 }
-static void mouse_confinement_apply(void) {
-    if (!g_win) return;
-    int camera = g_desktop.enabled && g_desktop.look;
-    int on = g_capture_enabled && g_capture_requested && g_input_on && g_win.isKeyWindow && NSApp.isActive
-        && !g_win.miniaturized && !NSApp.modalWindow && !cp_blocks_input(g_cp.phase) && !hq_blocks_input(g_hq.phase);
-    if (!on) { if (g_mouse_lock) { mouse_capture_end(); push(); LOG("front end: mouse capture released"); } return; }
-    if (!g_mouse_lock) {
-        CGError error = CGAssociateMouseAndMouseCursorPosition(false);
-        if (error != kCGErrorSuccess) { LOG("[RED] front end: mouse capture failed (%d)", error); return; }
-        g_mouse_lock = 1;
-        g_capture_pointer = mouse_inside(NSEvent.mouseLocation);
-        LOG("front end: mouse captured (%s); Escape or F8 releases it", camera ? "relative camera" : "confined touch pointer");
-    }
-    if (camera) {
-        NSRect r = mouse_content_rect();
-        g_capture_pointer = NSMakePoint(NSMidX(r), NSMidY(r));
-        if (!g_mouse_hidden) { [NSCursor hide]; g_mouse_hidden = 1; }
-        if (!g_mouse_camera_timer) {
-            g_mouse_camera_time = NSProcessInfo.processInfo.systemUptime;
-            g_mouse_camera_timer = [NSTimer timerWithTimeInterval:1.0 / 120 repeats:YES block:^(NSTimer *timer) {
-                (void)timer;
-                double time = NSProcessInfo.processInfo.systemUptime, dt = time - g_mouse_camera_time;
-                g_mouse_camera_time = time;
-                desktop_camera_tick(&g_desktop, dt);
-                push();
-            }];
-            [NSRunLoop.mainRunLoop addTimer:g_mouse_camera_timer forMode:NSRunLoopCommonModes];
-        }
-    } else g_capture_pointer = mouse_inside(g_capture_pointer);
-    mouse_warp(g_capture_pointer);
+static void mouse_capture_begin(void) {
+    if (g_mouse_lock || !mouse_camera_capture_enabled() || !mouse_input_active()) return;
+    CGError error = CGAssociateMouseAndMouseCursorPosition(false);
+    if (error != kCGErrorSuccess) { LOG("[RED] front end: mouse capture failed (%d)", error); return; }
+    [NSCursor hide];
+    g_mouse_lock = 1;
+    g_mouse_camera_time = NSProcessInfo.processInfo.systemUptime;
+    g_mouse_camera_timer = [NSTimer timerWithTimeInterval:1.0 / 120 repeats:YES block:^(NSTimer *timer) {
+        (void)timer;
+        double time = NSProcessInfo.processInfo.systemUptime, dt = time - g_mouse_camera_time;
+        g_mouse_camera_time = time;
+        desktop_camera_tick(&g_desktop, dt);
+        push();
+    }];
+    [NSRunLoop.mainRunLoop addTimer:g_mouse_camera_timer forMode:NSRunLoopCommonModes];
+    LOG("front end: mouse captured by click (relative camera); Escape or F8 releases it");
 }
 static void mouse_capture_motion(NSEvent *event) {
-    if (!g_mouse_lock || !g_input_on || (event.window && event.window != g_win)) return;
+    if (!g_mouse_lock || !mouse_input_active() || (event.window && event.window != g_win)) return;
     if (!isfinite(event.deltaX) || !isfinite(event.deltaY)) return;
-    if (g_desktop.enabled && g_desktop.look) {
-        g_desktop.dx += event.deltaX; g_desktop.dy += event.deltaY;
-    } else {
-        g_capture_pointer = mouse_inside(NSMakePoint(g_capture_pointer.x + event.deltaX, g_capture_pointer.y - event.deltaY));
-        mouse_warp(g_capture_pointer);
-    }
+    g_desktop.dx += event.deltaX;
+    g_desktop.dy += event.deltaY;
 }
 static int desktop_mouse_button(int code, int down) {
-    if (!g_input_on || !g_desktop.enabled) return 0;
-    if (down && g_capture_enabled && !g_capture_requested) {
-        g_capture_requested = 1; mouse_confinement_apply();
-        if (g_mouse_lock && g_desktop.look) return 1;   // the click that recaptures does not attack
-    }
+    if (!mouse_input_active() || !g_desktop.enabled) return 0;
+    if (mouse_camera_capture_enabled() && !g_mouse_lock) return 1;
     if (!desktop_mouse_bound(&g_desktop, code)) return 0;
     g_desktop.down[code] = down;
     push();
@@ -235,8 +207,7 @@ static NSString *desktop_text(NSString *text) {
     return [NSBundle.mainBundle localizedStringForKey:text value:text table:@"Launcher"];
 }
 static void desktop_show_help(void) {
-    int capture = g_capture_requested;
-    g_capture_requested = 0; mouse_confinement_apply(); desktop_release(&g_desktop); push();
+    mouse_capture_end(); desktop_release(&g_desktop); push();
     NSMutableArray *rows = [NSMutableArray array];
     NSMutableDictionary *labels = [NSMutableDictionary dictionary];
     NSString *text = g_desktop_path ? [NSString stringWithContentsOfFile:g_desktop_path encoding:NSUTF8StringEncoding error:nil] : nil;
@@ -258,17 +229,17 @@ static void desktop_show_help(void) {
         }
     }
     [rows addObject:@""];
-    [rows addObject:desktop_text(@"Escape or F8 releases the mouse. Click the game to capture it again. F1 shows the controls while playing.")];
+    if (mouse_camera_capture_enabled())
+        [rows addObject:desktop_text(@"Click the game to capture the camera. Escape, F8 or switching windows releases it.")];
     NSAlert *alert = [NSAlert new]; alert.messageText = desktop_text(@"Keyboard and mouse controls");
     alert.informativeText = [rows componentsJoinedByString:@"\n"];
     [alert addButtonWithTitle:desktop_text(@"Back to game")];
     [alert runModal];
-    g_capture_requested = capture; mouse_confinement_apply();
 }
 // The pointer hides on game input while it is over the picture of the active game window (issue #675): AppKit shows it again when the mouse moves, input_release when
 // the window loses focus. The title bar, other windows and other apps keep theirs; the mouse is the touch screen (DmGameView), and moving it shows the pointer
 void front_game_input(void) {
-    if (!g_win.isKeyWindow || !NSApp.isActive) return;
+    if (!g_win.isKeyWindow || !NSApp.isActive || mouse_camera_capture_enabled()) return;
     NSView *v = g_win.contentView;
     if (NSPointInRect([v convertPoint:g_win.mouseLocationOutsideOfEventStream fromView:nil], v.bounds)) [NSCursor setHiddenUntilMouseMoves:YES];
 }
@@ -297,8 +268,8 @@ static void on_key(NSEvent *e, int down) {
     }
     unsigned short c = e.keyCode;
     if (c == 122) { if (down) desktop_show_help(); return; }
-    if (c == 100) { if (down) { g_capture_requested = !g_capture_requested; mouse_confinement_apply(); } return; }
-    if (down && c == 53) { g_capture_requested = 0; mouse_confinement_apply(); }
+    if (c == 100) { if (down) mouse_capture_end(); return; }
+    if (down && c == 53 && g_mouse_lock) { mouse_capture_end(); return; }
     if (g_desktop.enabled) {
         if (c < 128) g_desktop.down[c] = down;
         if (down) front_game_input();
@@ -337,7 +308,6 @@ static void input_resume(void) {
     display_awake(1);
     g_input_on = 1;
     front_controllers_window(1);
-    mouse_confinement_apply();
 }
 
 // Quit with the Home button (home_quit.h, LNPANDY/NX2Apple#336): held for 2 s it opens the prompt (home_quit_mac.h) over the game's view, A quits through the same path as ⌘Q
@@ -412,9 +382,7 @@ static void hq_show_menu(GCController *holder) {
     g_hq_menu = v; g_hq_menu_sel = g_hq.sel;
 }
 static void hq_changed(hq_phase was, hq_phase now, GCController *holder) {
-    mouse_confinement_apply();
-    if (hq_blocks_input(now)) { desktop_release(&g_desktop); push(); }
-    mouse_confinement_apply();
+    if (hq_blocks_input(now)) { mouse_capture_end(); desktop_release(&g_desktop); push(); }
     if (was == HQ_HOLDING) hq_hide_hold();
     NSView *cv = g_win.contentView;
     switch (now) {
@@ -641,7 +609,6 @@ int front_cp_poll(void) {
         g_cp_ok = g_cp.ok; dispatch_semaphore_signal(g_cp_done);
         ph = cp_step(&g_cp, joined, 0, a, b, 0, 0);   // nothing held: the game has its input at once
     }
-    if (was != ph) mouse_confinement_apply();
     if (ph == CP_IDLE) { front_controllers_applet(0); return 0; }   // each controller read as it is now
     return 1;
 }
@@ -657,7 +624,7 @@ int front_ctrl_support(int min, int max) {
         g_cp_done = done; cp_open(&g_cp, min, max, dm_players_reported(), a, b);
         LOG("front end: controller prompt open: %d to %d players wanted, %d in, %d controllers waiting to join", min, max, g_cp.joined, front_controllers_waiting());
         cp_show(); front_cp_poll();
-        mouse_confinement_apply();
+        if (cp_blocks_input(g_cp.phase)) mouse_capture_end();
     });
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
     return g_cp_ok;
@@ -670,12 +637,19 @@ void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = 
 @interface DmGameView : NSView @end
 @implementation DmGameView
 - (void)showDesktopHelp:(id)sender { (void)sender; desktop_show_help(); }
-- (void)toggleMouseCapture:(id)sender { (void)sender; g_capture_requested = !g_capture_requested; mouse_confinement_apply(); }
-- (void)mouseDown:(NSEvent *)e { if (!desktop_mouse_button(DESKTOP_MOUSE_LEFT, 1)) [self mouseDragged:e]; }
+- (void)releaseMouseCapture:(id)sender { (void)sender; mouse_capture_end(); }
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { (void)e; return mouse_camera_capture_enabled(); }
+- (void)mouseDown:(NSEvent *)e {
+    if (mouse_camera_capture_enabled() && !g_mouse_lock) {
+        mouse_capture_begin();   // the click that takes capture does not throw or attack
+        return;
+    }
+    if (!desktop_mouse_button(DESKTOP_MOUSE_LEFT, 1)) [self mouseDragged:e];
+}
 - (void)mouseDragged:(NSEvent *)e {
-    if (!g_input_on) return;
+    if (!mouse_input_active() || mouse_camera_capture_enabled()) return;
     if (g_desktop.enabled && (!g_desktop.touch || desktop_mouse_bound(&g_desktop, DESKTOP_MOUSE_LEFT))) return;
-    NSPoint p = g_mouse_lock ? [self convertPoint:[g_win convertPointFromScreen:g_capture_pointer] fromView:nil] : [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
     double w = b.width, h = b.height;
     if (w <= 0 || h <= 0) return;
     double a = g_picture_aspect; if (w / h > a) w = h * a; else h = w / a;   // the centered picture the present fits into the view (16:9, or a taller one under DM_SCREEN_ASPECT)
@@ -696,7 +670,7 @@ void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = 
     NSSize px = [self convertSizeToBacking:self.bounds.size]; if (px.width < 1 || px.height < 1 || CGSizeEqualToSize(l.drawableSize, px)) return;
     l.drawableSize = px; LOG("front end: drawable %.0fx%.0f", px.width, px.height);
 }
-- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; mouse_confinement_apply(); }
+- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
 @end
 
@@ -1625,7 +1599,7 @@ void front_run(void (*guest)(void)) {
         [[bar addItemWithTitle:@"" action:nil keyEquivalent:@""] setSubmenu:app];
         [app addItemWithTitle:[@"Quit " stringByAppendingString:@(dm_profile()->name)] action:@selector(terminate:) keyEquivalent:@"q"];
         [app addItemWithTitle:desktop_text(@"Keyboard and mouse controls") action:@selector(showDesktopHelp:) keyEquivalent:@"?"].target = v;
-        [app addItemWithTitle:desktop_text(@"Capture / release mouse") action:@selector(toggleMouseCapture:) keyEquivalent:@""].target = v;
+        [app addItemWithTitle:desktop_text(@"Release mouse") action:@selector(releaseMouseCapture:) keyEquivalent:@""].target = v;
         // Cheats (hle_cheats.c): the rows rebuild on every open through the delegate, the same rows the file reload changes
         g_cheats_menu = [DmCheatsMenuDelegate new];
         NSMenu *cm = [[NSMenu alloc] initWithTitle:@"Cheats"];
@@ -1722,12 +1696,10 @@ void front_run(void (*guest)(void)) {
         [nc addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; screen_refresh(win.screen); }];
         // Entering and leaving fullscreen: the layer is layer-backed, so its frame (and with it the drawable) follows the
         // content view by itself; only the scale factor has to be carried over to the screen the window ended up on. The screen's rate is matched in fullscreen only (screen_match_apply)
-        [nc addObserverForName:NSWindowDidEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; screen_refresh(win.screen); g_fullscreen = 1; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); mouse_confinement_apply(); }];
-        [nc addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; mouse_confinement_apply(); }];
-        [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; mouse_confinement_apply(); }];
-        [nc addObserverForName:NSWindowDidChangeScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; mouse_confinement_apply(); }];
+        [nc addObserverForName:NSWindowDidEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; screen_refresh(win.screen); g_fullscreen = 1; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
+        [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; mouse_capture_end(); }];
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged handler:^NSEvent *(NSEvent *e) { mouse_capture_motion(e); return e; }];
-        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_fullscreen = 0; screen_refresh(win.screen); g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); mouse_confinement_apply(); }];
+        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_fullscreen = 0; screen_refresh(win.screen); g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
         // DM_FOCUS_KEEP=1 (scripts/regress.py): the game stays in focus while its window is up, whichever app is active. Tears of the Kingdom stops presenting out of focus, so
         // another app taking the key window during an unattended run read as a hang (no frame after the last focus change)
         static int keep = -1; if (keep < 0) keep = !getenv("DM_FOCUS_KEEP") || atoi(getenv("DM_FOCUS_KEEP"));
@@ -1736,7 +1708,6 @@ void front_run(void (*guest)(void)) {
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_release(); dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
         display_awake(win.isKeyWindow);   // the window may have become key (makeKeyAndOrderFront above) before these observers were installed
-        mouse_confinement_apply();
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
         static guest_arg ga; ga.fn = guest;
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
@@ -1814,7 +1785,6 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
             info = [info stringByAppendingFormat:@"\nAt least %d characters are needed here.", min_chars];
         }
         front_controllers_modal(0);
-        mouse_confinement_apply();
     });
     if (!r) return 0;
     (void)max_chars;                              // Truncation is done uniformly in hle_swkbd.c in UTF-16 units

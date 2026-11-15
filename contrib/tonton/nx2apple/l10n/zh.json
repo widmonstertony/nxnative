@@ -1472,7 +1472,7 @@
   "launch.set.DM_LANG.note": "这份游戏文件没有提供语言列表，部分选项可能不受支持，游戏可能改用其他语言。",
   "launch.set.DM_METAL_HUD": "性能 HUD",
   "launch.set.DM_MOUSE_CAPTURE": "将鼠标限制在游戏中",
-  "launch.set.DM_MOUSE_CAPTURE.note": "游戏中捕获鼠标，防止移到另一块屏幕。",
+  "launch.set.DM_MOUSE_CAPTURE.note": "控制游戏中的鼠标捕获。光标被捕获时，按 Esc 或 F8 释放。",
   "launch.set.DM_MOUSE_INVERT_Y": "反转视角纵轴",
   "launch.set.DM_MOUSE_LOOK": "鼠标／触控板控制视角",
   "launch.set.DM_MOUSE_LOOK.note": "通过右摇杆控制视角，保留原作的视角范围限制。",
