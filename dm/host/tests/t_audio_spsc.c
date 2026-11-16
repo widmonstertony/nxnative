@@ -1,5 +1,13 @@
 // hle_audio.c lock-free queue stress test: three threads producing / playing / reclaiming 100 thousand blocks concurrently, the byte stream and reclaim order checked one by one by sequence number, no event lost.
+#if defined(DM_TEST_AUDIO_CLASSIC)
+#include "../hle_audio_legacy.inc"
+#include <assert.h>
+#include <sys/mman.h>
+typedef gbuf test_buffer;
+#else
 #include "../hle_audio.c"
+typedef aout_buf test_buffer;
+#endif
 __thread _Atomic int dm_host_work;   // defined by the graphics host in a full build
 #include <sched.h>
 #include <time.h>
@@ -14,10 +22,19 @@ void *objmap_del(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) 
 
 static _Atomic int g_sig, g_after_last;
 static _Atomic int g_last_pull;
+#if defined(DM_TEST_AUDIO_CLASSIC)
+static dispatch_semaphore_t event_entered, event_finish;
+#endif
 void hle_signal_system_event(void *g) {
     (void)g;
     atomic_fetch_add_explicit(&g_sig, 1, memory_order_seq_cst);
     if (atomic_load_explicit(&g_last_pull, memory_order_seq_cst)) atomic_store(&g_after_last, 1);
+#if defined(DM_TEST_AUDIO_CLASSIC)
+    if (event_entered) {
+        dispatch_semaphore_signal(event_entered);
+        dispatch_semaphore_wait(event_finish, DISPATCH_TIME_FOREVER);
+    }
+#endif
 }
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }
 module_t *module_of(const void *p) { (void)p; return NULL; }   // call sites in the log: no guest modules in the unit test
@@ -27,7 +44,7 @@ void dm_host_helper_qos(qos_class_t q) { (void)q; }   // hle_thread.c: the helpe
 typedef struct {
     void *out;
     aout *a;
-    aout_buf *bufs;
+    test_buffer *bufs;
     uint8_t (*data)[MAX_SIZE];
     uint8_t *scratch;
     uint32_t *sizes;
@@ -88,7 +105,7 @@ static void *consumer(void *p) {
 static void *release_reader(void *p) {
     test_ctx *t = p;
     for (int i = 0; i < NBUF; ) {
-        aout_buf *b = h_au_Released(t->out);
+        test_buffer *b = h_au_Released(t->out);
         if (!b) { sched_yield(); continue; }
         if (b != &t->bufs[i]) atomic_store(&t->failed, 1);
         i++;
@@ -98,7 +115,7 @@ static void *release_reader(void *p) {
 }
 
 static int stop_pending(void) {
-    char out[64], ev[64]; uint8_t prm[16], bytes[5][8] = {{0}}, played[13]; aout_buf buffers[5] = {0};
+    char out[64], ev[64]; uint8_t prm[16], bytes[5][8] = {{0}}, played[13]; test_buffer buffers[5] = {0};
     h_au_InitParam(prm); if (h_au_Open(out, ev, NULL, prm)) return 1;
     aout *a = ao(out); atomic_store(&a->state, STATE_STARTED);   // deterministic callback, no backend thread
     atomic_store(&a->q_head, UINT32_MAX-2); atomic_store(&a->q_tail, UINT32_MAX-2);
@@ -117,6 +134,45 @@ static int stop_pending(void) {
     printf("Stop releases partial/pending buffers in order, signals and preserves pre-start buffers: %s\n",failed?"FAIL":"PASS");
     atomic_store(&g_sig,0); return failed;
 }
+#if defined(DM_TEST_AUDIO_CLASSIC)
+static void release_open_outputs(void) {
+    assert(!setenv("DM_AUDIO", "0", 1));
+    size_t size = (size_t)getpagesize();
+    void *pcm = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    assert(pcm != MAP_FAILED);
+    char out[64], ev[64]; uint8_t prm[16];
+    h_au_InitParam(prm);
+    assert(!h_au_Open(out, ev, NULL, prm));
+    void *host = dm_pcmout_open(2);
+    test_buffer guest_audio = {.ptr = pcm, .cap = size, .size = 960};
+    test_buffer host_audio = {.ptr = pcm, .cap = size, .size = size};
+    assert(h_au_Append(out, &guest_audio) && dm_pcmout_append(host, &host_audio));
+    event_entered = dispatch_semaphore_create(0); event_finish = dispatch_semaphore_create(0);
+    assert(!h_au_Start(out));
+    dm_pcmout_start(host);
+    assert(!dispatch_semaphore_wait(event_entered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)));
+    dispatch_semaphore_t began = dispatch_semaphore_create(0), done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        dispatch_semaphore_signal(began);
+        assert(dm_audio_classic_release_outputs());
+        dispatch_semaphore_signal(done);
+    });
+    assert(!dispatch_semaphore_wait(began, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)));
+    // A notification that already entered the guest service must finish
+    // before the audio fence lets its caller release memory and handles.
+    assert(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC)));
+    dispatch_semaphore_signal(event_finish);
+    assert(!dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)));
+    assert(!objmap_get(out));
+    for (int i = 0; i < 8; i++) assert(!om[i].k);
+    assert(!munmap(pcm, size));
+    dispatch_release(event_entered); dispatch_release(event_finish);
+    event_entered = event_finish = NULL;
+    dispatch_release(began); dispatch_release(done);
+    printf("classic shelf: stopped both sinks, waited for guest notification, and released their keys\n");
+}
+#endif
+
 int main(void) {
     if (stop_pending()) return 1;
     char out[64], ev[64]; uint8_t prm[16];
@@ -143,5 +199,8 @@ int main(void) {
     int sig = atomic_load(&g_sig), after = atomic_load(&g_after_last), released = atomic_load(&t.released), failed = atomic_load(&t.failed);
     printf("SPSC: appended/released %d/%d, events %d, signaled after last release=%d, failed=%d\n", NBUF, released, sig, after, failed);
     free(t.scratch); free(t.sizes); free(t.data); free(t.bufs);
+#if defined(DM_TEST_AUDIO_CLASSIC)
+    release_open_outputs();
+#endif
     return released != NBUF || failed || sig < 1 || !after;
 }

@@ -295,6 +295,28 @@ HLE_FORCE("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", "close 
     }
 }
 
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// All guest pthreads and their host AudioOut consumers are gone. The SDK's
+// thread metadata was allocated by the host; its stack and events belong to
+// the guest address space and kernel handle table, not to Apple free().
+int dm_audren_classic_release(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    pthread_mutex_lock(&g_ar_mu);
+    if (!g_ar_draining) { pthread_mutex_unlock(&g_ar_mu); return 0; }
+    for (int i = 0; i < AR_MAX; i++) {
+        ar_t *a = &g_ar[i];
+        if (!a->handle[0]) continue;
+        pthread_cond_destroy(&a->cq_cv); pthread_mutex_destroy(&a->cq_mu);
+        free(objmap_del(a->handle[0]));
+        free(a->render_tt);
+        memset(a, 0, sizeof *a);
+    }
+    pthread_mutex_unlock(&g_ar_mu);
+    return 1;
+}
+#endif
+
 // DeviceSink input mix buffers → int16 stereo. The command ID is 0x13 in SDK 16; SDK 20 inserted a command before it, making it 0x14 (written at sdk+0x233f44); SDK 8 (Link's Awakening)
 //   has four fewer commands before it, making it 0x10. The layout is the same in all three: 0x148 bytes, +0x20 device name ("MainAudioOut"), +0x128 upsample buffer, +0x130 input count,
 //   +0x134 input indices. render_once sets the ID by layout; when the first full command list has no command with that ID, its one 0x148-byte command with 1 to 6 inputs is the sink

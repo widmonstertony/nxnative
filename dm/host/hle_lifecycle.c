@@ -55,6 +55,10 @@ int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns);
 int dm_cheats_stop_for_shell(void);
 void dm_gamepad_classic_fence(void);
 void dm_haptics_apple_classic_fence(void);
+int dm_codec_video_release_drained(void);
+int dm_movie_release_drained(void);
+int dm_audio_classic_release_outputs(void);
+int dm_audren_classic_release(void);
 
 // The shell must already have closed front-end admissions and retired its
 // guest. A successful worker fence is necessary but does not release renderer,
@@ -71,6 +75,17 @@ int dm_host_classic_fence_for_shell(int budget_ms) {
     if (!dm_cheats_stop_for_shell()) return 0;
     if (!save_sync_stop_for_shell(ms_left(t0, budget_ms))) {
         LOG("[RED] shelf: a save sync worker still owns this session");
+        return 0;
+    }
+    // Decoders may still own native images after the guest stops; the GPU
+    // fence comes first. Movie teardown may close a PCM producer, so leave
+    // audio output ownership intact until both media services have finished.
+    if (!dm_codec_video_release_drained() || !dm_movie_release_drained()) {
+        LOG("[RED] shelf: a decoder still owns this session");
+        return 0;
+    }
+    if (!dm_audio_classic_release_outputs() || !dm_audren_classic_release()) {
+        LOG("[RED] shelf: audio still owns this session");
         return 0;
     }
     return 1;

@@ -203,6 +203,11 @@ $(B)/t_output_stream: t_output_stream.c ../hle_audio.c ../hle_bigstack.c ../hle.
 	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_output_stream.c ../hle_bigstack.c -framework AudioToolbox
 $(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c ../hle_bigstack.c -framework AudioToolbox
+$(B)/t_audio_spsc_classic: t_audio_spsc.c ../hle_audio_legacy.inc ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -fblocks -DDM_TEST_AUDIO_CLASSIC=1 -DDM_CLASSIC_SHELF_LIFECYCLE=1 -I.. $(GINC) -o $@ t_audio_spsc.c ../hle_bigstack.c -framework AudioToolbox
+.PHONY: audio-classic
+audio-classic: $(B)/t_audio_spsc_classic
+	$(B)/t_audio_spsc_classic
 $(B)/t_audio_stats: t_audio_stats.c ../hle_audio.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_audio_stats.c ../hle_bigstack.c -framework AudioToolbox
 run: $(B)/t_audio_stats
