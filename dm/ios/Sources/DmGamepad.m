@@ -134,7 +134,9 @@ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
 static NSString *padLayoutPreferenceKey(void) {
     const char *title = getenv("DM_LIBRARY_GAME_ID");
-    // LINK starts with the directional buttons available, even if another title last used 2D.
+    // Both EXTELLA titles start with the directional buttons available,
+    // regardless of the shared 2D setting used by other games.
+    if (title && !strcasecmp(title, "010053E002EA2000")) return @"DmPadLayout.010053E002EA2000";
     if (title && !strcasecmp(title, "010051400B17A000")) return @"DmPadLayout.010051400B17A000";
     return k_layout_key;
 }

@@ -4,6 +4,7 @@ program_id	010053E002EA2000
 name	Fate/EXTELLA
 ipa	FateExtella.ipa
 app_category	public.app-category.games
+pad_layout	full
 
 build	v0	1.0.0	main=76ec789b99a25ba58ae9a4a60fc867a6	subsdk0=669e4a7ee7f99b52048d897a4e36c7a4	subsdk1=ae40a23348fc9fc0126c3786a8d5f70e	sdk=3b353895d8e688841c45c34b45169228
 package	v0
