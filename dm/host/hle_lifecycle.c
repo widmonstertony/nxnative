@@ -62,17 +62,32 @@ int dm_audren_classic_release(void);
 int dm_guest_classic_retire(unsigned budget_ms);
 int dm_audren_service_release_thread_metadata(void);
 int dm_sf_classic_close_all(void);
+int dm_crash_classic_restore(void);
+int dm_thread_classic_restore_signals(void);
 void dm_audren_request_drain(void);
 void dm_audren_service_request_drain(void);
 void dm_movie_request_drain(void);
 void dm_vsync_stop_all(void);
+
+static int g_classic_embedded, g_classic_diagnostic;
+void dm_host_classic_set_shelf_owner(void) {
+    static const char *const no_return[] = {
+        "DM_CTL", "DM_KEYS", "DM_REC", "DM_HITCH_DUMP", "DM_FD_LOG",
+        "DM_PROBE_POLL", "DM_PROBE_WATCH", "DM_GUEST_SPAWN_TEST",
+    };
+    g_classic_embedded = 1;
+    for (unsigned i = 0; i < sizeof no_return / sizeof no_return[0]; i++)
+        if (getenv(no_return[i])) g_classic_diagnostic = 1;
+}
+int dm_host_classic_embedded(void) { return g_classic_embedded; }
+int dm_host_classic_can_return(void) { return g_classic_embedded && !g_classic_diagnostic; }
 
 // Audio and video may be the very services that let a guest reach its
 // parking boundary. First attempt reversible parking of the game threads;
 // stop the host-owned guest workers only after the retirement has committed.
 // 0 means the game recovered, -1 means committed but not yet safe to detach.
 int dm_host_classic_retire_guest(int budget_ms) {
-    if (budget_ms <= 0 || getenv("DM_GUEST_SPAWN_TEST")) return 0;
+    if (budget_ms <= 0 || !dm_host_classic_can_return()) return 0;
     uint64_t t0 = now_ns();
     if (!dm_guest_classic_retire((unsigned)budget_ms / 2)) return 0;
     dm_audren_request_drain();
@@ -116,6 +131,10 @@ int dm_host_classic_fence_for_shell(int budget_ms) {
     if (!dm_audio_classic_release_outputs() || !dm_audren_classic_release() ||
         !dm_audren_service_release_thread_metadata() || !dm_sf_classic_close_all()) {
         LOG("[RED] shelf: audio still owns this session");
+        return 0;
+    }
+    if (!dm_thread_classic_restore_signals() || !dm_crash_classic_restore()) {
+        LOG("[RED] shelf: process signal ownership could not be restored");
         return 0;
     }
     return 1;

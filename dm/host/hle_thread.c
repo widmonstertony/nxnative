@@ -170,6 +170,10 @@ static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
 enum { RETIRE_IDLE, RETIRE_GATHER, RETIRE_COMMIT };
 static _Atomic int g_retire_phase;
 static int g_retire_skip_owned; // protected by G; classic stops these from the owner after commit
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static struct sigaction g_pause_previous;
+static int g_pause_owned;
+#endif
 static pthread_cond_t g_retire_cv = PTHREAD_COND_INITIALIZER;
 static void retire_checkpoint_locked(thr_t *t);
 #if TARGET_OS_IOS
@@ -695,8 +699,26 @@ void dm_guest_main_entered(void) {
 static void pause_install(void) {
     struct sigaction sa = {.sa_sigaction = on_pause_sig, .sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART};
     sigemptyset(&sa.sa_mask);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    int dm_host_classic_embedded(void);
+    if (dm_host_classic_embedded()) {
+        g_pause_owned = !sigaction(SIGUSR2, &sa, &g_pause_previous);
+        return;
+    }
+#endif
     sigaction(SIGUSR2, &sa, NULL);
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int dm_thread_classic_restore_signals(void) {
+    if (!g_pause_owned) return 1;
+    struct sigaction live;
+    if (sigaction(SIGUSR2, NULL, &live)) return 0;
+    if ((live.sa_flags & SA_SIGINFO) && live.sa_sigaction == on_pause_sig &&
+        sigaction(SIGUSR2, &g_pause_previous, NULL)) return 0;
+    g_pause_owned = 0;
+    return 1;
+}
+#endif
 // Horizon svc::ThreadContext (arm64, 0x320 bytes)
 typedef struct { uint64_t r[29], fp, lr, sp, pc; uint32_t pstate, pad; __uint128_t v[32]; uint32_t fpcr, fpsr; uint64_t tpidr; } hz_ctx_t;
 _Static_assert(sizeof(hz_ctx_t) == 0x320, "ThreadContext");

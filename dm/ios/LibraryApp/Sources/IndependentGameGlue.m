@@ -73,6 +73,10 @@ DM_EXPORT const char *dm_glue_start_game(const char *const *argv, int argc, cons
         return "Cannot initialize the game's signed module image.";
     }
     front_hud_env();
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    void dm_host_classic_set_shelf_owner(void);
+    dm_host_classic_set_shelf_owner();
+#endif
     dm_host_preload_start(2, game_argv);
     prepared = YES;
     return NULL;

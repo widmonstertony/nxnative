@@ -172,7 +172,11 @@ static void host_preload(int argc, char **argv) {
         if (pthread_create(&th, NULL, keyrace_thread, NULL)) die("DM_TEST_KEYRACE cannot start its thread");
         pthread_detach(th);
     }
-    { void dm_term_install(void); dm_term_install(); }   // SIGTERM graceful exit (hle_lifecycle.c)
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    int dm_host_classic_embedded(void);
+    if (!dm_host_classic_embedded())
+#endif
+    { void dm_term_install(void); dm_term_install(); }   // Standalone SIGTERM graceful exit; the shelf app owns its process.
     { void crash_set_dump_hook(void (*)(void)); void svc_thread_dump(void); crash_set_dump_hook(svc_thread_dump); }   // Dump guest thread state on a crash
     const struct dm_profile *prof = dm_profile();   // the game this process runs: the DM_PROFILE file, else the compiled profile
     const char *names[argc + DM_PROF_MAX_MOD]; int n = 0;
@@ -216,6 +220,7 @@ void dm_host_preload_start(int argc, char **argv) {
     for (int i = 0; i < argc; i++) g_pre.argv[i] = strdup(argv[i]);
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8 << 20);
     if (pthread_create(&g_pre.th, &a, preload_thread, NULL)) die("dm_host_preload_start: cannot start the thread");
+    pthread_attr_destroy(&a);
 }
 int main(int argc, char **argv) {
 #if TARGET_OS_OSX
