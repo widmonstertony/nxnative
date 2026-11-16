@@ -3,6 +3,7 @@
 #include "../hle.h"
 #undef HLE_FORCE
 #define HLE_FORCE(mangled, why, ret, cname, ...) static ret cname(__VA_ARGS__)
+#define DM_TEST_MOVIE_EXIT_WATCH 1
 #include "../hle_movie.c"
 #include <assert.h>
 
@@ -38,6 +39,36 @@ uint64_t now_ns(void) { return test_now; }
 __thread _Atomic int dm_host_work;   // hle_thread.c
 void dm_host_lock(pthread_mutex_t *m) { pthread_mutex_lock(m); }
 void mavc_drop(mavc *a) { (void)a; }   // hle_movie_avc.c: no H.264 here
+static pthread_t deferred;
+static unsigned guest_workers;
+unsigned dm_guest_pthreads_alive(void) { return guest_workers; }
+static void (*deferred_fn)(void *);
+static void *deferred_run(void *arg) { deferred_fn(arg); return NULL; }
+void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t size) {
+    (void)prio; (void)size;
+    assert(!deferred_fn);
+    deferred_fn = fn;
+    assert(!pthread_create(&deferred, NULL, deferred_run, arg));
+    guest_workers = 1;
+    return malloc(1); // represents host bookkeeping; the SDK owns the stack in production
+}
+void mavc_free(mavc *a) { (void)a; }
+void mavc_input(mavc *a, const uint8_t *p, size_t n) { (void)a; (void)p; (void)n; abort(); }
+static void drain_deferred(void) {
+    // Schedule past the deadline and queue during teardown. Neither callback
+    // may access the decoder, and the sleeping worker must actually exit.
+    md_defer_at(NULL, 0, test_now + 60ull * 1000 * 1000 * 1000);
+    assert(!dm_movie_release_drained());
+    dm_movie_request_drain();
+    assert(!dm_movie_release_drained() && g_df_thread != NULL);
+    md_defer_at(NULL, 0, test_now);
+    assert(!pthread_join(deferred, NULL));
+    guest_workers = 0;
+    assert(g_ndfq == 0 && g_df_thread != NULL);
+    assert(dm_movie_release_drained());
+    assert(!g_df_thread);
+    puts("movie session drain: wakes the callback worker and rejects late events");
+}
 static void playing(void) {
     static mdec_t video = { .type = MD_TYPE_VP9, .nout = MD_NOUT_VIDEO, .started = 1 }, audio = { .type = MD_TYPE_VORBIS, .nout = MD_NOUT, .started = 1 }, other = { .type = MD_TYPE_VP9, .nout = MD_NOUT_VIDEO, .started = 1 };
     pthread_mutex_init(&video.mu, NULL); pthread_mutex_init(&audio.mu, NULL); pthread_mutex_init(&other.mu, NULL);
@@ -225,7 +256,9 @@ static void movie_buffer_exports(void) {
     }
     memset(&G, 0, sizeof G);
 }
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--drain")) { drain_deferred(); return 0; }
+    drain_deferred();
     movie_buffer_exports();
     playing();
     vorbis_flush();

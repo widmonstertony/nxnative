@@ -283,6 +283,27 @@ static void native_buffers(void) {
     assert(md_out_tex(&d, 0, &b) == 0x100b && native_copies == 2);
     pthread_mutex_destroy(&d.mu);
 }
+static void drain_live_decoders(void) {
+    // Two registered decoders with real codec threads; the video decoder
+    // also owns a packet pump. The game never called their destructors.
+    mdec_t *audio = calloc(1, sizeof *audio), *video = calloc(1, sizeof *video);
+    assert(audio && video);
+    audio->type = MD_TYPE_VORBIS; video->type = MD_TYPE_VP9;
+    for (mdec_t *d = audio; d; d = d == audio ? video : NULL) {
+        pthread_mutex_init(&d->mu, NULL); pthread_mutex_init(&d->dmu, NULL);
+        pthread_mutex_init(&d->pkm, NULL); pthread_cond_init(&d->pkc, NULL);
+        pthread_mutex_init(&d->wmu, NULL); pthread_cond_init(&d->wcv, NULL);
+        assert(!pthread_create(&d->wk, NULL, md_worker, d));
+    }
+    video->pk_on = 1;
+    assert(!pthread_create(&video->pk, NULL, md_pump_thread, video));
+    assert(!g_md_live);
+    g_md_live = audio; audio->next = video;
+    dm_movie_request_drain();
+    assert(dm_movie_release_drained());
+    assert(!g_md_live);
+    puts("movie session drain: joins the codec and packet pump threads of live decoders");
+}
 int main(void) {
     loop_order(1); loop_order(0);
     puts("AVC loops: all 36 pictures ordered through packet parsing and callback refcons, with 3- and 4-byte start codes");
@@ -324,4 +345,5 @@ int main(void) {
     puts("AVC end of stream: every queued picture leaves without the flag, then an output without a picture carries it, also when the client holds the slots");
     terminal_inputs();
     puts("movie inputs: already-held inputs after EOS are returned once without another output; rejected sends keep the stream open, Flush accepts a new stream");
+    drain_live_decoders();
 }
