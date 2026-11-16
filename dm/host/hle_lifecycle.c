@@ -53,6 +53,8 @@ void dm_term_install(void) {
 unsigned dm_guest_pthreads_alive(void);
 int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns);
 int dm_cheats_stop_for_shell(void);
+void dm_gamepad_classic_fence(void);
+void dm_haptics_apple_classic_fence(void);
 
 // The shell must already have closed front-end admissions and retired its
 // guest. A successful worker fence is necessary but does not release renderer,
@@ -60,6 +62,8 @@ int dm_cheats_stop_for_shell(void);
 int dm_host_classic_fence_for_shell(int budget_ms) {
     if (budget_ms <= 0 || dm_guest_pthreads_alive()) return 0;
     uint64_t t0 = now_ns();
+    dm_gamepad_classic_fence();
+    dm_haptics_apple_classic_fence();
     if (!dm_gfx_classic_stop_for_shell((uint64_t)ms_left(t0, budget_ms) * NSEC_PER_MSEC)) {
         LOG("[RED] shelf: the classic renderer did not quiesce");
         return 0;

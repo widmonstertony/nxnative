@@ -7,14 +7,15 @@
 #include <stdlib.h>
 #include "dm_input.h"
 
-static inline void dm_motion_attach(GCController *c, int player) {
+typedef void (^dm_motion_delivery)(dispatch_block_t);
+static inline void dm_motion_attach_with_delivery(GCController *c, int player, dm_motion_delivery deliver) {
     const char *e = getenv("DM_MOTION"); if (e && !atoi(e)) return;
     dm_motion_clear(player);   // another controller takes the player: its stream and learned gyro offset start again (hle_hid.c)
     GCMotion *mo = c.motion;
     if (!mo || !mo.hasRotationRate) return;
     if (mo.sensorsRequireManualActivation) mo.sensorsActive = YES;   // DualSense / DualShock 4: off until asked for
     __block int live = 0;
-    mo.valueChangedHandler = ^(GCMotion *m) {
+    void (^read)(GCMotion *) = ^(GCMotion *m) {
         float acc[3], rot[3];
         if (m.hasGravityAndUserAcceleration) {
             acc[0] = (float)(m.gravity.x + m.userAcceleration.x); acc[1] = (float)(m.gravity.y + m.userAcceleration.y); acc[2] = (float)(m.gravity.z + m.userAcceleration.z);
@@ -27,6 +28,13 @@ static inline void dm_motion_attach(GCController *c, int player) {
         }
         dm_motion_set(player, acc, rot);
     };
+    mo.valueChangedHandler = ^(GCMotion *m) {
+        if (deliver) deliver(^{ read(m); });
+        else read(m);
+    };
+}
+static inline void dm_motion_attach(GCController *c, int player) {
+    dm_motion_attach_with_delivery(c, player, nil);
 }
 // iOS turns a manual-activation controller's sensors off while the app is in the background (Control Center, the home screen) and leaves them off, so the gyro stayed dead until the
 // controller reconnected (found by MacNativeGames on the iPad). Called when the app becomes active again: only controllers attached above (their handler is set)

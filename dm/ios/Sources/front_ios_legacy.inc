@@ -27,6 +27,10 @@ int mtl_framegen_supported(void);
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_set_active(int active);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+void dm_gamepad_classic_close(void);
+void dm_haptics_apple_classic_close(void);
+#endif
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
 int dm_za_fullscreen_active(void);
@@ -743,6 +747,8 @@ int front_ios_classic_close_admission(void) {
     dm_audio_env_callback_set(NULL);
     dm_audio_retry_reset(&g_audio_retry);
     g_root.view.userInteractionEnabled = NO;
+    dm_gamepad_classic_close();
+    dm_haptics_apple_classic_close();
     return 1;
 }
 
