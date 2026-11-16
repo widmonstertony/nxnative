@@ -14,6 +14,8 @@ void dm_gfx_suspend(int on) { (void)on; }
 void dm_gfx_quit_begin(void) {}
 void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg) { (void)why; (void)then; (void)arg; }   // oe_start, which never returns: this test checks its plan (oe_plan)
 void dm_host_shutdown(const char *why) { (void)why; }
+int dm_teardown_is_parking(void) { return 0; }
+void dm_teardown_check_current_thread(void) {}
 // The notification event (hle_thread.c binds a kernel event): the unit test only tracks whether it is signalled
 static int ev_bound, ev_sig;
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; ev_bound = 1; }

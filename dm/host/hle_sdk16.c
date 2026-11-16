@@ -292,13 +292,15 @@ void dm_host_helper_qos(qos_class_t q);   // hle_thread.c
 typedef struct vsync_event { void *ev; uint64_t binding; struct vsync_event *next; } vsync_event_t;
 static pthread_mutex_t g_vs_mu = PTHREAD_MUTEX_INITIALIZER;
 static vsync_event_t *g_vs_events;
+static _Atomic int g_vs_stop;
+void dm_vsync_stop_all(void) { atomic_store(&g_vs_stop, 1); }
 static int vsync_tick(vsync_event_t *v) {   // 0: the event is gone and this thread has left the table
-    if (hle_signal_system_event_binding(v->binding)) return 1;
+    if (!atomic_load(&g_vs_stop) && hle_signal_system_event_binding(v->binding)) return 1;
     pthread_mutex_lock(&g_vs_mu);
     vsync_event_t **p = &g_vs_events; while (*p && *p != v) p = &(*p)->next;
     if (*p) *p = v->next;
     pthread_mutex_unlock(&g_vs_mu);
-    LOG("vi: vsync event %p destroyed by the game, its thread ends", v->ev);
+    if (!atomic_load(&g_vs_stop)) LOG("vi: vsync event %p destroyed by the game, its thread ends", v->ev);
     return 0;
 }
 __attribute__((weak)) int mtl_link_wait_vsync(uint64_t *seen, uint64_t timeout_ns) { (void)seen; (void)timeout_ns; return 0; }   // nvn_mtl.m
