@@ -74,7 +74,9 @@ def sources(roots):
                         st = 'vert' if nm.endswith('_vp.shad') else 'frag' if nm.endswith('_fp.shad') else None
                         yield text_of(a.read(nm)), st, f'/{os.path.relpath(p, r)}:{nm}'
                 elif fn.endswith(('.vert', '.frag', '.glsl')):
-                    with open(p, 'rb') as f: source = text_of(f.read())
+                    with open(p, 'rb') as f: data = f.read()
+                    if fn.startswith('._') and data[:8] == b'\x00\x05\x16\x07\x00\x02\x00\x00': continue
+                    source = text_of(data)
                     ext = fn.rsplit('.', 1)[1]
                     yield source, None if ext == 'glsl' else ext, '/' + os.path.relpath(p, r)
 

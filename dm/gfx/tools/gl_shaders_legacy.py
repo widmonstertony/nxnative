@@ -30,7 +30,7 @@ from romfs import os, open
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mvgl
 from dmsh_chain import SPIRV_CROSS, MAC_MIN_FLAG   # the in-repo spirv-cross build the NVN chain uses too (spirv_cross_bin)
-IOS_FLAGS = ['-miphoneos-version-min=16.1', '-fmetal-math-mode=relaxed']
+IOS_FLAGS = ['-mios-version-min=16.1', '-fmetal-math-mode=relaxed']
 
 VEC_TYPES = {'float', 'vec2', 'vec3', 'vec4', 'int', 'ivec2', 'ivec3', 'ivec4', 'uint', 'uvec2', 'uvec3', 'uvec4', 'bool', 'mat2', 'mat3', 'mat4'}
 
