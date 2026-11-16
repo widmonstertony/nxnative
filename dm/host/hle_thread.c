@@ -20,6 +20,7 @@
 #include <pthread/qos.h>
 #include <dlfcn.h>
 #include <stdatomic.h>
+#include <TargetConditionals.h>
 
 #define R_TIMEOUT     0xEA01u   // Kernel module 1, description 117
 #define R_CANCELLED   0xEC01u   // 118
@@ -97,6 +98,64 @@ typedef struct thr {
     pthread_cond_t pcv;
 } thr_t;
 static thr_t *g_all;
+#if TARGET_OS_IOS || defined(DM_TEST_GUEST_EXIT_WATCH)
+// A guest handle can be closed and freed before the detached pthread leaves
+// its SDK or pthread destructors. The shell's teardown barrier must track host
+// threads independently of g_all. Retaining the send right prevents Mach from
+// recycling its name while this registry still refers to it.
+typedef struct exit_watch {
+    struct exit_watch *next;
+    mach_port_t port;
+} exit_watch;
+static pthread_mutex_t g_exit_watch_mu = PTHREAD_MUTEX_INITIALIZER;
+static exit_watch *g_exit_watch;
+static unsigned g_exit_pending;
+
+static void reap_exit_watches(void) {   // caller holds g_exit_watch_mu
+    for (exit_watch **p = &g_exit_watch; *p;) {
+        exit_watch *w = *p;
+        mach_port_type_t type;
+        kern_return_t rc = mach_port_type(mach_task_self(), w->port, &type);
+        if (rc != KERN_SUCCESS || !(type & MACH_PORT_TYPE_DEAD_NAME)) {
+            p = &w->next;   // any unexpected kernel result is still considered live
+            continue;
+        }
+        *p = w->next;
+        mach_port_deallocate(mach_task_self(), w->port);
+        free(w);
+    }
+}
+static void exit_watch_pending(void) {
+    pthread_mutex_lock(&g_exit_watch_mu);
+    ++g_exit_pending;
+    pthread_mutex_unlock(&g_exit_watch_mu);
+}
+static void exit_watch_current(int was_pending) {
+    exit_watch *w = malloc(sizeof *w);
+    if (!w) die("guest thread exit watch: allocation failed");
+    w->port = mach_thread_self();
+    if (!MACH_PORT_VALID(w->port)) die("guest thread exit watch: cannot retain current thread port");
+    pthread_mutex_lock(&g_exit_watch_mu);
+    reap_exit_watches();
+    w->next = g_exit_watch;
+    g_exit_watch = w;
+    if (was_pending) --g_exit_pending;
+    pthread_mutex_unlock(&g_exit_watch_mu);
+}
+// This checks quiescence, it does not request it. Its caller must have stopped
+// all guest entry points before using a zero count as a teardown barrier.
+unsigned dm_guest_pthreads_alive(void) {
+    pthread_mutex_lock(&g_exit_watch_mu);
+    reap_exit_watches();
+    unsigned n = g_exit_pending;
+    for (exit_watch *w = g_exit_watch; w; w = w->next) ++n;
+    pthread_mutex_unlock(&g_exit_watch_mu);
+    return n;
+}
+#else
+static inline void exit_watch_pending(void) {}
+static inline void exit_watch_current(int was_pending) { (void)was_pending; }
+#endif
 extern __thread _Atomic int dm_host_work;   // declared in hle.h too; defined in hle_nvn.c
 static _Atomic uint64_t g_preempt_n, g_preempt_ns;   // same-core handoffs: count and total wait (svc_thread)
 static int g_core_preempt;   // also check already-runnable peers after every thread SVC (profile / DM_PREEMPT)
@@ -348,6 +407,7 @@ static const char *thr_name(thr_t *t, char *buf, size_t n);
 static void thread_exit(thr_t *t);
 static void *thread_main(void *p) {
     thr_t *t = p;
+    exit_watch_current(1);
     pthread_setspecific(g_keythr, t);
     // CreateThread may already have linked t into g_all: readers and SetThreadPriority hold G.
     pthread_mutex_lock(&G);
@@ -544,6 +604,7 @@ static void hitch_init(void) {
 }
 // Register the main thread and return its handle (passed to nnosInitialize as the main thread handle)
 uint32_t svc_thread_main_init(void) {
+    exit_watch_current(0);
     pthread_key_create(&g_keythr, NULL);
     qos_map_init();
     { const char *e = getenv("DM_PREEMPT"); g_core_preempt = e ? atoi(e) != 0 : dm_profile()->core_preempt; }
@@ -1058,6 +1119,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         pthread_mutex_lock(&G); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; pthread_mutex_unlock(&G);
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
         pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);   // Host resources are reclaimed on exit (the guest waits through the handle, no join)
+        exit_watch_pending();
         pthread_t pt; int rc = pthread_create(&pt, &a, thread_main, t); if (rc) die("pthread_create for guest thread %#x: %s", t->handle, strerror(rc));   // EAGAIN: no room for its 1 MB stack or a thread limit (the crash's address space line)
         pthread_attr_destroy(&a);
         // pthread_create writes its output without G; publish that value and the registry link together.
