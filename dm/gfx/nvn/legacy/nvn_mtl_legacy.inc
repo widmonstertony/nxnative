@@ -178,6 +178,7 @@ static uint32_t g_selected_slice;
 static NSMutableArray *g_l3_gpu_leaks;
 static int g_nvn_deswz_gpu;
 static id<MTLCommandQueue> g_q;
+static id<CAMetalDrawable> g_prefetched_drawable; // Used for compositing straight onto the drawable
 
 
 static _Atomic uint32_t g_present_qos;
@@ -10481,12 +10482,59 @@ static void classic_drop_registered_resources(void) {
     if (g_pso_record) { fclose(g_pso_record); g_pso_record = NULL; }
 }
 
+// These buffers are not registered through a guest NVN handle. Releasing
+// only the descriptor tables leaves arena, upload and frame history storage
+// attached to the old game even after the final draw has completed.
+static void classic_drop_working_resources(void) {
+    g_sub_samplers = nil; g_sub_sample_notes = nil;
+    g_cur_arena = nil; g_arenas = nil; g_sub_arenas = nil;
+    g_ubs_buf = nil;
+    g_up_texs = nil; g_up_keep = nil; g_up_pblock = nil; g_up_block = nil;
+    for (unsigned i = 0; i < sizeof g_up_slot_blk / sizeof g_up_slot_blk[0]; i++) g_up_slot_blk[i] = nil;
+    free(g_up_blits); g_up_blits = NULL; g_nup_blits = g_up_blitcap = 0;
+    free(g_up_decs); g_up_decs = NULL; g_nup_decs = g_up_deccap = 0;
+    free(g_up_asts); g_up_asts = NULL; g_nup_asts = g_up_astcap = 0;
+
+    vis_clear();
+    free(g_vs); g_vs = NULL; g_vscap = 0;
+    for (unsigned i = 0; i < sizeof g_vis_ring / sizeof g_vis_ring[0]; i++) g_vis_ring[i].buf = nil;
+    g_vis = nil; g_vis_ring_n = 0; g_vis_ring_i = -1;
+    // post ops in the completed submission were copied into its callback;
+    // g_post now contains old, non-owning copies of those entries.
+    free(g_post); g_post = NULL; g_npost = g_postcap = 0;
+    for (unsigned i = 0; i < PG_RING; i++) g_pg_buf[i] = nil;
+    free(g_pg_pass); g_pg_pass = NULL; g_pg_np = g_pg_cap = 0;
+
+    for (unsigned i = 0; i < ALLOC_MAX; i++) g_za_atomic_ring[i] = nil;
+    g_za_atomic_pending_buf = nil; g_za_atomic_pending_tex = nil;
+    g_za_diag_atomic = nil; g_za_diag_out = nil; g_za_diag_src = nil;
+    for (unsigned i = 0; i < sizeof g_fb_use / sizeof g_fb_use[0]; i++) { g_fb_use[i] = nil; g_fb_src[i] = nil; }
+    for (unsigned i = 0; i < sizeof g_ms_att / sizeof g_ms_att[0]; i++) g_ms_att[i] = nil;
+    for (unsigned i = 0; i < sizeof g_ts_att / sizeof g_ts_att[0]; i++) g_ts_att[i] = nil;
+    for (int i = 0; i < g_nfzs; i++) free(g_fzs[i].S_);
+    g_nfzs = 0;
+    g_rt.ldr = g_rt.pl468 = g_rt.pl469 = nil;
+    g_rt.ds = g_rt.hdr = g_rt.pds = g_rt.phdr = nil;
+    g_rx_stv = nil; g_rx_stv_src = nil;
+    for (unsigned i = 0; i < 3; i++) { g_present_uv[i] = nil; g_bloomq_const[i] = nil; g_rx_const[i] = nil; }
+    g_rx_pso1 = nil; g_rx_dss = nil;
+    g_bloomq_samp = nil; g_bloomq_pso = nil; g_bloomq_view = nil;
+    g_blit_pso = nil; g_blit_samp = nil; g_prefetched_drawable = nil;
+    g_quad_ib = nil; g_fan_ib = nil; g_pass_order_fence = nil;
+    g_safe_indirect_fence = nil; g_enc_pso = nil; g_enc_dss = nil;
+    g_lp = nil; g_td_list = nil; g_diag_c0_cache = nil; g_l3_gpu_leaks = nil;
+    memset(g_pq, 0, sizeof g_pq);
+}
+
 // The caller has stopped guest submits and detached the UIKit display link.
 // Fence the queue even if a submission had no host callback of its own.
 int mtl_classic_gpu_stop(uint64_t timeout_ns) {
     uint64_t deadline = now_ns() + MIN(timeout_ns, INT64_MAX);
     if (!mtl_classic_compile_stop(classic_gpu_time_left(deadline))) return 0;
     if (!classic_present_stop(deadline)) return 0;
+    // These must have closed on their owning thread. In particular, popping
+    // the replay's autorelease pool here would be invalid on this worker.
+    if (g_sub_pool || g_cb || g_enc || g_blit || g_up_cb || g_up_ce || atomic_load(&g_sub_active)) return 0;
     dispatch_group_t pending = classic_gpu_callbacks();
     __block MTLCommandBufferStatus fence_status = MTLCommandBufferStatusCompleted;
     if (g_q) {
@@ -10496,9 +10544,11 @@ int mtl_classic_gpu_stop(uint64_t timeout_ns) {
         [fence commit];
     }
     if (dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)classic_gpu_time_left(deadline)))) return 0;
-    if (fence_status != MTLCommandBufferStatusCompleted) return 0;
+    if (fence_status != MTLCommandBufferStatusCompleted || atomic_load(&g_up_pending)) return 0;
     if (!nvn_cache_stop_for_shell(classic_gpu_time_left(deadline))) return 0;
+    classic_drop_working_resources();
     classic_drop_registered_resources();
+    g_ev = nil; g_q = nil; g_dev = nil;
     return 1;
 }
 #endif
@@ -10678,7 +10728,6 @@ int mtl_link_wait_vsync(uint64_t *seen, uint64_t timeout_ns) {
     pthread_mutex_unlock(&g_link_mu); return 1;
 }
 
-static id<CAMetalDrawable> g_prefetched_drawable; // Used for compositing straight onto the drawable
 id<CAMetalDrawable> mtl_present_take_prefetched(void) { return g_prefetched_drawable; }
 
 #ifdef NVN_RT_RANGE_TEST
