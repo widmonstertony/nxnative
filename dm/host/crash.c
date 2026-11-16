@@ -290,7 +290,18 @@ void crash_thread_init(void) {}
 static pthread_key_t g_altstack_key;
 static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
 static void altstack_free(void *p) { stack_t off = {.ss_flags = SS_DISABLE}; sigaltstack(&off, 0); free(p); }
-static void altstack_key_init(void) { if (pthread_key_create(&g_altstack_key, altstack_free)) die("altstack key"); }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static int g_altstack_key_ready;
+void dm_crash_classic_drop_tls_key(void) {
+    if (g_altstack_key_ready) { pthread_key_delete(g_altstack_key); g_altstack_key_ready = 0; }
+}
+#endif
+static void altstack_key_init(void) {
+    if (pthread_key_create(&g_altstack_key, altstack_free)) die("altstack key");
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_altstack_key_ready = 1;
+#endif
+}
 void crash_thread_init(void) {
     pthread_once(&g_altstack_once, altstack_key_init);
     if (pthread_getspecific(g_altstack_key)) return;                 // Repeated calls on the same thread do not allocate again

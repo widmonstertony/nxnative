@@ -154,6 +154,23 @@ The Air 60.78 installation preserves all existing frameworks and 27 game
 directories; the new Fate card is ready. The new quit/relaunch path has not
 been player-tested. M2 60.102 separately installs the classic Fate host with all matched resources and 58 DLC; its card is ready. Classic M2 hosts do not advertise this lifecycle capability yet.
 
+### Classic iPadOS 16.1 return candidate
+
+Apply `m2-independent-return-to-library.patch` to the M2 library entry whose
+unmodified SHA-256 is
+`42a7cbadda8cec9f746a82174ad58b8afd516ce3fd8ffbcbe999f3f0b6cd4a8b`.
+Use the lifecycle headers from the same checkout, including the updated
+`IndependentGameHost.h` in both framework and shader-identity checks. The
+profile registry must provide `dm_profile_release_selection`.
+
+Build a compatible NVN framework with `--classic-shelf` and the matching
+shader/reflection chain. This enables the optional return capability; it is
+off by default in the compatible builder. The guest exits at cooperative
+thread boundaries before audio, UIKit, GPU, save workers, and guest mappings
+are released. A failed or incomplete drain leaves the library closed. Do not
+claim support for a title until it exits to the library on iPadOS 16.1 and
+another title can start in the same process.
+
 The classic iPad host's retirement path first parks threads at checked guest
 boundaries. A native callback or a thread that cannot reach a boundary makes
 that attempt time out and releases the parked threads. After commitment the

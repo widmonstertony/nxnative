@@ -205,6 +205,15 @@ static void host_preload(int argc, char **argv) {
     { void dm_ue_malloc_install(void); dm_ue_malloc_install(); }   // Unreal's allocator on a host malloc zone, for the builds whose constructor call is cut (hle_uemalloc.c)
 }
 static struct { int argc; char **argv; pthread_t th; _Atomic int started; } g_pre;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+void dm_host_classic_release_preload(void) {
+    // The game pthread has joined its loader and all guest users are gone.
+    for (int i = 0; i < g_pre.argc; i++) free(g_pre.argv[i]);
+    free(g_pre.argv);
+    g_pre.argv = NULL;
+    g_pre.argc = 0;
+}
+#endif
 static void *preload_thread(void *a) { (void)a; host_preload(g_pre.argc, g_pre.argv); return NULL; }
 static void *keyrace_thread(void *unused) {
     (void)unused;

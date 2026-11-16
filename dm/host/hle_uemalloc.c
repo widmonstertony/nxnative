@@ -43,6 +43,12 @@ static const struct { const char *build, *what; int layout; uint64_t obj, vtable
 enum { NSLOT = 32 };
 
 static malloc_zone_t *g_zone;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+void dm_ue_malloc_classic_release(void) {
+    if (g_zone) malloc_destroy_zone(g_zone);
+    g_zone = NULL;
+}
+#endif
 static _Atomic int64_t g_used, g_peak;   // bytes in use (usable sizes) and their high-water mark, for the [mem] line (one per 256 MB of new peak)
 static void used(int64_t d) {
     int64_t after = atomic_fetch_add(&g_used, d) + d, peak = atomic_load(&g_peak);

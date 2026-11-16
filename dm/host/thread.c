@@ -9,8 +9,16 @@
 #define THREAD_OBJ_SIZE 0x400
 static pthread_key_t g_keyown;   // raw pointers of the TLS block / thread-local region this thread allocated (see the end of guest_thread_init)
 static pthread_once_t g_keyown_once = PTHREAD_ONCE_INIT;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static int g_own_key_ready, g_gslot_key_ready;
+#endif
 static void own_free(void *p) { void **own = p; free(own[0]); free(own[1]); free(own); }
-static void own_key_init(void) { if (pthread_key_create(&g_keyown, own_free)) die("cannot create the free key for thread-local blocks"); }
+static void own_key_init(void) {
+    if (pthread_key_create(&g_keyown, own_free)) die("cannot create the free key for thread-local blocks");
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_own_key_ready = 1;
+#endif
+}
 void guest_thread_init(void) {
     pthread_setspecific(g_key18, 0);
     // The TLS block and the thread-local region are freed when the thread exits. The guest overwrites the slots of the TLS / thread-local-region keys (it sets its own thread pointer), so they cannot be freed by the current value in the key:
@@ -42,6 +50,12 @@ extern const uint8_t dm_gate_stubs[];
 static pthread_mutex_t g_gate_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint16_t g_gate_free[GATE_SLOTS]; static int g_gate_nfree = -1;
 static pthread_key_t g_keygslot; static pthread_once_t g_gslot_once = PTHREAD_ONCE_INIT;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+void dm_guest_classic_drop_tls_keys(void) {
+    if (g_gslot_key_ready) { pthread_key_delete(g_keygslot); g_gslot_key_ready = 0; }
+    if (g_own_key_ready) { pthread_key_delete(g_keyown); g_own_key_ready = 0; }
+}
+#endif
 #if TARGET_OS_IOS || defined(DM_TEST_GATE_RETIRE)
 struct gate_mapping { struct gate_mapping *next; void *base; };
 static struct gate_mapping *g_gate_mapping[GATE_SLOTS], *g_gate_retired;
@@ -76,6 +90,9 @@ static void gslot_release(void *p) {   // key destructor (pthread_exit): slot + 
 }
 static void gslot_key_init(void) {
     if (pthread_key_create(&g_keygslot, gslot_release)) die("cannot create the gate slot key");
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_gslot_key_ready = 1;
+#endif
     if ((uintptr_t)dm_gate_top & 0xfff) die("gate stack table %p is not page-aligned (entry.S stubs address it with adrp alone)", (void *)dm_gate_top);
 }
 void dm_gate_nested(uint64_t sp) { die("SVC gate entered on its own gate stack (sp %#llx): a gate handler ran guest code", (unsigned long long)sp); }

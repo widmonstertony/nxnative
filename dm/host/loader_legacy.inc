@@ -23,6 +23,16 @@ int dm_set_game_image_header(const void *header) {
 }
 // Stable module addresses live in g_mod; lookup order follows activation, including unload/reload.
 static module_t **g_loaded; static int g_nloaded, g_mod_capacity;
+
+int dm_game_imports(const char *prefix) {
+    size_t n = strlen(prefix);
+    for (int i = 0; i < g_nmod; i++) if (g_mod[i].nro || !strcmp(g_mod[i].name, "main")) {
+        module_t *m = &g_mod[i];
+        for (unsigned k = 1; k < m->nsym; k++)
+            if (!m->symtab[k].st_shndx && !strncmp(m->strtab + m->symtab[k].st_name, prefix, n)) return 1;
+    }
+    return 0;
+}
 static pthread_rwlock_t g_modules_mu = PTHREAD_RWLOCK_INITIALIZER;
 pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_N };
@@ -622,7 +632,11 @@ static void map_image(module_t *m, const char *dir) {
         if (!img) die("embedded section __TEXT,%s missing", si);
         if (z0 + zw != (uint64_t)m->patch_off || (zi & 0x3FFF) || ((uintptr_t)img & 0x3FFF) || ((uintptr_t)w & 0x3FFF))
             die("%s embedded section layout mismatch (image %#lx W %#lx PATCH_OFF %#llx)", m->name, zi, zw, (unsigned long long)m->patch_off);
-        m->base = (uint8_t *)img; m->size = zi;
+        m->size = zi;
+        // Keep positive-offset code at its original signed address. iPadOS
+        // 16.1 strips execute permission from an alias made with vm_remap.
+        // Reloading the pristine W segment also resets its key page on replay.
+        m->base = (uint8_t *)img;
         vm_address_t data = (vm_address_t)(m->base + z0);
         kern_return_t kr = vm_protect(mach_task_self(), data, zw, FALSE, VM_PROT_READ | VM_PROT_WRITE);
         if (kr != KERN_SUCCESS) die("%s vm_protect __TEXT data hole %p (%#lx bytes) failed: %d", m->name, (void *)data, zw, kr);
@@ -664,6 +678,41 @@ static void map_image(module_t *m, const char *dir) {
     m->base = (uint8_t *)base; install_key_page(m);
 #endif
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+int dm_loader_classic_release_drained(void) {
+    if (!g_module_image_mh) return 0;
+    for (int i = 0; i < g_nmod; i++) {
+        module_t *m = &g_mod[i];
+        if (!m->base) continue;
+        if (!m->nro && m->patch_off >= 0) {
+            // dyld owns this contiguous signed image: leave its text mapped
+            // and close writes to its data hole until the next map_image().
+            vm_size_t text = (m->text_end + 0x3FFF) & ~0x3FFFull;
+            if ((uint64_t)m->patch_off <= text ||
+                vm_protect(mach_task_self(), (uintptr_t)m->base + text,
+                           m->patch_off - text, FALSE, VM_PROT_READ) != KERN_SUCCESS) return 0;
+        } else {
+            vm_size_t prefix = m->patch_off < 0 ? -(uint64_t)m->patch_off : 0;
+            vm_address_t start = (uintptr_t)m->base - prefix;
+            if (vm_deallocate(mach_task_self(), start, prefix + m->size) != KERN_SUCCESS) return 0;
+        }
+        m->base = NULL;
+    }
+    for (int i = 0; i < g_nmod; i++) {
+        free(g_mod[i].symh);
+        free(g_mod[i].pristine);
+    }
+    free(g_mod); g_mod = NULL; g_nmod = 0;
+    free(g_loaded); g_loaded = NULL; g_nloaded = 0;
+    free(g_force_hits); g_force_hits = NULL;
+    free(g_fidx); g_fidx = NULL;
+    pthread_key_delete(g_key18);
+    pthread_key_delete(g_keytls);
+    pthread_key_delete(g_keytlr);
+    pthread_key_delete(g_keygate);
+    return 1;
+}
+#endif
 #else
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);

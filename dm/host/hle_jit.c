@@ -8,6 +8,8 @@
 // only while the plugin runs on that thread (pthread_jit_write_protect_np). iOS runs no code made at run time: there GenerateCode is served from a capture (below).
 #include "hle.h"
 #include <TargetConditionals.h>
+// The classic signed loader lacks captured-code layout and isolated plugin activation.
+#if !TARGET_OS_IPHONE || defined(DM_NVN_MODERN_RENDERER)
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/mman.h>
 #include <libkern/OSCacheControl.h>
@@ -383,3 +385,4 @@ HLE_FORCE_DIRECT("_ZN2nn3jit12GenerateCodeEPNS0_9CodeRangeES2_NS0_9JitHandleEmPK
     if (c1_out) *c1_out = o1;
     return ret;
 }
+#endif // desktop or modern signed loader

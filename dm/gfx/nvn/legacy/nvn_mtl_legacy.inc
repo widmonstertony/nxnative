@@ -10630,6 +10630,12 @@ uint64_t mtl_present_ext(uint64_t serial, double period, void *event, uint64_t e
     tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 0); t.serial = serial;
     return mtl_present(&t, period, crop);
 }
+void mtl_present_progress(uint64_t *queued, uint64_t *done) {
+    pthread_mutex_lock(&g_pq_mu);
+    *queued = g_pq_in;
+    *done = g_pq_done;
+    pthread_mutex_unlock(&g_pq_mu);
+}
 // Do not wait during discard: the frame enqueued only after the flag was set (the present thread had just passed the flag check) has nobody to take it, and waiting for it would stall again; it is left for the following mtl_drain to clear
 // Do not wait indefinitely in display-link mode: see the note at STALL_NS. Only frames "not yet taken by the display link" are dropped; the one already on its way to the screen is waited for until handed to the GPU (same dropping as when entering the background)
 void mtl_present_wait(uint64_t tk) {

@@ -18,10 +18,11 @@ MARKER = 'dm_game_image_marker'
 EXPORTS = (MARKER, *('dm_glue_' + s for s in (
     'version', 'start_game', 'present_game', 'focus_event', 'set_catalog', 'shader_chain')))
 ABI = 'tonton-independent-host-v1'
+SHELF_EXPORTS = ('dm_glue_shell_lifecycle', 'dm_glue_set_return')
 
 
 def build_framework(engine, patched, work, title, modules, minimum, name, display_version, jobs=2, env=None,
-                    package_version=''):
+                    package_version='', classic_shelf=False):
     if not re.fullmatch(r'[0-9A-F]{16}', title) or not modules or len(set(modules)) != len(modules) or any(
             not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]*', mod) for mod in modules):
         raise ValueError('Invalid title or module list')
@@ -31,11 +32,17 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
     if nro.is_file() and any(line and not line.startswith(('#', 'refused\t')) for line in nro.read_text().splitlines()):
         raise ValueError('This version of the shared loader cannot validate additional NRO modules')
     renderer = 'metal4' if minimum == '26.0' else 'legacy'
+    if classic_shelf and renderer != 'legacy':
+        raise ValueError('Classic shelf lifecycle requires the legacy renderer')
+    exports = (*EXPORTS, *SHELF_EXPORTS) if classic_shelf else EXPORTS
     env = dict(env or os.environ, GAME=title, DM_IOS_RENDERER=renderer, DM_IOS_DEPLOYMENT_TARGET=minimum)
     ios = engine / 'dm/ios'
     host = engine / 'dm/host'
     abi = REPO / 'dm/ios/LibraryApp/Sources'
     header = engine / 'dm/gfx/nvn/dmsh_chain.h'
+    classic_header = header.parent / 'legacy' / header.name
+    if renderer == 'legacy' and classic_header.is_file():
+        header = classic_header
     chain = 'b-' + re.search(r'^#define DMSH_CHAIN "([0-9a-f]+)"', header.read_text(), re.M)[1]
     build_dir = work / 'objects'
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +63,14 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
     srcs += [(p, p.name) for p in sorted(srcdir.glob('*.m')) if p.name != 'main.m']
     srcs.append((gen / 'main/main.c', 'dm_main.c'))
     # Objective-C class registration is process-global even with RTLD_LOCAL.
-    classes = {c for p, _ in srcs if p.suffix == '.m' for c in
+    class_sources = {p for p, _ in srcs if p.suffix == '.m'}
+    # Some translation units define Objective-C classes in included sources.
+    # They also need a private name when two engines are resident.
+    class_sources.update(p for p in srcdir.glob('*_legacy.inc'))
+    gfx = host.parent / 'gfx'
+    for suffix in ('*.inc', '*.h'):
+        class_sources.update(gfx.rglob(suffix))
+    classes = {c for p in class_sources for c in
                re.findall(r'^\s*@interface\s+(\w+)\s*:', p.read_text(), re.M)}
     glue = build_dir / 'IndependentGameGlue.m'
     glue.write_text((abi / glue.name).read_text() +
@@ -71,6 +85,11 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
               f'-DDM_INDEPENDENT_GAME_TITLE="{title}"']
     if renderer == 'metal4':
         common.append('-DDM_TONTON_MODERN_GAME')
+    if classic_shelf:
+        common.append('-DDM_CLASSIC_SHELF_LIFECYCLE=1')
+    # Glue normally sees the modern header in the include path. Report the
+    # exact chain selected by the renderer, including frozen classic trees.
+    common.append(f'-DDM_INDEPENDENT_SHADER_CHAIN="{chain[2:]}"')
 
     def call_logged(cmd, logfile):
         with logfile.open('w') as log:
@@ -98,7 +117,7 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
     executable = build_dir / 'DmGame'
     link = cc + ['-dynamiclib', '-fobjc-link-runtime', '-filelist', str(listing), str(assembly),
                  '-Wl,-dead_strip', f'-Wl,-install_name,@rpath/{framework}/DmGame',
-                 *(f'-Wl,-exported_symbol,_{s}' for s in EXPORTS),
+                 *(f'-Wl,-exported_symbol,_{s}' for s in exports),
                  *shlex.split(linkflags), *flags('DM_FRAMEWORKS'),
                  *[arg for f in ('UIKit', 'Foundation', 'AVFoundation', 'CoreMotion', 'CoreGraphics', 'CoreText',
                                  'QuartzCore', 'GameController', 'AudioToolbox', 'VideoToolbox', 'CoreMedia',
@@ -108,7 +127,7 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
     subprocess.run([sys.executable, str(ios / 'tools/set_text_maxprot.py'), str(executable)],
                    env=env, check=True)
     exported = subprocess.check_output(['xcrun', 'nm', '-gUj', str(executable)], env=env, text=True).splitlines()
-    if any('_' + symbol not in exported for symbol in EXPORTS):
+    if any('_' + symbol not in exported for symbol in exports):
         raise ValueError('Framework is missing required independent-host exports')
     with executable.open('rb') as stream:
         if [version(v) for v in binary_minima(stream)] != [version(minimum)]:
@@ -150,6 +169,8 @@ if __name__ == '__main__':
     p.add_argument('--version', required=True)
     p.add_argument('--package-version', default='')
     p.add_argument('--jobs', type=int, default=2)
+    p.add_argument('--classic-shelf', action='store_true')
     a = p.parse_args()
     print(build_framework(a.engine.resolve(), a.patched.resolve(), a.work.resolve(), a.title.upper(),
-                          a.modules, a.min_ios, a.name, a.version, a.jobs, package_version=a.package_version))
+                          a.modules, a.min_ios, a.name, a.version, a.jobs, package_version=a.package_version,
+                          classic_shelf=a.classic_shelf))

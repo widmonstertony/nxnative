@@ -10,7 +10,7 @@
 // then {"SFCI", version, command, token} and the arguments. The response is the same with {u32 objects, 3 × u32} and {"SFCO", version, result, token}
 #include "hle.h"
 #include <mach-o/getsect.h>
-#include <mach-o/ldsyms.h>
+#include "host_image.h"
 #include <pthread.h>
 
 #define SF_H0 0xd0000u   // session handles: outside the kernel handle table (0x1000 + slot, 4096 slots, hle_thread.c)
@@ -23,7 +23,7 @@ static pthread_mutex_t g_sf_mu = PTHREAD_MUTEX_INITIALIZER;
 // The host schedules no alarms, so zeroed output is its answer: no alarms listed, a registration that never fires (ID 0), a parameter of 0 bytes
 // The services other files serve (SF_SERVICE, hle.h): audren:u (hle_audren_sv.c)
 static const sf_service_ent *sf_registered(unsigned long *n) {
-    unsigned long sz = 0; const sf_service_ent *e = (const sf_service_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swsf", &sz);
+    unsigned long sz = 0; const sf_service_ent *e = (const sf_service_ent *)getsectiondata(DM_HOST_IMAGE, "__DATA", "swsf", &sz);
     *n = e ? sz / sizeof *e : 0; return e;
 }
 

@@ -30,6 +30,8 @@ void dm_gamepad_set_active(int active);
 #if defined(DM_CLASSIC_SHELF_LIFECYCLE)
 void dm_gamepad_classic_close(void);
 void dm_haptics_apple_classic_close(void);
+BOOL front_ios_classic_can_request_return(void);
+void front_ios_classic_request_return(void (^status)(NSString *, BOOL));
 #endif
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
@@ -92,6 +94,10 @@ static void tv_attach(void);
 @property (nonatomic, strong) UILabel *fps;
 @property (nonatomic) BOOL launched;
 @property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+@property (nonatomic, strong) UIButton *shelfButton;
+@property (nonatomic, strong) UILabel *shelfStatus;
+#endif
 - (void)startGame;
 @end
 static DmRootVC *g_root;
@@ -206,6 +212,9 @@ static void launcher_done(void) { [g_root startGame]; }
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
     if (self.fps) [self.view addSubview:self.fps];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    if (front_ios_classic_can_request_return()) [self addShelfReturnControl];
+#endif
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     if (!mtl_framegen_supported() && getenv("DM_FRAMEGEN") && strcmp(getenv("DM_FRAMEGEN"), "off")) {
         setenv("DM_FRAMEGEN", "off", 1);
@@ -216,6 +225,65 @@ static void launcher_done(void) { [g_root startGame]; }
     tv_attach();   // a TV connected while the launcher showed
     front_ios_boot();
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+- (void)addShelfReturnControl {
+    UIButtonConfiguration *style = [UIButtonConfiguration plainButtonConfiguration];
+    style.image = [UIImage systemImageNamed:@"rectangle.portrait.and.arrow.right"];
+    style.baseForegroundColor = [UIColor.whiteColor colorWithAlphaComponent:.72];
+    UIButton *button = [UIButton buttonWithConfiguration:style primaryAction:nil];
+    button.accessibilityLabel = @"\u8FD4\u56DE\u6E38\u620F\u5323";
+    [button addTarget:self action:@selector(confirmShelfReturn) forControlEvents:UIControlEventTouchUpInside];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:button];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [button.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+        [button.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [button.widthAnchor constraintEqualToConstant:44],
+        [button.heightAnchor constraintEqualToConstant:44],
+    ]];
+    self.shelfButton = button;
+}
+- (void)confirmShelfReturn {
+    if (self.presentedViewController || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    UIAlertController *prompt = [UIAlertController alertControllerWithTitle:@"\u8FD4\u56DE\u6E38\u620F\u5323"
+        message:@"\u8BF7\u5148\u5728\u6E38\u620F\u91CC\u4FDD\u5B58\u8FDB\u5EA6\u3002" preferredStyle:UIAlertControllerStyleAlert];
+    [prompt addAction:[UIAlertAction actionWithTitle:@"\u53D6\u6D88" style:UIAlertActionStyleCancel handler:nil]];
+    __weak DmRootVC *owner = self;
+    [prompt addAction:[UIAlertAction actionWithTitle:@"\u8FD4\u56DE\u5217\u8868" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            front_ios_classic_request_return(^(NSString *message, BOOL canRetry) {
+                DmRootVC *view = owner;
+                if (!view) return;
+                view.shelfButton.enabled = canRetry;
+                if (!view.shelfStatus) {
+                    UILabel *label = [UILabel new];
+                    label.translatesAutoresizingMaskIntoConstraints = NO;
+                    label.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:.75];
+                    label.textColor = UIColor.whiteColor;
+                    label.textAlignment = NSTextAlignmentCenter;
+                    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+                    [view.view addSubview:label];
+                    [NSLayoutConstraint activateConstraints:@[
+                        [label.centerXAnchor constraintEqualToAnchor:view.shelfButton.centerXAnchor],
+                        [label.bottomAnchor constraintEqualToAnchor:view.shelfButton.topAnchor],
+                    ]];
+                    view.shelfStatus = label;
+                }
+                view.shelfStatus.text = message;
+                if (canRetry) {
+                    UILabel *label = view.shelfStatus;
+                    front_queue_main(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), ^{
+                        if (label == owner.shelfStatus && owner.shelfButton.enabled) {
+                            [label removeFromSuperview]; owner.shelfStatus = nil;
+                        }
+                    });
+                }
+            });
+        }]];
+    [self presentViewController:prompt animated:YES completion:nil];
+}
+#endif
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
@@ -737,7 +805,7 @@ void front_ios_focus_event(int ev) {
 // Main thread only. The owner must first dismiss or refuse to switch while a
 // game modal still owns a guest wait. Keep the layer alive until GPU quiescence.
 int front_ios_classic_close_admission(void) {
-    if (!NSThread.isMainThread || !g_root || g_root.presentedViewController) return 0;
+    if (!NSThread.isMainThread || !g_root) return 0;
     if (!(atomic_load(&g_front_epoch) & 1)) return 0;
     atomic_fetch_add(&g_front_epoch, 1);
     for (id token in g_session_observers) [NSNotificationCenter.defaultCenter removeObserver:token];
@@ -768,6 +836,8 @@ void front_ios_classic_release_views(void) {
     [g_root.game removeFromSuperview]; g_root.game = nil;
     [g_root.pad removeFromSuperview]; g_root.pad = nil;
     [g_root.fps removeFromSuperview]; g_root.fps = nil;
+    [g_root.shelfButton removeFromSuperview]; g_root.shelfButton = nil;
+    [g_root.shelfStatus removeFromSuperview]; g_root.shelfStatus = nil;
     g_root.tv = nil;
     g_layer = nil;
     g_tv = nil;

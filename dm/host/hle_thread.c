@@ -1690,3 +1690,26 @@ void hle_clear_system_event(void *ev) {   // Clear a bound service-layer SystemE
     }
     g_unlock();
 }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int dm_guest_classic_release_handles(void) {
+    if (dm_guest_pthreads_alive()) return 0;
+    g_lock();
+    if (g_wait) { g_unlock(); return 0; }
+    for (thr_t *t = g_all; t; t = t->all) {
+        if (!t->exited) { g_unlock(); return 0; }
+    }
+    for (unsigned i = 1; i < MAX_H; i++) {
+        if (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W) {
+            event_t *e = g_h[i].obj;
+            if (!--e->refs) free(e);
+        }
+        g_h[i].type = O_FREE;
+        g_h[i].obj = NULL;
+    }
+    while (g_all) thr_free(g_all);
+    g_unlock();
+    pthread_key_delete(g_keythr);
+    return 1;
+}
+#endif

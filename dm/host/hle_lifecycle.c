@@ -52,6 +52,7 @@ void dm_term_install(void) {
 #include "save_sync.h"
 unsigned dm_guest_pthreads_alive(void);
 int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns);
+int dm_gfx_classic_can_stop_for_shell(void);
 int dm_cheats_stop_for_shell(void);
 void dm_gamepad_classic_fence(void);
 void dm_haptics_apple_classic_fence(void);
@@ -68,19 +69,31 @@ void dm_audren_request_drain(void);
 void dm_audren_service_request_drain(void);
 void dm_movie_request_drain(void);
 void dm_vsync_stop_all(void);
+int dm_guest_gate_release_drained(void);
+int dm_loader_classic_release_drained(void);
+void dm_host_classic_release_preload(void);
+void dm_ue_malloc_classic_release(void);
+void dm_fs_teardown(void);
+void dm_guest_memory_release(int unmap_as);
+int dm_guest_classic_release_handles(void);
+void dm_guest_classic_drop_tls_keys(void);
+void dm_crash_classic_drop_tls_key(void);
 
 static int g_classic_embedded, g_classic_diagnostic;
 void dm_host_classic_set_shelf_owner(void) {
     static const char *const no_return[] = {
         "DM_CTL", "DM_KEYS", "DM_REC", "DM_HITCH_DUMP", "DM_FD_LOG",
         "DM_PROBE_POLL", "DM_PROBE_WATCH", "DM_GUEST_SPAWN_TEST",
+        "DM_MEMSTAT", "DM_THRCPU", "DM_TEST_KEYRACE",
     };
     g_classic_embedded = 1;
     for (unsigned i = 0; i < sizeof no_return / sizeof no_return[0]; i++)
         if (getenv(no_return[i])) g_classic_diagnostic = 1;
 }
 int dm_host_classic_embedded(void) { return g_classic_embedded; }
-int dm_host_classic_can_return(void) { return g_classic_embedded && !g_classic_diagnostic; }
+int dm_host_classic_can_return(void) {
+    return g_classic_embedded && !g_classic_diagnostic && dm_gfx_classic_can_stop_for_shell();
+}
 
 // Audio and video may be the very services that let a guest reach its
 // parking boundary. First attempt reversible parking of the game threads;
@@ -138,5 +151,19 @@ int dm_host_classic_fence_for_shell(int budget_ms) {
         return 0;
     }
     return 1;
+}
+
+// Called after the frontend has acknowledged its background saves, the
+// bootstrap pthread has joined and every service has dropped its pointers.
+int dm_host_classic_release_for_shell(void) {
+    if (dm_guest_pthreads_alive() || !dm_guest_gate_release_drained() ||
+        !dm_guest_classic_release_handles()) return 0;
+    dm_guest_classic_drop_tls_keys();
+    dm_crash_classic_drop_tls_key();
+    dm_guest_memory_release(1);
+    dm_fs_teardown();
+    dm_ue_malloc_classic_release();
+    dm_host_classic_release_preload();
+    return dm_loader_classic_release_drained();
 }
 #endif

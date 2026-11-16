@@ -1349,10 +1349,17 @@ void dm_gfx_suspend(int on) {
     pthread_mutex_unlock(&g_susp_mu);
     if (on) { dm_vk_drain(); dm_gl_drain(); mtl_drain(); LOG("[nvn] graphics suspended: in-flight GPU work drained"); } else LOG("[nvn] graphics resumed");   // the Vulkan and GL queues first: presents on the NVN queue wait for their frames
 }
+// This renderer has no asynchronous pipeline archive write. Its process
+// exit may still allow the in-flight warmup a bounded period to complete.
+void dm_gfx_quit_begin(void) {}
+void dm_gfx_quit(int wait_ms) { if (wait_ms > 0) mtl_warm_wait(wait_ms); }
 #if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int dm_gfx_classic_can_stop_for_shell(void) {
+    return !atomic_load(&g_non_nvn_backend);
+}
 int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns) {
     // A different backend may have submitted work to a different queue.
-    if (atomic_load(&g_non_nvn_backend)) return 0;
+    if (!dm_gfx_classic_can_stop_for_shell()) return 0;
     pthread_mutex_lock(&g_susp_mu);
     int idle = !g_inflight_api;
     if (idle) g_susp = 1;
