@@ -2100,9 +2100,17 @@ def capture_shaders(repo, d, patched, work, env, logs, g, api):
     together at run time (Balatro: LÖVE adds its header and its built-in code to each of the game's shader files, in Lua). The game boots in the Mac host (headless and silent, no shader
     library) with DM_VK_CAPTURE (dm/gfx/vk/hle_vk.m) or DM_GL_CAPTURE (dm/gfx/gl/hle_gl.m), which writes each shader to <version dir>/vk_capture or gl_capture, where vk_shaders.py /
     gl_shaders.py read them with the RomFS; the shaders are the same on every run. The run stops once every key the profile's capture table lists is there; without the table, once none has
-    been added for 20 s. A folder that already holds every listed key is reused"""
+    been added for 20 s. A GL profile can retain a capture of later scenes alongside its capture table. Verify the sources against its keys before reusing it."""
     C = CAPTURES[api]; want, out = capture_wanted(g, api), d / f'{api}_capture'
     PROG.stage(f'{C["name"]} shader capture')
+    if api == 'gl' and want:
+        saved = g.table('gl_capture')
+        if capture_done(saved, api) == want:
+            try: intact = all(hashlib.sha256((saved / name).read_bytes()).hexdigest()[:16] == name.split('.')[0] for name in want)
+            except OSError: intact = False
+            if intact:
+                say(f'reusing the profile\'s verified run-time GLSL sources: {saved}')
+                PROG.end(f'{len(want)} shaders from the profile'); return saved
     if want and capture_done(out, api) >= want:
         say(f'reusing the captured run-time shaders: {out}'); PROG.end('reused'); return out
     PROG.set(step='building the Mac host')

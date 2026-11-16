@@ -19,6 +19,7 @@
 #   u:<name>=<offset>:<type>:<count>:<stride>    a member of the default uniform block (count 0 = not an array)
 #   b:<slot>:<size>                              the default uniform block: its buffer slot and size in bytes
 #   t:<name>=<slot>:<type>                       a combined sampler: texture and sampler slot
+#   s:<buffer-slot>:<hex-slot-mask>              sampler slots encoded in an argument buffer
 #   o:<name>=<location>                          a fragment output, [[color(location)]]
 # <TAB> where it came from
 # Usage: gl_shaders.py <input path>... <out dir> [--ios <dir>]   (input paths: the RomFS, the main NSO, capture folders)
@@ -180,6 +181,25 @@ def lower_constant_sampler_arrays(src):
             aliases.update({n: (name, i, size) for i, n in enumerate(names)})
     return src, aliases
 
+def sampler_overflow(msl, function):
+    """Move samplers beyond Metal's 16 direct slots into a sampler-only argument buffer."""
+    entry = re.search(rf'(?m)^(?:vertex|fragment)\s+\w+\s+{function}\((.*?)\)\s*\{{', msl, re.S)
+    if not entry: raise ValueError('Metal entry point not found')
+    arguments = entry[1]
+    samplers = re.compile(r'\bsampler\s+(\w+)\s+\[\[sampler\((\d+)\)\]\]')
+    overflow = {name: int(slot) for name, slot in samplers.findall(arguments) if int(slot) >= 16}
+    if not overflow: return msl, None
+    buffers = {int(slot) for slot in re.findall(r'\[\[buffer\((\d+)\)\]\]', arguments)}
+    slot = next((i for i in range(15) if i not in buffers), None)
+    if slot is None or max(overflow.values()) >= 32: raise ValueError('no room for sampler arguments')
+    arguments = samplers.sub(lambda match: '' if match[1] in overflow else match[0], arguments)
+    arguments = re.sub(r',\s*(?=,|$)', '', arguments).lstrip(' ,\n')
+    if arguments: arguments += ', '
+    arguments += f'constant nxnative_sampler_args& nxnative_samplers [[buffer({slot})]]'
+    fields = ''.join(f'    sampler {name} [[id({index})]];\n' for name, index in overflow.items())
+    head = msl[:entry.start()] + 'struct nxnative_sampler_args {\n' + fields + '};\n\n'
+    body = re.sub(r'\b(?:' + '|'.join(overflow) + r')\b', lambda match: 'nxnative_samplers.' + match[0], msl[entry.end():])
+    return head + msl[entry.start():entry.start(1)] + arguments + msl[entry.end(1):entry.end()] + body, (slot, sum(1 << i for i in overflow.values()))
 
 def translate(src, stage, key, tmp):
     """GLSL → MSL; returns (msl path, table fields) or an error string"""
@@ -197,6 +217,11 @@ def translate(src, stage, key, tmp):
     # so __VERSION__ branches and the original shader's lookup key stay intact.
     pre = re.sub(r'^([ \t]*#version[ \t]+)300([ \t]+es\b)', r'\g<1>310\2', pre, count=1, flags=re.M)
     pre, sampler_elements = lower_constant_sampler_arrays(pre)
+    texture_alias = None
+    if re.search(r'\buniform\s+(?:(?:lowp|mediump|highp)\s+)?[iu]?sampler\w*\s+texture\s*;', pre):
+        # In legacy GLSL, a sampler may be named texture. The modern sampling function has that name too.
+        texture_alias = f'nxnative_texture_{key}'
+        pre = re.sub(r'\btexture\b(?!\s*\()', texture_alias, pre)
     open(g, 'w').write(fixups(pre))
     r = subprocess.run(['glslangValidator', '-V', '-R', '--aml', '--amb', '-S', stage, g, '-o', spv], capture_output=True, text=True)
     if r.returncode: return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
@@ -206,18 +231,29 @@ def translate(src, stage, key, tmp):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode: return 'spirv-cross: ' + r.stderr.strip()[:300]
     m = open(msl).read()
+    ubos = refl.get('ubos', [])
+    if len(ubos) == 1 and ubos[0]['binding'] >= 15:
+        # Vulkan auto-binding can put the sole uniform block after the textures. In Metal
+        # the block has its own namespace; keep it below the GL layer's vertex buffers.
+        binding = ubos[0]['binding']
+        m = m.replace(f'[[buffer({binding})]]', '[[buffer(0)]]')
+        ubos[0]['binding'] = 0
+    args = None
+    if any(int(x) >= 16 for x in re.findall(r'\[\[sampler\((\d+)\)\]\]', m)):
+        try: m, args = sampler_overflow(m, f'gl_{key}_{stage[0]}')
+        except ValueError as e: return str(e)
     # Varyings by name: the out struct of a vertex shader and the in struct of a fragment shader (stage_in members of a vertex shader are [[attribute(n)]])
     m = re.sub(r'(\b(\w+)\s+\[\[)user\(locn\d+\)', lambda x: f'{x.group(1)}user({x.group(2)})', m)
     m = re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', m)   # a NaN operand gives the other one, as on the Switch's GPU (vk_shaders.py PRECISE)
     open(msl, 'w').write(m)
-    f = []
+    f = [f's:{args[0]}:{args[1]:x}'] if args else []
     if stage == 'vert':
         for v in refl.get('inputs', []): f.append(f'a:{v["name"]}={v["location"]}:{v["type"]}')
     else:
         for v in refl.get('outputs', []): f.append(f'o:{v["name"]}={v["location"]}')
     # a bool uniform is a uint in the SPIR-V block (it has no bool members), but the game asks GL for its declared type: LÖVE's Shader:send takes only a boolean for a GLSL bool
     bools = {n for n in re.findall(r'\buniform\s+(?:(?:lowp|mediump|highp)\s+)?bool\s+(\w+)\s*;', pre)}
-    for u in refl.get('ubos', []):
+    for u in ubos:
         t = refl['types'][u['type']]
         if t['name'] != 'gl_DefaultUniformBlock': return f'uniform block {t["name"]} is not the default block'
         f.append(f'b:{u["binding"]}:{u["block_size"]}')
@@ -229,7 +265,8 @@ def translate(src, stage, key, tmp):
             name, elem, count = sampler_elements[t['name']]
             f.append(f't:{name}={t["binding"]}:{t["type"]}:{elem}:{count}')
         else:
-            f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
+            name = 'texture' if t['name'] == texture_alias else t['name']
+            f.append(f't:{name}={t["binding"]}:{t["type"]}')
     for k in ('separate_images', 'separate_samplers', 'images', 'ssbos', 'push_constants'):
         if refl.get(k): return f'{k} are not implemented'
     if any(int(x) > 15 for x in re.findall(r'\[\[(?:sampler|buffer)\((\d+)\)\]\]', m)): return 'a buffer or sampler slot above 15'
@@ -279,7 +316,8 @@ def main():
         for key, where, errs in failed:
             if not any(k == key for k, _ in seen): print(f'[RED] {where} ({key}) does not translate: {" / ".join(errs)}')
         tsv = ['# GL shaders (dm/gfx/tools/gl_shaders.py): key = sha256(GLSL source)[:16], Metal function gl_<key>_v / gl_<key>_f; a: vertex inputs, u: default uniform block members '
-               '(offset:type:count:stride), b: the block (slot:size), t: combined samplers (slot:type), o: fragment outputs',
+               '(offset:type:count:stride), b: the block (slot:size), t: combined samplers (slot:type), '
+               's: sampler argument buffer (buffer-slot:hex-slot-mask), o: fragment outputs',
                '# ' + ' '.join(subprocess.run(['glslangValidator', '--version'], capture_output=True, text=True).stdout.split()[:3]) + '; spirv-cross '
                + ' '.join((lambda r: r.stdout + r.stderr)(subprocess.run([SPIRV_CROSS, '--revision'], capture_output=True, text=True)).split())]
         tsv += [f'{k[0]}\t{v[0]}\t{" ".join(v[1])}\t{v[3]}' for k, v in sorted(seen.items())]
