@@ -21,6 +21,14 @@ static UIImage *TTLibraryPreferredArtwork(NSString *titleID, BOOL hero) {
         UIImage *image = TTLibraryArtworkInDirectory(art, @"thumbnail");
         if (image) return image;
     }
-    return TTLibraryArtworkInDirectory(art, @"hero") ?: TTLibraryArtworkInDirectory(art, @"banner") ?:
-           TTLibraryArtworkInDirectory(framework, @"banner");
+    UIImage *banner = TTLibraryArtworkInDirectory(art, @"hero") ?: TTLibraryArtworkInDirectory(art, @"banner") ?:
+                      TTLibraryArtworkInDirectory(framework, @"banner");
+    if (banner || hero) return banner;
+
+    // A cartridge can ship its own icon without any desktop-synced artwork.
+    NSString *game = [[doc stringByAppendingPathComponent:@"Games"] stringByAppendingPathComponent:titleID.lowercaseString];
+    UIImage *icon = TTLibraryArtworkInDirectory([game stringByAppendingPathComponent:@"Resources"], @"icon");
+    if (icon || [titleID.lowercaseString isEqualToString:titleID.uppercaseString]) return icon;
+    game = [[doc stringByAppendingPathComponent:@"Games"] stringByAppendingPathComponent:titleID.uppercaseString];
+    return TTLibraryArtworkInDirectory([game stringByAppendingPathComponent:@"Resources"], @"icon");
 }

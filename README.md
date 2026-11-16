@@ -62,6 +62,11 @@ cartridge matched the installed build's resource image and all 58 DLC
 images byte for byte, so the Air only needed its per-game language preference
 changed to Traditional Chinese.
 
+For the original Fate/EXTELLA, Air's cartridge icon was present but the
+bookshelf had no artwork entry. The thumbnail was restored and read back
+from Air. The iOS card now falls back to the cartridge icon when no custom
+artwork or framework banner is available.
+
 Add each published game fix here with its affected device, what changed, and
 the deepest scene actually verified. A signed install or a successful shader
 build is not a gameplay pass. Keep earlier observations in the
