@@ -10423,6 +10423,64 @@ static int classic_present_stop(uint64_t deadline) {
     return 1;
 }
 
+// Stop-time destruction is separate from per-frame eviction: nothing here
+// should enqueue another GPU operation or put an object on a deferred list.
+static void classic_table_dispose(nvn_hmap *map, void (*release_value)(void *)) {
+    nvn_hm_clear(map, release_value);
+    free(map->keys); free(map->vals);
+    map->keys = NULL; map->vals = NULL; map->cap = 0;
+}
+
+static void classic_drop_registered_resources(void) {
+    // No descriptor registry can be read after the submit & callback fence.
+    for (int i = 0; i < g_ntreg; i++) {
+        if (g_treg[i].view) CFRelease(g_treg[i].view);
+        if (g_treg[i].alt) CFRelease(g_treg[i].alt);
+        if (g_treg[i].ar) CFRelease(g_treg[i].ar);
+    }
+    free(g_treg); g_treg = NULL; g_ntreg = 0;
+    for (int i = 0; i < g_nsreg; i++) {
+        if (g_sview[i]) CFRelease(g_sview[i]);
+        if (g_sview_w[i]) CFRelease(g_sview_w[i]);
+    }
+    free(g_sreg); g_sreg = NULL; free(g_sreg_ok); g_sreg_ok = NULL;
+    free(g_sview); g_sview = NULL; free(g_srid); g_srid = NULL;
+    free(g_sview_w); g_sview_w = NULL; free(g_srid_w); g_srid_w = NULL;
+    free(g_sbk); g_sbk = NULL; g_nsreg = 0;
+    if (g_alias_set) { CFRelease(g_alias_set); g_alias_set = NULL; }
+    classic_table_dispose(&g_by_serial, hm_rel);
+    classic_table_dispose(&g_alias, hm_rel);
+    classic_table_dispose(&g_ghost, hm_rel);
+    // These two sets hold marker integers, never CF objects.
+    classic_table_dispose(&g_tex_live, NULL);
+    classic_table_dispose(&g_use_seen, NULL);
+
+    for (int i = 0; i < PSO_PEND_MAX; i++) {
+        g_pp[i].ps = nil;
+        g_pp[i].used = g_pp[i].done = 0;
+    }
+    classic_table_dispose(&g_pso, hm_rel);
+    classic_table_dispose(&g_dss, hm_rel);
+    classic_table_dispose(&g_pso_fail, hm_rel);
+    classic_table_dispose(&g_cps, hm_rel);
+
+    // Drop these references before any teardown path unmaps guest memory.
+    // pool_ent.buf is non-owning; g_keep is its actual ARC owner.
+    g_deferred = nil;
+    g_keep = nil; g_dead_pools = nil;
+    free(g_pools); g_pools = NULL; g_npool = g_cap = 0;
+    free(g_pidx); g_pidx = NULL; g_pidx_cap = g_pidx_ok = 0; g_plast = -1;
+
+    g_shmap = nil; g_msl_dir = nil; g_shcache = nil;
+    g_builtin = nil; g_builtin_lib = nil;
+    g_c1_banks = nil; g_c1_full = nil;
+    g_bf_fn_cache = nil; g_bf_lib_cache = nil; g_pso_fsfn = nil;
+    g_warm_items = nil;
+    if (g_use_f) { fclose(g_use_f); g_use_f = NULL; }
+    if (g_pg_f) { fclose(g_pg_f); g_pg_f = NULL; }
+    if (g_pso_record) { fclose(g_pso_record); g_pso_record = NULL; }
+}
+
 // The caller has stopped guest submits and detached the UIKit display link.
 // Fence the queue even if a submission had no host callback of its own.
 int mtl_classic_gpu_stop(uint64_t timeout_ns) {
@@ -10439,7 +10497,9 @@ int mtl_classic_gpu_stop(uint64_t timeout_ns) {
     }
     if (dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)classic_gpu_time_left(deadline)))) return 0;
     if (fence_status != MTLCommandBufferStatusCompleted) return 0;
-    return nvn_cache_stop_for_shell(classic_gpu_time_left(deadline));
+    if (!nvn_cache_stop_for_shell(classic_gpu_time_left(deadline))) return 0;
+    classic_drop_registered_resources();
+    return 1;
 }
 #endif
 
