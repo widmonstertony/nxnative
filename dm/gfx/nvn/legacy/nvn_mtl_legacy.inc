@@ -92,15 +92,43 @@ static _Atomic uint32_t g_prepare_total, g_prepare_done, g_prepare_failed, g_pre
 static pthread_mutex_t g_prepare_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_prepare_cv = PTHREAD_COND_INITIALIZER;
 static int g_prepare_active = 1;
+static int g_compile_stopping;
+static dispatch_group_t g_compile_tasks;
+static int classic_compile_async(dispatch_queue_t queue, dispatch_block_t work) {
+    pthread_mutex_lock(&g_prepare_mu);
+    int accepted = !g_compile_stopping;
+    if (accepted) {
+        if (!g_compile_tasks) g_compile_tasks = dispatch_group_create();
+        dispatch_group_async(g_compile_tasks, queue, work);
+    }
+    pthread_mutex_unlock(&g_prepare_mu);
+    return accepted;
+}
+// Call after the submit thread has stopped making synchronous renderer calls.
+// A timeout is a teardown failure: the host must keep this session allocated.
+int mtl_classic_compile_stop(uint64_t timeout_ns) {
+    pthread_mutex_lock(&g_prepare_mu);
+    g_compile_stopping = 1;
+    dispatch_group_t pending = g_compile_tasks;
+    pthread_cond_broadcast(&g_prepare_cv);
+    pthread_mutex_unlock(&g_prepare_mu);
+    if (pending && dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)MIN(timeout_ns, INT64_MAX)))) return 0;
+    pthread_mutex_lock(&g_prepare_mu);
+    g_compile_tasks = nil;
+    pthread_mutex_unlock(&g_prepare_mu);
+    return 1;
+}
 void mtl_prepare_active(int active) {
     pthread_mutex_lock(&g_prepare_mu); g_prepare_active = active;
     pthread_cond_broadcast(&g_prepare_cv); pthread_mutex_unlock(&g_prepare_mu);
 }
-static void prepare_foreground_wait(void) {
-    if (!atomic_load(&g_prepare_frontend)) return;
+static int prepare_can_continue(void) {
     pthread_mutex_lock(&g_prepare_mu);
-    while (!g_prepare_active) pthread_cond_wait(&g_prepare_cv, &g_prepare_mu);
+    while (atomic_load(&g_prepare_frontend) && !g_prepare_active && !g_compile_stopping)
+        pthread_cond_wait(&g_prepare_cv, &g_prepare_mu);
+    int active = !g_compile_stopping;
     pthread_mutex_unlock(&g_prepare_mu);
+    return active;
 }
 void mtl_prepare_snapshot(nvn_prepare_status *out) {
     // State publication pairs with READY/PARTIAL after all PSO tables are claimed.
@@ -4953,10 +4981,16 @@ static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // C
     pthread_mutex_unlock(&g_pp_mu);
     if (at >= 0 || slot < 0) return;
     pso_key pk = *k; g_pp_kicked++;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (!classic_compile_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *e = nil; id<MTLRenderPipelineState> ps = pso_build(&pk, vs, fs, nil, 0, vs->specialized || (fs && fs->specialized), &e);
         pthread_mutex_lock(&g_pp_mu); g_pp[slot].ps = ps; g_pp[slot].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
-    });
+    })) {
+        // An observer that already found this entry must still wake.
+        pthread_mutex_lock(&g_pp_mu);
+        g_pp[slot].done = 1;
+        pthread_cond_broadcast(&g_pp_cv);
+        pthread_mutex_unlock(&g_pp_mu);
+    }
 }
 static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // Called by the submit thread: if it is in the table, wait for it to finish compiling and take it; otherwise return nil
     pthread_mutex_lock(&g_pp_mu);
@@ -5093,6 +5127,7 @@ static void warm_worker(NSArray<NSString *> *paths) {
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         NSMutableOrderedSet<NSString *> *rows = [NSMutableOrderedSet orderedSet];
         for (NSString *path in paths) {
+            if (!prepare_can_continue()) break;
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { atomic_fetch_add(&g_prepare_failed, 1); MLOG("【红】Warmup manifest unavailable: %s", path.UTF8String); continue; }
             for (NSString *raw in [txt componentsSeparatedByString:@"\n"]) {
@@ -5104,7 +5139,7 @@ static void warm_worker(NSArray<NSString *> *paths) {
         if (!rows.count) atomic_fetch_add(&g_prepare_failed, 1);
         if (atomic_load(&g_prepare_frontend)) atomic_store(&g_prepare_state, NVN_PREP_WORKING);
         for (NSString *line in rows) {
-            prepare_foreground_wait();
+            if (!prepare_can_continue()) break;
             @autoreleasepool {
                 int result = warm_row(line, dict);
                 if (result == 1) atomic_fetch_add(&g_prepare_failed, 1);
@@ -5154,15 +5189,15 @@ static void warm_start(void) {
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     atomic_store(&g_warm_running, 1);
     if (atomic_load(&g_prepare_frontend)) warm_worker(paths);
-    else dispatch_async(q, ^{ warm_worker(paths); });
+    else if (!classic_compile_async(q, ^{ warm_worker(paths); })) atomic_store(&g_warm_running, 0);
 }
 void mtl_prepare_start(void) {
     int expected = NVN_PREP_IDLE;
     if (!atomic_compare_exchange_strong(&g_prepare_state, &expected, NVN_PREP_LOADING)) return;
     atomic_store(&g_prepare_frontend, 1);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (!classic_compile_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
-            prepare_foreground_wait();
+            if (!prepare_can_continue()) return;
             const char *map = getenv("DM_NVN_SHMAP"), *msl = getenv("DM_MSL_DIR");
             NSString *libraries = msl ? [@(msl) stringByAppendingPathComponent:@"b-" DMSH_CHAIN] : nil;
             if (!map || !libraries || ![NSFileManager.defaultManager fileExistsAtPath:@(map)] ||
@@ -5171,15 +5206,15 @@ void mtl_prepare_start(void) {
                 MLOG("【红】Startup preparation missing shader map/libraries"); return;
             }
             mtl_init(); shmap_load(); // warm_start runs synchronously on this worker.
+            if (!prepare_can_continue()) return;
             warm_claim();
-            prepare_foreground_wait();
             atomic_store(&g_prepare_state, NVN_PREP_SAVING);
             nvn_cache_flush();
             nvn_cache_status cs; nvn_cache_snapshot(&cs);
             MLOG("Startup gate ready: hits=%llu misses=%llu bypassed=%llu persisted=%llu failed_write=%d", cs.hits, cs.misses, cs.bypassed, cs.saved, cs.write_failed);
             atomic_store(&g_prepare_state, atomic_load(&g_prepare_failed) || atomic_load(&g_prepare_skipped) || cs.write_failed ? NVN_PREP_PARTIAL : NVN_PREP_READY);
         }
-    });
+    })) atomic_store(&g_prepare_state, NVN_PREP_IDLE);
 }
 static int g_rt_ovr;   // Stencil override for runtime extrapolation: 0 no override; 1 pass only on the unit / effect / extrapolation-hole bits (0xD0), no stencil write; 3 depth test as usual, write the effect bit 0x40 where it passes
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
