@@ -132,6 +132,12 @@ static const CGFloat                               // (the grab radii of the sti
     K_MENU_IDLE = 3.0;                              // seconds a connected controller leaves the menu gear visible before fading it out
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
+static NSString *padLayoutPreferenceKey(void) {
+    const char *title = getenv("DM_LIBRARY_GAME_ID");
+    // LINK starts with the directional buttons available, even if another title last used 2D.
+    if (title && !strcasecmp(title, "010051400B17A000")) return @"DmPadLayout.010051400B17A000";
+    return k_layout_key;
+}
 int dm_opmode(void);   // hle_oe.c: 0 = handheld
 void front_ios_quit_poll(void);          // front_ios.m: a controller's buttons changed (the Home hold, A and B in the quit prompt)
 int front_ios_quit_blocks_input(void);   // front_ios.m: the quit prompt has the controllers, the game gets none
@@ -261,8 +267,9 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         _hint = [CALayer layer]; _hint.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5].CGColor; _hint.opacity = 0; _hint.hidden = YES;
         _hintText = [CATextLayer layer]; _hintText.string = _hintWords; _hintText.alignmentMode = kCAAlignmentCenter;
         _hintText.foregroundColor = [UIColor colorWithWhite:1 alpha:0.9].CGColor; [_hint addSublayer:_hintText]; [_controls addSublayer:_hint];
-        NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
-        int l = saved ? (int)saved.integerValue : dm_profile()->pad_layout;
+        NSString *layoutKey = padLayoutPreferenceKey();
+        NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:layoutKey];
+        int l = saved ? (int)saved.integerValue : (layoutKey == k_layout_key ? dm_profile()->pad_layout : 1);
         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
         _full = l == 1; _tap = l == 2;
         [self applyLayout];
@@ -288,7 +295,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     if (l == 2 && dm_opmode() != 0) l = 0;
     [self reset];
     _full = l == 1; _tap = l == 2;
-    [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
+    [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:padLayoutPreferenceKey()];
     [self applyLayout]; [self setNeedsLayout];
 }
 - (void)opmodeChanged {   // docked: the Tap layout goes (the game reads no touch screen then), unsaved, so handheld mode at the next start brings it back

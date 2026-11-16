@@ -67,6 +67,12 @@ bookshelf had no artwork entry. The thumbnail was restored and read back
 from Air. The iOS card now falls back to the cartridge icon when no custom
 artwork or framework banner is available.
 
+The original [Fate/EXTELLA profile](dm/games/010053E002EA2000/README.md)
+now gives the game's guarded thread stacks more virtual address space after
+an Air startup abort. This change reuses the existing game image and
+shaders. On the modern iOS host, Fate/EXTELLA LINK starts in the 3D touch
+layout with a directional pad. Its layout choice is saved separately.
+
 Add each published game fix here with its affected device, what changed, and
 the deepest scene actually verified. A signed install or a successful shader
 build is not a gameplay pass. Keep earlier observations in the
