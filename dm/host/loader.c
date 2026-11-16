@@ -770,7 +770,12 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
 // The image the module sections are read from (front.h dm_set_game_image_header). getsectiondata takes any loaded image's header and applies its slide
 #include "front.h"
 static const struct mach_header_64 *g_game_image = DM_HOST_IMAGE;
-void dm_set_game_image_header(const void *mh) { g_game_image = mh; }
+int dm_set_game_image_header(const void *mh) {
+    const struct mach_header_64 *image = mh;
+    if (!image || image->magic != MH_MAGIC_64 || image->cputype != CPU_TYPE_ARM64) return 0;
+    g_game_image = image;
+    return 1;
+}
 #define IMAGE_MH g_game_image
 // The NRO modules (loader.c "NRO modules") are packed instead of getting sections of their own: a Mach-O file has at most 255 sections, and Super Smash Bros. Ultimate's 98 NROs would
 // take 294. gen_embed.py puts their pieces one after another, each 16K aligned, in __TEXT,__dm_nro_x0 / __DM_NRO_W,__img / __TEXT,__dm_nro_x1, and __DATA,__dm_nro_tab lists them:

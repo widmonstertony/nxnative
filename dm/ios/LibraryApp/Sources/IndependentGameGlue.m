@@ -34,6 +34,26 @@ UIViewController *TonTonInGameCatalogController(dispatch_block_t returned) {
     return game_catalog ? (__bridge_transfer UIViewController *)game_catalog((__bridge void *)returned) : nil;
 }
 
+#ifdef DM_TONTON_MODERN_GAME
+#include "DmGameMenu.h"
+// The standalone app provides this hook in Swift. An independent engine
+// can change its own control layout, but can't promise to tear itself down.
+void *dm_game_menu(void) {
+    NSMutableArray<UIAction *> *items = [NSMutableArray array];
+    NSArray<NSString *> *names = @[@"2D", @"3D", @"\u89E6\u5C4F"];
+    for (int i = 0; i < 3; i++) {
+        if (!dm_pad_layout_offered(i)) continue;
+        UIAction *action = [UIAction actionWithTitle:names[i] image:nil identifier:nil handler:^(__kindof UIAction *sender) {
+            (void)sender;
+            dm_pad_layout_set(i);
+        }];
+        action.state = dm_pad_layout() == i ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [items addObject:action];
+    }
+    return (__bridge_retained void *)[UIMenu menuWithTitle:@"\u624B\u67C4\u5E03\u5C40" children:items];
+}
+#endif
+
 DM_EXPORT const char *dm_glue_start_game(const char *const *argv, int argc, const void *image) {
     if (prepared || argc != 2 || !argv || !argv[0] || !argv[1] || !image)
         return "Invalid or repeated game start.";

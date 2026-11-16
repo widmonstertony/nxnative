@@ -11,22 +11,29 @@ IOS_MIN_FLAG = '-mios-version-min=16.1'
 IOS_FLAGS = [IOS_MIN_FLAG, '-fmetal-math-mode=relaxed']
 METAL = ['xcrun', '-sdk', 'iphoneos', 'metal', '-c', '-O1', *IOS_FLAGS, '-fpreserve-invariance', '-fwrapv']   # -fwrapv: see dmsh_chain.py MAC_METAL
 METALLIB = ['xcrun', '-sdk', 'iphoneos', 'metallib']
-# Per-vertex fragment inputs require MSL 4.0 / iOS 26. Other sources keep
-# the classic deployment language and image-atomic lowering.
+# Per-vertex fragment inputs require MSL 4.0 / iOS 26. Device-scope
+# sequential fences emitted for NVN MEMBAR also need a newer MSL. Keep
+# classic libraries on their requested deployment baseline.
 METAL4, METAL4_FLAG = b'vertex_value<', '-std=metal4.0'
+DEVICE_FENCE = 'memory_order_seq_cst, thread_scope_device'
+MODERN = ['-mios-version-min=26.0' if option == IOS_MIN_FLAG else option for option in METAL] + [METAL4_FLAG]
 RECORD = ' '.join(METAL) + f' ({METAL4_FLAG} for a source using vertex_value); ' + ' '.join(METALLIB) + '; legacy-image-atomic-buffer-v1'
+if os.environ.get('DM_IOS_DEPLOYMENT_TARGET') == '26.0':
+    RECORD += '; device-scope sequential fences: ' + ' '.join(MODERN)
 DEPTH = ['-fbracket-depth=1024']
 
 def compile(msl, air, lib):
     with open(msl) as f: source = f.read()
     v4 = METAL4.decode() in source
+    modern_fence = DEVICE_FENCE in source and os.environ.get('DM_IOS_DEPLOYMENT_TARGET') == '26.0'
     lowered = None
     try:
         if dmsh_legacy_atomic.needed(source):
             text, _ = dmsh_legacy_atomic.lower(source)
             lowered = air + '.legacy.metal'
             with open(lowered, 'w') as f: f.write(text)
-        dmsh_pch.compile(METAL + ([METAL4_FLAG] if v4 else []) + DEPTH, lowered or msl, air)
+        flags = MODERN if modern_fence else METAL + ([METAL4_FLAG] if v4 else [])
+        dmsh_pch.compile(flags + DEPTH, lowered or msl, air)
         subprocess.run([*METALLIB, air, '-o', lib], check=True)
     finally:
         if lowered and os.path.exists(lowered): os.unlink(lowered)

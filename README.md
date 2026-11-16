@@ -51,6 +51,17 @@ both devices. Air's Fate/EXTELLA LINK independent framework also reads the
 current virtual-button layout format and applies the touch ABXY mapping;
 in-game control retesting remains open.
 
+The Air Metal 4 build now compiles the device-scope memory fences used by
+Fate/EXTELLA with Metal 4 while keeping the classic iOS shader target
+unchanged. The original 1.0.0 cartridge passed all 619 shader builds and
+linked a separate signed engine for the existing Gamebox. Its cartridge
+language flags omit Traditional Chinese, but its resource archive contains
+Traditional Chinese fonts and interface assets; in-game language and
+rendering still require device testing. A separate 1.0.2 Fate/EXTELLA LINK
+cartridge matched the installed build's resource image and all 58 DLC
+images byte for byte, so the Air only needed its per-game language preference
+changed to Traditional Chinese.
+
 Add each published game fix here with its affected device, what changed, and
 the deepest scene actually verified. A signed install or a successful shader
 build is not a gameplay pass. Keep earlier observations in the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Link a classic build as a TonTon independent engine, using its own profile and shader ABI."""
+"""Link a TonTon independent engine with its own profile and shader ABI."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -25,12 +25,13 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
     if not re.fullmatch(r'[0-9A-F]{16}', title) or not modules or len(set(modules)) != len(modules) or any(
             not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]*', mod) for mod in modules):
         raise ValueError('Invalid title or module list')
-    if minimum not in ('16.1', '17.0'):
-        raise ValueError('Expected a classic 16.1 or 17.0 build')
+    if minimum not in ('16.1', '17.0', '26.0'):
+        raise ValueError('Expected an iOS 16.1, 17.0 or 26.0 build')
     nro = patched / 'nro.tsv'
     if nro.is_file() and any(line and not line.startswith(('#', 'refused\t')) for line in nro.read_text().splitlines()):
         raise ValueError('This version of the shared loader cannot validate additional NRO modules')
-    env = dict(env or os.environ, GAME=title, DM_IOS_RENDERER='legacy', DM_IOS_DEPLOYMENT_TARGET=minimum)
+    renderer = 'metal4' if minimum == '26.0' else 'legacy'
+    env = dict(env or os.environ, GAME=title, DM_IOS_RENDERER=renderer, DM_IOS_DEPLOYMENT_TARGET=minimum)
     ios = engine / 'dm/ios'
     host = engine / 'dm/host'
     abi = REPO / 'dm/ios/LibraryApp/Sources'
@@ -62,11 +63,14 @@ def build_framework(engine, patched, work, title, modules, minimum, name, displa
                     '\nDM_EXPORT const unsigned char dm_game_image_marker = 1;\n')
     srcs.append((glue, glue.name))
     cc = ['xcrun', '--sdk', 'iphoneos', 'clang', '-target', f'arm64-apple-ios{minimum}']
-    common = ['-mcpu=apple-a10', '-O2', '-fvisibility=hidden', '-std=gnu11',
+    cpu_flags = [] if renderer == 'metal4' else ['-mcpu=apple-a10']
+    common = [*cpu_flags, '-O2', '-fvisibility=hidden', '-std=gnu11',
               *('-I' + d for d in flags('HEADER_SEARCH_PATHS')),
               *('-I' + str(d) for d in (srcdir, abi, host)), *flags('OTHER_CFLAGS'),
               *(f'-D{c}=TT_{title}_{c}' for c in sorted(classes)),
               f'-DDM_INDEPENDENT_GAME_TITLE="{title}"']
+    if renderer == 'metal4':
+        common.append('-DDM_TONTON_MODERN_GAME')
 
     def call_logged(cmd, logfile):
         with logfile.open('w') as log:
