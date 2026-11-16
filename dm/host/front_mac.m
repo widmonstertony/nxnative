@@ -137,10 +137,11 @@ static NSTimer *g_mouse_camera_timer;
 static double g_mouse_camera_time;
 static NSString *g_desktop_path;
 static void push(void);
+static void direct_touch_cancel(void);
 static int mouse_camera_capture_enabled(void) {
     return g_capture_enabled && g_desktop.enabled && g_desktop.look;
 }
-static int mouse_input_active(void) {
+static int game_input_active(void) {
     return g_input_on && g_win.isKeyWindow && NSApp.isActive && !g_win.miniaturized && !NSApp.modalWindow
         && !cp_blocks_input(g_cp.phase) && !hq_blocks_input(g_hq.phase);
 }
@@ -157,7 +158,7 @@ static void mouse_capture_end(void) {
     LOG("front end: mouse capture released");
 }
 static void mouse_capture_begin(void) {
-    if (g_mouse_lock || !mouse_camera_capture_enabled() || !mouse_input_active()) return;
+    if (g_mouse_lock || !mouse_camera_capture_enabled() || !game_input_active()) return;
     CGError error = CGAssociateMouseAndMouseCursorPosition(false);
     if (error != kCGErrorSuccess) { LOG("[RED] front end: mouse capture failed (%d)", error); return; }
     [NSCursor hide];
@@ -174,13 +175,13 @@ static void mouse_capture_begin(void) {
     LOG("front end: mouse captured by click (relative camera); Escape or F8 releases it");
 }
 static void mouse_capture_motion(NSEvent *event) {
-    if (!g_mouse_lock || !mouse_input_active() || (event.window && event.window != g_win)) return;
+    if (!g_mouse_lock || !game_input_active() || (event.window && event.window != g_win)) return;
     if (!isfinite(event.deltaX) || !isfinite(event.deltaY)) return;
     g_desktop.dx += event.deltaX;
     g_desktop.dy += event.deltaY;
 }
 static int desktop_mouse_button(int code, int down) {
-    if (!mouse_input_active() || !g_desktop.enabled) return 0;
+    if (!game_input_active() || !g_desktop.enabled) return 0;
     if (mouse_camera_capture_enabled() && !g_mouse_lock) return 1;
     if (!desktop_mouse_bound(&g_desktop, code)) return 0;
     g_desktop.down[code] = down;
@@ -207,6 +208,7 @@ static NSString *desktop_text(NSString *text) {
     return [NSBundle.mainBundle localizedStringForKey:text value:text table:@"Launcher"];
 }
 static void desktop_show_help(void) {
+    direct_touch_cancel();
     mouse_capture_end(); desktop_release(&g_desktop); push();
     NSMutableArray *rows = [NSMutableArray array];
     NSMutableDictionary *labels = [NSMutableDictionary dictionary];
@@ -298,6 +300,7 @@ static void input_release(void) {
     [NSCursor setHiddenUntilMouseMoves:NO];
     display_awake(0);
     g_input_on = 0;
+    direct_touch_cancel();
     desktop_release(&g_desktop);
     mouse_capture_end();
     key_state_clear(&g_key_state); g_btn = 0; g_held_fn = 0; push();
@@ -382,7 +385,7 @@ static void hq_show_menu(GCController *holder) {
     g_hq_menu = v; g_hq_menu_sel = g_hq.sel;
 }
 static void hq_changed(hq_phase was, hq_phase now, GCController *holder) {
-    if (hq_blocks_input(now)) { mouse_capture_end(); desktop_release(&g_desktop); push(); }
+    if (hq_blocks_input(now)) { direct_touch_cancel(); mouse_capture_end(); desktop_release(&g_desktop); push(); }
     if (was == HQ_HOLDING) hq_hide_hold();
     NSView *cv = g_win.contentView;
     switch (now) {
@@ -617,6 +620,7 @@ int front_ctrl_support(int min, int max) {
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_main_queue(), ^{
         desktop_release(&g_desktop);
+        direct_touch_cancel();
         key_state_clear(&g_key_state); g_btn = 0; g_held_fn = 0; push();   // nothing the game held stays pressed while the prompt has the input
         front_controllers_mouse(NULL);
         front_controllers_applet(1);
@@ -634,6 +638,113 @@ int front_ctrl_support(int min, int max) {
 // The picture's width / height (front.h front_picture_shape; 16:9 until the first present), which the present fits into the view
 static _Atomic double g_picture_aspect = 16.0 / 9.0;
 void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = (double)w / h; }
+
+static NSRect game_picture_rect(NSView *view) {
+    NSRect bounds = view.bounds;
+    double w = bounds.size.width, h = bounds.size.height, aspect = g_picture_aspect;
+    if (w <= 0 || h <= 0) return NSZeroRect;
+    if (w / h > aspect) w = h * aspect; else h = w / aspect;
+    return NSMakeRect(NSMidX(bounds) - w / 2, NSMidY(bounds) - h / 2, w, h);
+}
+static dm_touch game_touch_point(uint32_t slot, NSRect picture, NSPoint p) {
+    // The game screen's Y axis increases downward.
+    return (dm_touch){slot, (float)fmin(fmax((p.x - NSMinX(picture)) / NSWidth(picture), 0), .999),
+                      (float)fmin(fmax((NSMaxY(picture) - p.y) / NSHeight(picture), 0), .999)};
+}
+
+// AppKit delivers direct screen contacts to recognizers on macOS 27 (TN3216).
+// A single continuous recognizer sends the complete set to Switch HID, which
+// already handles tap, pan, pinch and rotate once the game requests them.
+@interface DmDirectTouch : NSGestureRecognizer <NSGestureRecognizerDelegate>
+- (void)cancelContacts;
+@end
+@implementation DmDirectTouch {
+    NSMutableSet *_active;
+    id<NSObject, NSCopying> _identities[15];
+    dm_touch _points[15];
+    BOOL _published;
+}
+- (BOOL)gestureRecognizer:(NSGestureRecognizer *)recognizer shouldAttemptToRecognizeWithEvent:(NSEvent *)event {
+    (void)recognizer;
+    return event.type == NSEventTypeDirectTouch || event.type == NSEventTypeGesture;
+}
+- (BOOL)gestureRecognizer:(NSGestureRecognizer *)recognizer shouldReceiveTouch:(NSTouch *)touch {
+    NSView *view = recognizer.view;
+    if (touch.type != NSTouchTypeDirect || !view) return NO;
+    NSPoint point = [touch locationInView:view];
+    return [view hitTest:[view convertPoint:point toView:view.superview]] == view;
+}
+- (void)publishContacts {
+    dm_touch contacts[15]; int count = 0;
+    for (int i = 0; i < 15; i++) if (_identities[i]) contacts[count++] = _points[i];
+    if (count || _published) front_controllers_screen(contacts, count);
+    _published = count > 0;
+}
+- (void)clearContacts {
+    [_active removeAllObjects];
+    for (int i = 0; i < 15; i++) _identities[i] = nil;
+    [self publishContacts];
+}
+- (void)cancelContacts {
+    [self clearContacts];
+    if (self.state == NSGestureRecognizerStateBegan || self.state == NSGestureRecognizerStateChanged)
+        self.state = NSGestureRecognizerStateCancelled;
+}
+- (void)reset { [super reset]; [self clearContacts]; }
+- (void)touchesBeganWithEvent:(NSEvent *)event {
+    [super touchesBeganWithEvent:event];
+    if (!_active) _active = [NSMutableSet new];
+    BOOL wasActive = _active.count > 0;
+    BOOL deliver = game_input_active();
+    NSRect picture = game_picture_rect(self.view);
+    for (NSTouch *touch in [event touchesMatchingPhase:NSTouchPhaseBegan inView:self.view]) {
+        if (touch.type != NSTouchTypeDirect || [_active containsObject:touch.identity]) continue;
+        [_active addObject:touch.identity];
+        NSPoint point = [touch locationInView:self.view];
+        // Consume the contact even if it activates an inactive window or starts in a letterbox.
+        if (!deliver || !NSPointInRect(point, picture)) continue;
+        for (int i = 0; i < 15; i++) if (!_identities[i]) {
+            _identities[i] = touch.identity;
+            _points[i] = game_touch_point((uint32_t)i, picture, point);
+            break;
+        }
+    }
+    if (!_active.count) return;
+    self.state = wasActive ? NSGestureRecognizerStateChanged : NSGestureRecognizerStateBegan;
+    [self publishContacts];
+}
+- (void)touchesMovedWithEvent:(NSEvent *)event {
+    [super touchesMovedWithEvent:event];
+    if (!game_input_active()) { [self cancelContacts]; return; }
+    NSRect picture = game_picture_rect(self.view);
+    if (!_active.count || NSIsEmptyRect(picture)) return;
+    for (NSTouch *touch in [event touchesMatchingPhase:NSTouchPhaseMoved inView:self.view]) {
+        for (int i = 0; i < 15; i++) if ([_identities[i] isEqual:touch.identity]) {
+            _points[i] = game_touch_point((uint32_t)i, picture, [touch locationInView:self.view]);
+            break;
+        }
+    }
+    self.state = NSGestureRecognizerStateChanged;
+    [self publishContacts];
+}
+- (void)touchesEndedWithEvent:(NSEvent *)event {
+    [super touchesEndedWithEvent:event];
+    if (!_active.count) return;
+    for (NSTouch *touch in [event touchesMatchingPhase:NSTouchPhaseEnded inView:self.view]) {
+        [_active removeObject:touch.identity];
+        for (int i = 0; i < 15; i++) if ([_identities[i] isEqual:touch.identity]) _identities[i] = nil;
+    }
+    self.state = _active.count ? NSGestureRecognizerStateChanged : NSGestureRecognizerStateEnded;
+    [self publishContacts];
+}
+- (void)touchesCancelledWithEvent:(NSEvent *)event {
+    [super touchesCancelledWithEvent:event];
+    [self cancelContacts];
+}
+@end
+static DmDirectTouch *g_direct_touch;
+static void direct_touch_cancel(void) { [g_direct_touch cancelContacts]; }
+
 @interface DmGameView : NSView @end
 @implementation DmGameView
 - (void)showDesktopHelp:(id)sender { (void)sender; desktop_show_help(); }
@@ -647,14 +758,11 @@ void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = 
     if (!desktop_mouse_button(DESKTOP_MOUSE_LEFT, 1)) [self mouseDragged:e];
 }
 - (void)mouseDragged:(NSEvent *)e {
-    if (!mouse_input_active() || mouse_camera_capture_enabled()) return;
+    if (!game_input_active() || mouse_camera_capture_enabled()) return;
     if (g_desktop.enabled && (!g_desktop.touch || desktop_mouse_bound(&g_desktop, DESKTOP_MOUSE_LEFT))) return;
-    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
-    double w = b.width, h = b.height;
-    if (w <= 0 || h <= 0) return;
-    double a = g_picture_aspect; if (w / h > a) w = h * a; else h = w / a;   // the centered picture the present fits into the view (16:9, or a taller one under DM_SCREEN_ASPECT)
-    double x0 = (b.width - w) / 2, y0 = (b.height - h) / 2;
-    dm_touch t = {0, (float)fmin(fmax((p.x - x0) / w, 0), 0.999), (float)fmin(fmax(1 - (p.y - y0) / h, 0), 0.999)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
+    NSRect picture = game_picture_rect(self);
+    if (NSIsEmptyRect(picture)) return;
+    dm_touch t = game_touch_point(0, picture, [self convertPoint:e.locationInWindow fromView:nil]);
     front_controllers_mouse(&t);
 }
 - (void)mouseUp:(NSEvent *)e { (void)e; desktop_mouse_button(DESKTOP_MOUSE_LEFT, 0); front_controllers_mouse(NULL); }
@@ -1558,6 +1666,13 @@ void front_run(void (*guest)(void)) {
         // the game picture to fit the drawable with black bars around it, so fullscreen keeps the game's aspect ratio.
         win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
         NSView *v = win.contentView = [[DmGameView alloc] initWithFrame:r];
+        if (@available(macOS 27.0, *)) {
+            g_direct_touch = [[DmDirectTouch alloc] initWithTarget:nil action:NULL];
+            g_direct_touch.allowedTouchTypes = NSTouchTypeMaskDirect;
+            g_direct_touch.delegate = g_direct_touch;
+            [v addGestureRecognizer:g_direct_touch];
+            LOG("front end: native screen touch and physical mouse input are separate");
+        }
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
         g_layer.device = MTLCreateSystemDefaultDevice();
@@ -1697,7 +1812,7 @@ void front_run(void (*guest)(void)) {
         // Entering and leaving fullscreen: the layer is layer-backed, so its frame (and with it the drawable) follows the
         // content view by itself; only the scale factor has to be carried over to the screen the window ended up on. The screen's rate is matched in fullscreen only (screen_match_apply)
         [nc addObserverForName:NSWindowDidEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; screen_refresh(win.screen); g_fullscreen = 1; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
-        [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; mouse_capture_end(); }];
+        [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; direct_touch_cancel(); mouse_capture_end(); }];
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged handler:^NSEvent *(NSEvent *e) { mouse_capture_motion(e); return e; }];
         [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_fullscreen = 0; screen_refresh(win.screen); g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
         // DM_FOCUS_KEEP=1 (scripts/regress.py): the game stays in focus while its window is up, whichever app is active. Tears of the Kingdom stops presenting out of focus, so
@@ -1750,7 +1865,7 @@ void front_progress(const char *title, long done, long total) {
 }
 
 // Offline HTML pages (web_apple.m): the page's view covers the game view and resizes with it; it is the first responder while shown (front_web_show), and the game view again after
-void front_web_attach(NSView *box) { NSView *v = g_win.contentView; box.frame = v.bounds; [v addSubview:box]; }
+void front_web_attach(NSView *box) { direct_touch_cancel(); NSView *v = g_win.contentView; box.frame = v.bounds; [v addSubview:box]; }
 void front_web_detach(NSView *box) { if (box.window && box.window.firstResponder != box.window.contentView) [box.window makeFirstResponder:box.window.contentView]; }
 
 // Software keyboard input box (front.h): the main thread shows an NSAlert + text field and the guest thread waits synchronously for the result. Not shown in windowless mode (returns -1, the caller treats it as cancel)
@@ -1763,6 +1878,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         // The box takes the keyboard and the mouse, so the game window never sees the key-up of the button or the touch-up of the click that opened it: nothing may stay pressed
         // while it is up, or the game reads the stuck button / touch the moment the box closes (Stardew Valley's character creation re-opened the keyboard endlessly)
         desktop_release(&g_desktop);
+        direct_touch_cancel();
         mouse_capture_end();
         key_state_clear(&g_key_state); g_btn = 0; g_held_fn = 0; push();
         front_controllers_modal(1);

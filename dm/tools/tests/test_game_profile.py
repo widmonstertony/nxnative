@@ -40,6 +40,28 @@ class PsoGPU(unittest.TestCase):
             self.assertIn(': pso_gpu takes 1-4 whitespace-separated GPU architectures', out, rows)
 
 
+class TouchDefaults(unittest.TestCase):
+    def test_missing_keys_use_title_defaults(self):
+        cases = (
+            ('010057A01E4D4000', '', 0, 2),
+            ('010057A01E4D4000', 'op_mode\tconsole\n', 1, 0),
+            ('010057A01E4D4000', 'pad_layout\tfull\n', 0, 1),
+            ('01006F8002326000', 'pad_layout\tfull\n', 0, 1),
+            (ID, '', 1, 0),
+        )
+        for title, rows, mode, layout in cases:
+            with self.subTest(title=title, rows=rows), tempfile.TemporaryDirectory() as d:
+                folder = Path(d, title)
+                folder.mkdir()
+                (folder / 'game.tsv').write_text(TSV.replace(ID, title) + rows)
+                output = folder / 'game.h'
+                subprocess.run([sys.executable, str(GAME), 'header', title, str(output)], check=True,
+                               env={**os.environ, 'DM_GAMES_DIR': d, 'DM_GAMES_FIRST': '1'}, capture_output=True)
+                macros = output.read_text().splitlines()
+                self.assertIn(f'#define DM_GAME_OPMODE {mode}', macros)
+                self.assertIn(f'#define DM_GAME_PAD_LAYOUT {layout}', macros)
+
+
 
 MAP = ('# kind: evidence  Test shaders\n# column 5 records where each key first appears\npackage\tindex\tstage\tdm_ctl_sha16\tsource\n'
        'cs_other.bin\t1\tcompute\tc56db3d5a0f1b5af\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x124900\n'

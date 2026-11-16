@@ -1193,10 +1193,36 @@ static void test_hid_same_device_twice(void) {
     native_devices=nil; controllers_reconcile(@[]); hid_fixture_finish();
     puts("HID device reported under two references is one pad, and one Pro Controller is not twins: OK");
 }
+static void test_direct_screen(void) {
+    DMController *pad = [DMController new];
+    pad->slot=1; pad->pad_mode[1]=PAD_TOUCH;
+    pad->input.pad[1]=(steam_pad){1,-32767,32767,1};
+    [g_devices addObject:pad];
+    dm_touch screen[2] = {{0, .25f, .5f}, {1, .75f, .5f}};
+    dm_touch mouse={0,.5,.5}; front_controllers_mouse(&mouse);
+    assert(ntouches==2 && touches[0].id==0);
+    unsigned pad_id=touches[1].id;
+    front_controllers_screen(screen, 2);
+    assert(ntouches==4 && touches[0].id==0 && touches[3].id==pad_id);
+    assert(touches[1].id!=touches[2].id && touches[1].id!=pad_id && touches[2].id!=pad_id);
+    unsigned held_screen_id=touches[2].id;
+    screen[1].x=.875f;
+    front_controllers_screen(screen+1, 1);
+    assert(ntouches==3 && touches[1].id==held_screen_id && touches[1].x==.875f);
+    front_controllers_screen(NULL, 0);
+    assert(ntouches==2 && touches[0].id==0 && touches[1].id==pad_id);
+    front_controllers_screen(screen, 2);
+    [g_devices removeObject:pad];
+    front_controllers_focus(0); assert(!ntouches);
+    front_controllers_focus(1); assert(!ntouches);
+    puts("Direct screen, mouse, controller touchpad and focus release: OK");
+}
 int main(int argc, char **argv) {
     @autoreleasepool {
         g_devices = [NSMutableArray array]; g_maps = [NSMutableDictionary dictionary];
         pad_map_default(&g_button_map);
+        test_direct_screen();
+        if (argc == 2 && !strcmp(argv[1], "--direct-touch")) return 0;
         // Upstream focus handling releases only input the front end owns;
         // DM_CTL may be holding a scripted finger with no mouse/pad touch.
         dm_touch scripted={0,.25,.75}; dm_touch_set(&scripted,1);

@@ -6,6 +6,9 @@ NSMenu *front_controllers_menu(void);
 
 #include "front.h"
 void front_controllers_mouse(const dm_touch *touch);
+// Complete snapshot of direct screen contacts. IDs are stable slots 0…14;
+// the controller router allocates separate Switch finger IDs alongside pads.
+void front_controllers_screen(const dm_touch *touches, int count);
 void front_controllers_focus(int active);
 void front_controllers_modal(int active);
 void front_controllers_window(int active);

@@ -151,7 +151,7 @@ def info_plist(a, minos, icon):
          'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleDevelopmentRegion': 'en', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
          'NSBluetoothAlwaysUsageDescription': 'Connect Switch 2 Joy-Con and Pro Controllers over Bluetooth.',
          'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1,
-         'DMForkPatches': fork_patches(), 'DMControllerMappings': 1}
+         'DMForkPatches': fork_patches(), 'DMControllerMappings': 1, 'NSIsTouchNative': True}
     # the front ends show DMDisplayVersion, else DMPackageVersion: CFBundleShortVersionString is 1.0 when the packed update has no display version of its own (#953)
     if a.version: p['DMDisplayVersion'] = a.version
     if a.package_version: p['DMPackageVersion'] = a.package_version

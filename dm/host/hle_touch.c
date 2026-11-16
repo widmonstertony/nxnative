@@ -144,7 +144,8 @@ static void gesture_sample(uint64_t now) {
             if (dt > 0) { s.vx = (float)s.dx / dt; s.vy = (float)s.dy / dt; }
             g_gpan_dt = dt;
             if (fabsf(g.dist - g_glast.dist) > 0.5f) { type = GT_PINCH; s.scale = g_glast.dist > 0 ? g.dist / g_glast.dist : 1; }
-            float turn = atanf((g.angle - g_glast.angle) / (1 + g.angle * g_glast.angle));
+            // atan2 already returned an angle. Wrap its difference to the shortest signed turn.
+            float turn = remainderf(g.angle - g_glast.angle, 2 * (float)M_PI);
             if (fabsf(turn) > 0.015f) { type = GT_ROTATE; s.scale = 0; s.rot = turn * 180.0f / (float)M_PI; }
         } else if (ltype == GT_TOUCH) type = GT_PRESS;
     } else if (g_glast.n) {   // released

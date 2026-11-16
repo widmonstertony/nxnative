@@ -58,6 +58,9 @@ static __weak DMController *g_motion_source;
 static __weak DMController *g_merge_haptics_source;
 static NSTimeInterval controller_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec+t.tv_nsec/1e9; }
 static dm_touch g_mouse; static int g_mouse_down;
+static dm_touch g_screen[15];
+static unsigned g_screen_down;
+static uint8_t g_screen_ids[15];   // 0 means unassigned; Switch ID 0 belongs to the mouse
 static BOOL g_touches_published;
 static void steam_keepalive(DMController *d);
 static void controllers_changed(GCController *gone);
@@ -273,7 +276,24 @@ static void controller_touches(void) {
         if(!g_focus || d->slot<0 || d->pad_mode[i]!=PAD_TOUCH || !d->input.pad[i].down) d->touch_id[i]=-1;
         if(d->touch_id[i]>=0) used|=1u<<d->touch_id[i];
     }
+    // Keep both held screen and held controller contacts stable. New screen
+    // contacts take high numbers; controller touchpads start at the low end.
+    for (int i = 0; i < 15; i++) {
+        if (!(g_screen_down & (1u << i))) g_screen_ids[i] = 0;
+        if (g_screen_ids[i]) used |= 1u << g_screen_ids[i];
+    }
     if(g_focus && g_mouse_down) touches[n++]=g_mouse;
+    for (int i = 0; i < 15; i++) if (g_screen_down & (1u << i)) {
+        if (!g_screen_ids[i]) for (int id = 15; id > 0; id--) if (!(used & (1u << id))) {
+            g_screen_ids[i] = (uint8_t)id;
+            used |= 1u << id;
+            break;
+        }
+        if (g_screen_ids[i]) {
+            touches[n] = g_screen[i];
+            touches[n++].id = g_screen_ids[i];
+        }
+    }
     for(DMController *d in g_devices) for(int i=0;i<2;i++) {
         if(!g_focus || d->slot<0 || d->pad_mode[i]!=PAD_TOUCH || !d->input.pad[i].down) continue;
         if(d->touch_id[i]<0) for(int j=1;j<16;j++) if(!(used & (1u<<j))) { d->touch_id[i]=j; used|=1u<<j; break; }
@@ -288,6 +308,16 @@ static void controller_touches(void) {
 }
 void front_controllers_mouse(const dm_touch *touch) {
     g_mouse_down=g_focus && touch!=NULL; if(touch) { g_mouse=*touch; g_mouse.id=0; } controller_touches();
+}
+void front_controllers_screen(const dm_touch *touches, int count) {
+    g_screen_down = 0;
+    if (g_focus) for (int i = 0; i < count; i++) {
+        uint32_t slot = touches[i].id;
+        if (slot >= 15) continue;
+        g_screen[slot] = touches[i];
+        g_screen_down |= 1u << slot;
+    }
+    controller_touches();
 }
 static steam_state controller_effective(DMController *d) {
     if(!g_focus) return (steam_state){0};
@@ -425,6 +455,7 @@ static void controller_update_focus(void) {
     dm_switch2_active(g_focus);   // focus lost: the Switch 2 sensors stop driving the game's; back: they continue
     if(!g_focus) {
         g_mouse_down=0;
+        g_screen_down=0;
         for(DMController *d in g_devices) {
             controller_reset_motion(d);
             if(!listening) d->input=(steam_state){0};

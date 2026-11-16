@@ -682,7 +682,7 @@ Most service calls can be found before they crash, before the first boot or the 
 
 - **Symptom:** taps in handheld mode do nothing, though the game reads the touch screen (the title's PRESS ANY BUTTON, the menus' cards).
 - **Cause:** the game's touch handler (`main+0x42f1ac`) uses `GetTouchScreenState` only to track the finger and takes its taps, pans and swipes from `hid::GetGestureStates` (it acts on types 5–9), which the host answered with no entries.
-- **Fix:** the host now recognizes gestures from the same touch points, by yuzu's rules plus an 8 px slop before a touch counts as moving (`hle_touch.c` `gesture_sample`, unit test `t_gesture`; only in handheld mode, as touches): Touch, Press after 0.5 s, Pan, Pinch / Rotate with two fingers, Cancel on a change in the finger count, then Tap (IsDoubleTap within 0.35 s), Swipe above 400 px/s or Complete, and Idle. For every game.
+- **Fix:** the host now recognizes gestures from the same touch points, by yuzu's rules plus an 8 px slop before a touch counts as moving (`hle_touch.c` `gesture_sample`, unit test `t_gesture`; only in handheld mode, as touches): Touch, Press after 0.5 s, Pan, Pinch / Rotate with two fingers, Cancel on a change in the finger count, then Tap (IsDoubleTap within 0.35 s), Swipe above 400 px/s or Complete, and Idle. Rotation uses the shortest signed difference between the angles, including across ±180°. For every game.
 - **Check:** every menu, the cards, the map's drag and flick worked by touch with it. `DM_TOUCH_LOG=1` logs each gesture entry, and a `DM_CTL` line `drag <x0> <y0> <x1> <y1> [seconds]` moves a finger for testing pans and swipes on the Mac.
 - **Found on:** [Taiko Risshiden V DX](../../dm/games/0100346017304000/README.md) (SDK 12.3.3, Koei Tecmo's KTGL).
 - **Two-argument `InitializeGesture`:** SDK 20.5.15 has an overload `nn::hid::InitializeGesture(int, int)`, whose SDK body opens the hid service and aborts in `sm::Initialize` (Result 0xe15) on the host; it is taken over as the other one is ([PRAGMATA](../../dm/games/0400C76024710000/README.md)).
@@ -701,6 +701,14 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** its capture request started enabled and survived focus loss. The touchscreen path then reconstructed a clamped pointer from relative movement.
 - **Fix:** adopt the capture lifecycle in [the mouse-stick patch](https://github.com/SanteeMarcel/nxnative/commit/0637a9c3ccdac52c1eeb56e8d71d281a5e3b47dd). Touch uses AppKit's absolute coordinates. In camera mode a click captures without sending a game button. Escape, F8, focus loss and modal prompts release the pointer and clear its held buttons and motion. The desktop profiles still supply stick response and mouse bindings.
 - **Found on:** TonTon touchscreen games and the camera profiles for [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md) and [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md).
+
+### A Mac touchscreen tap triggers the mouse camera
+
+- **Symptom:** finger input on a Mac touch display can be interpreted as a click on a camera game. The emulated mouse cannot send separate touch points for a two-finger gesture.
+- **Cause:** macOS uses mouse emulation in games that do not request direct touch. The front end consumed mouse clicks and relative deltas without access to the original contacts.
+- **Fix:** follow [Apple TN3216](https://developer.apple.com/documentation/technotes/tn3216-supporting-touch-input-for-games-on-macos). Mac game bundles claim native touch and the game view installs a direct-touch recognizer on macOS 27. Each contact keeps a stable finger ID and uses its absolute position inside the game picture. The controller router merges the screen, mouse and controller touchpads without sharing IDs. Focus loss and applet entry lift the screen contacts. Switch HID delivers them in handheld mode and recognizes gestures for games that read them.
+- **Check:** an isolated Mac run of TSUKIHIME 1.0.2 (`010057A01E4D4000`, main `625fc1d9d9485debdd407d7259722ed5`) accepted the player's taps and read changing coordinates during drags. A separate AppKit test wired the same direct-touch recognizer to the Switch HID gesture reader. On the Mac touch display, the player moved one finger and used two fingers to scale in both directions and rotate clockwise and counterclockwise. The displayed test shape and recorded gesture samples tracked all five actions. In-game two-finger support depends on which events each game reads.
+- **Found on:** TonTon's Mac touch and camera modes. The mouse capture lifecycle remains independent of direct touch.
 
 ### Mac pointer stays over the game
 

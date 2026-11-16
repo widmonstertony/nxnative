@@ -77,11 +77,24 @@ int main(void) {
     rd(7 * S); newest("pinch: Touch of two fingers", 31, 16, TOUCH, 640, 360, 0, 0, NEW, 0, 2);
     dm_touch_set(two, 2); rd(7 * S + 16 * MS); newest("pinch: Pinch (640,360)", 32, 16, PINCH, 640, 360, 0, 0, 0, 0, 2);
     check("pinch: scale 2", g[0].scale > 1.999f && g[0].scale < 2.001f);
-    up(); rd(7 * S + 33 * MS); newest("pinch: released → Complete", 33, 16, COMPLETE, 0, 0, 0, 0, 0, 0, 0);
+    two[0].y = .375f; two[1].y = .625f;
+    dm_touch_set(two, 2); rd(7 * S + 33 * MS); newest("rotate: two fingers turn around the same center", 33, 16, ROTATE, 640, 360, 0, 0, 0, 0, 2);
+    check("rotate: a positive turn of about 15 degrees, without a zoom", g[0].scale == 0 && g[0].rot > 15 && g[0].rot < 16);
+    up(); rd(7 * S + 50 * MS); newest("rotate: released → Complete", 34, 16, COMPLETE, 0, 0, 0, 0, 0, 0, 0);
     // 9 A press and lift between two reads still makes a Touch, then a Tap
-    rd(7 * S + 50 * MS); one(0.5f, 0.5f); up();
-    rd(8 * S); newest("between reads: Touch", 35, 18, TOUCH, 640, 360, 0, 0, NEW, 0, 1);
-    rd(8 * S + 16 * MS); newest("between reads: Tap", 36, 18, TAP, 640, 360, 0, 0, 0, 0, 1);
+    rd(7 * S + 66 * MS); one(0.5f, 0.5f); up();
+    rd(8 * S); newest("between reads: Touch", 36, 18, TOUCH, 640, 360, 0, 0, NEW, 0, 1);
+    rd(8 * S + 16 * MS); newest("between reads: Tap", 37, 18, TAP, 640, 360, 0, 0, 0, 0, 1);
+    rd(8 * S + 32 * MS); rd(8 * S + 48 * MS);
+    // The directed segment crosses ±180° by 31.4°, then crosses back.
+    dm_touch across[2] = {{0, .625f, .4375f}, {1, .375f, .5625f}};
+    dm_touch_set(across, 2); rd(9 * S);
+    across[0].y = .5625f; across[1].y = .4375f;
+    dm_touch_set(across, 2); rd(9 * S + 16 * MS);
+    check("rotate: positive 31.4 degrees across the angle boundary", g[0].type == ROTATE && g[0].rot > 31 && g[0].rot < 32);
+    across[0].y = .4375f; across[1].y = .5625f;
+    dm_touch_set(across, 2); rd(9 * S + 32 * MS);
+    check("rotate: negative 31.4 degrees across the angle boundary", g[0].type == ROTATE && g[0].rot < -31 && g[0].rot > -32);
     printf("== %d checks, %d failed ==\n", cases, fails);
     return fails != 0;
 }
