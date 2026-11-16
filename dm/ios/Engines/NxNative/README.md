@@ -245,7 +245,11 @@ On the M2 running iPadOS 16.1, build 60.119 rendered EXTELLA, returned to
 the game library after the runtime drained its workers and GPU, and started
 EXTELLA LINK under the same process. The test used separate scratch saves
 and verified the original saves were unchanged. No game shader chain
-changes with this fence.
+changes with this fence. The older iPad received the 60.120 launcher in
+place and opened the library. Its game images, save fingerprints and prior
+framework list matched the pre-install checks. Older frameworks that do
+not declare the safe-return lifecycle still use their original launch
+behavior; installing the launcher alone does not opt them in.
 
 For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
 shader pairs matched the current inputs after reconstructing the original
