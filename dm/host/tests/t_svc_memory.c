@@ -621,7 +621,21 @@ int main(int argc, char **argv) {
     g_mod[0].back_len = 0;
     assert(image_bytes() == 0x10000000);
     g_nmod = 0;
-    free(g_alias_bits); free(g_alias_exposed); assert(!munmap(g_as, g_reserve));
-    printf("memory SVCs passed (map limit=%d, host page=%d, guest files %d)\n", DM_GAME_MEM_MAP_LIMIT, memory_getpagesize(), g_gf_n);
+    assert(resize(0x200000) == 0);
+    *(volatile uint64_t *)(uintptr_t)heap = 0x123456789abcdef0ULL;
+    dm_guest_memory_release(0);
+    assert(g_as != NULL && g_reserve != 0);
+    assert(*(volatile uint64_t *)(uintptr_t)heap == 0x123456789abcdef0ULL);
+    assert(resize(0) == 0);
+    int gf_was = g_gf_n;
+    dm_guest_memory_release(1);
+    assert(g_as == NULL && g_reserve == 0 && g_alias_bits == NULL && g_alias_exposed == NULL && g_alias_rel == NULL && g_alias_aged == NULL && !atomic_load(&g_alias_hw) && !atomic_load(&g_gf_punched) && g_gf_n == 0 && !g_gf_th_on && !g_aw_th_on && !g_rf_th_on);
+    setenv("DM_ALIAS_WINDOWS", "512", 1);
+    assert(resize(0x200000) == 0);
+    assert(g_as != NULL && g_reserve != 0 && g_heap_cur == 0x200000 && g_aw_th_on == 1);
+    unsetenv("DM_ALIAS_WINDOWS");
+    dm_guest_memory_release(1);
+    assert(g_as == NULL && g_reserve == 0 && g_alias_bits == NULL && g_alias_exposed == NULL && g_alias_rel == NULL && g_alias_aged == NULL && !atomic_load(&g_alias_hw) && !atomic_load(&g_gf_punched) && g_gf_n == 0 && !g_aw_th_on);
+    printf("memory SVCs passed (map limit=%d, host page=%d, guest files %d)\n", DM_GAME_MEM_MAP_LIMIT, memory_getpagesize(), gf_was);
     return 0;
 }

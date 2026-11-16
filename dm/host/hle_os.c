@@ -90,12 +90,16 @@ static pthread_mutex_t g_gfz_mu = PTHREAD_MUTEX_INITIALIZER; static unsigned g_g
 static pthread_cond_t g_gfz_cv = PTHREAD_COND_INITIALIZER; static _Atomic int g_gfz_bg;
 // Each read also counts on the reading thread: a run of yields whose passes read the clock is a wait for a time, which the yield back-off sleeps from its start (hle_thread.c thr_yield)
 __thread uint64_t dm_clock_reads;
+__attribute__((weak)) int dm_teardown_is_parking(void) { return 0; }
+__attribute__((weak)) void dm_teardown_check_current_thread(void) {}
 void guest_clock_read_wait(void) {
     dm_clock_reads++;
+    if (dm_teardown_is_parking()) { dm_teardown_check_current_thread(); return; }
     if (!atomic_load(&g_gfz_bg) || atomic_load(&dm_host_work)) return;
     pthread_mutex_lock(&g_gfz_mu);
-    while (g_gfz_reasons & 2u) pthread_cond_wait(&g_gfz_cv, &g_gfz_mu);
+    while ((g_gfz_reasons & 2u) && !dm_teardown_is_parking()) pthread_cond_wait(&g_gfz_cv, &g_gfz_mu);
     pthread_mutex_unlock(&g_gfz_mu);
+    if (dm_teardown_is_parking()) dm_teardown_check_current_thread();
 }
 void guest_clock_freeze_for(int reason, int on) {
     pthread_mutex_lock(&g_gfz_mu);
@@ -103,6 +107,14 @@ void guest_clock_freeze_for(int reason, int on) {
     guest_clock_freeze_apply(g_gfz_reasons != 0);
     atomic_store(&g_gfz_bg, (g_gfz_reasons & 2u) != 0);
     if (!(g_gfz_reasons & 2u)) pthread_cond_broadcast(&g_gfz_cv);   // after the clock is running again: a released read sees it continue
+    pthread_mutex_unlock(&g_gfz_mu);
+}
+void dm_guest_clock_wake_teardown(void) {
+    pthread_mutex_lock(&g_gfz_mu);
+    g_gfz_reasons = 0;
+    guest_clock_freeze_apply(0);
+    atomic_store(&g_gfz_bg, 0);
+    pthread_cond_broadcast(&g_gfz_cv);
     pthread_mutex_unlock(&g_gfz_mu);
 }
 void guest_clock_freeze(int on) { guest_clock_freeze_for(0, on); }

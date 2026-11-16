@@ -82,6 +82,22 @@ static size_t g_gf_chunk;          // each file's size; the last one holds the r
 static uint64_t g_gf_min_free;     // DM_GUEST_FILE_MIN_FREE in bytes: the free space on the files' disk, less what the dirty pages may still take, under which the game is stopped; 0 = never
 static int g_gf_punch = 1;         // DM_GUEST_FILE_PUNCH=0: what the game gives back keeps its disk blocks (only PROT_NONE), as before
 static _Atomic uint64_t g_gf_punched;   // bytes given back as holes (guest_file_punch)
+static _Atomic int g_gf_stop;
+static pthread_mutex_t g_bg_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_bg_cv = PTHREAD_COND_INITIALIZER;
+static pthread_t g_gf_th, g_aw_th, g_rf_th;
+static int g_gf_th_on, g_aw_th_on, g_rf_th_on;
+
+static int bg_sleep(unsigned sec) {
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += sec;
+    pthread_mutex_lock(&g_bg_lock);
+    while (!atomic_load(&g_gf_stop)) {
+        if (pthread_cond_timedwait(&g_bg_cv, &g_bg_lock, &ts) == ETIMEDOUT) break;
+    }
+    int stop = atomic_load(&g_gf_stop);
+    pthread_mutex_unlock(&g_bg_lock);
+    return stop;
+}
 
 // Give the files' blocks under [lo, hi) (whole host pages, inside the block) back to the disk with F_PUNCHHOLE. Over a mapped range it also drops the pages, written out or still dirty, and they read 0
 // again (measured on the Mac: a 64 MB shared mapping, half written out: blocks 32 MB → 16 MB after punching a written and a dirty quarter, both read 0, and a later msync writes nothing for them). A
@@ -162,8 +178,7 @@ static void *guest_file_thread(void *arg) {
     const char *sc = getenv("DM_GUEST_FILE_SCAN"); int scan = sc && atoi(sc) > 0, purge_told = 0;
     double imp = -1, dirty = -1, count_ms = 0; unsigned imp_at = 0;
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-    for (unsigned sec = 1;; sec++) {
-        sleep(1);
+    for (unsigned sec = 1; !bg_sleep(1); sec++) {
         struct statfs fs; struct rusage_info_v4 ru; task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; struct stat st; struct timespec t0, t1;
         if (sec % 10 == 0) guest_file_sweep();
         if (sec % 10 == 1) {   // every 10 s, from the first second (a burst of new dirty pages between two counts is what the margin's other half is for)
@@ -195,6 +210,7 @@ static void *guest_file_thread(void *arg) {
             ru_ok ? ru.ri_diskio_bytesread / G : -1, ru_ok ? (unsigned long long)ru.ri_pageins : 0ull,
             ru_ok ? ru.ri_logical_writes / G : -1, vi.phys_footprint / G, vi.internal / G, vi.compressed / G, ru_ok ? ru.ri_lifetime_max_phys_footprint / G : -1, vi.external / G, avail / G, imp / G);
     }
+    free(vec);
     return NULL;
 }
 // Whether the guest goes in files: DM_GUEST_FILE when it is set, otherwise when the game's memory pool does not fit the room to the memory limit (room 0: no limit known, as on the Mac)
@@ -265,6 +281,7 @@ static int guest_files_map(const char *dir, size_t chunk, int n, struct statfs *
     return 0;
 }
 static void guest_file_init(void) {
+    atomic_store(&g_gf_stop, 0);
     const double G = 1073741824.0; const char *e = getenv("DM_GUEST_FILE"), *d = getenv("DM_GUEST_FILE_DIR"), *mf = getenv("DM_GUEST_FILE_MIN_FREE");
 #if TARGET_OS_IPHONE
     uint64_t room = os_proc_available_memory();
@@ -291,8 +308,8 @@ static void guest_file_init(void) {
     if (g_gf_min_free && most < dm_profile()->app_pool + g_gf_min_free)
         LOG("[RED] [mem] guest file: the files may take up to the memory pool, %.1f GB, and %.1f GB is free: the game is stopped if under %.1f GB is left", dm_profile()->app_pool / G, most / G, g_gf_min_free / G);
     if (strcmp(fs.f_fstypename, "apfs") || !(fs.f_flags & MNT_LOCAL)) LOG("[RED] [mem] guest file: not on a local APFS volume, where it may not be sparse, or be slow");
-    pthread_t th; int rc = pthread_create(&th, NULL, guest_file_thread, NULL);
-    if (!rc) pthread_detach(th);
+    int rc = pthread_create(&g_gf_th, NULL, guest_file_thread, NULL);
+    if (!rc) g_gf_th_on = 1;
     else LOG("[RED] [mem] guest file: no thread to watch it (error %d): no 10-s line, and nothing stops the game when its disk fills", rc);
 }
 
@@ -336,13 +353,20 @@ static void mem_init_once(void) {
     LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)g_reserve, g_heap, g_alias, g_stack);
     if ((uint64_t)(uintptr_t)g_alias > UINT64_C(1) << 39) LOG("[mem] the heap and stacks reach past 2^39, which a Switch's addresses never do: a crash on a cut-off pointer points here (DM_ALIAS_SIZE=<profile's mem_alias> keeps them lower)");
     const char *aw = getenv("DM_ALIAS_WINDOWS");
-    if (aw && atoi(aw) > 0) { pthread_t th; if (!pthread_create(&th, NULL, alias_windows_thread, (void *)(uintptr_t)atoi(aw))) pthread_detach(th); }
+    if (aw && atoi(aw) > 0 && !pthread_create(&g_aw_th, NULL, alias_windows_thread, (void *)(uintptr_t)atoi(aw))) g_aw_th_on = 1;
     const char *rf = getenv("DM_REGIONS");
-    if (rf && *rf) { pthread_t th; if (!pthread_create(&th, NULL, regions_thread, (void *)rf)) pthread_detach(th); }
+    if (rf && *rf && !pthread_create(&g_rf_th, NULL, regions_thread, (void *)rf)) g_rf_th_on = 1;
 }
+static _Atomic int g_mem_ready;
+static pthread_mutex_t g_init_lock = PTHREAD_MUTEX_INITIALIZER;
 static void mem_init(void) {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, mem_init_once);
+    if (__builtin_expect(atomic_load_explicit(&g_mem_ready, memory_order_acquire), 1)) return;
+    pthread_mutex_lock(&g_init_lock);
+    if (!atomic_load_explicit(&g_mem_ready, memory_order_relaxed)) {
+        mem_init_once();
+        atomic_store_explicit(&g_mem_ready, 1, memory_order_release);
+    }
+    pthread_mutex_unlock(&g_init_lock);
 }
 
 // Application memory pool = the 3285 MB the Switch (4 GB model) gives applications. At startup (main+0x1b66160) the game sets the whole total reported by QueryMemoryInfo as the heap, retrying with 2 MB less on failure,
@@ -416,6 +440,52 @@ int dm_guest_heap_read(uint64_t addr, void *out, size_t len) {
     pthread_mutex_unlock(&g_map_lock);
     return bad;
 }
+static _Atomic int64_t g_alias_mapped;   // bytes mapped in the alias region (page bitmap)
+static void region_table_clear(void);
+void dm_guest_memory_release(int unmap_as) {
+    pthread_mutex_lock(&g_init_lock);
+    pthread_mutex_lock(&g_map_lock);
+    if (!g_as || !g_reserve) { pthread_mutex_unlock(&g_map_lock); pthread_mutex_unlock(&g_init_lock); return; }
+    if (!unmap_as) {
+        if (g_gf_n > 0) {
+            msync(g_as, g_reserve, MS_ASYNC);
+            madvise(g_as, g_reserve, MADV_DONTNEED);
+        }
+        pthread_mutex_unlock(&g_map_lock);
+        pthread_mutex_unlock(&g_init_lock);
+        return;
+    }
+    atomic_store_explicit(&g_mem_ready, 0, memory_order_release);
+    pthread_mutex_unlock(&g_map_lock);
+    pthread_mutex_lock(&g_bg_lock);
+    atomic_store(&g_gf_stop, 1);
+    pthread_cond_broadcast(&g_bg_cv);
+    pthread_mutex_unlock(&g_bg_lock);
+    if (g_gf_th_on) { pthread_join(g_gf_th, NULL); g_gf_th_on = 0; }
+    if (g_aw_th_on) { pthread_join(g_aw_th, NULL); g_aw_th_on = 0; }
+    if (g_rf_th_on) { pthread_join(g_rf_th, NULL); g_rf_th_on = 0; }
+    pthread_mutex_lock(&g_map_lock);
+    madvise(g_as, g_reserve, MADV_FREE);
+    munmap(g_as, g_reserve);
+    for (int i = 0; i < g_gf_n; i++) {
+        if (g_gf_tab[i] >= 0) close(g_gf_tab[i]);
+        g_gf_tab[i] = -1;
+    }
+    g_gf_n = 0;
+    g_as = g_heap = g_alias = g_stack = NULL;
+    g_reserve = g_heap_cur = g_heap_cap = g_heap_seen = g_alias_cap = g_stack_cap = 0;
+    g_nmap = 0;
+    atomic_store(&g_alias_mapped, 0);
+    atomic_store(&g_alias_hw, 0);
+    atomic_store(&g_gf_punched, 0);
+    free((void *)g_alias_bits); g_alias_bits = NULL;
+    free(g_alias_exposed); g_alias_exposed = NULL;
+    free(g_alias_rel); g_alias_rel = NULL;
+    free(g_alias_aged); g_alias_aged = NULL;
+    pthread_mutex_unlock(&g_map_lock);
+    pthread_mutex_unlock(&g_init_lock);
+    region_table_clear();
+}
 static int map_find(uint64_t a, uint64_t n) {       // returns a 1-based index, 0 = no overlap; caller holds g_map_lock
     for (int i = 0; i < g_nmap; i++) if (a < g_map[i].base + g_map[i].size && g_map[i].base < a + n) return i + 1;
     return 0;
@@ -447,7 +517,6 @@ static int64_t alias_unmapped(uint64_t off, uint64_t n) {
     }
     return c;
 }
-static _Atomic int64_t g_alias_mapped;   // bytes mapped in the alias region (page bitmap)
 
 // Word-at-a-time boundaries of the bitmap run containing p (guest page index).
 static uint64_t alias_mask(unsigned n) { return n == 64 ? UINT64_MAX : (UINT64_C(1) << n) - 1; }
@@ -644,10 +713,10 @@ static void map_source_query(uint64_t addr, uint64_t *base, uint64_t *size, uint
 // 74 pools of 512 MB (Octopath Traveler 0, main+0x9f748)
 static void *alias_windows_thread(void *arg) {
     uint64_t win = (uint64_t)(uintptr_t)arg << 20, a0 = (uint64_t)(uintptr_t)g_alias, a1 = a0 + g_alias_cap;
-    for (;;) {
-        sleep(30);
+    while (!bg_sleep(30)) {
         char line[8192] = {0}; size_t o = 0; uint64_t tot = 0;
         pthread_mutex_lock(&g_map_lock);
+        if (!g_alias_bits) { pthread_mutex_unlock(&g_map_lock); break; }
         for (uint64_t w = a0 & ~(win - 1); w < a1 && o < sizeof line - 64; w += win) {
             uint64_t n = 0, p0 = (w > a0 ? w - a0 : 0) >> 12, p1 = ((w + win < a1 ? w + win : a1) - a0) >> 12;
             for (uint64_t p = p0; p < p1; p++) n += atomic_load(&g_alias_bits[p >> 6]) >> (p & 63) & 1;
@@ -666,6 +735,11 @@ static void *alias_windows_thread(void *arg) {
 // A region of 256 MB or more is logged when made; DM_REGIONS=<file> writes the live table every 2 s (the NSP script's heap check reads it, with a Switch-sized DM_ALIAS_SIZE)
 typedef struct { uint64_t off, size, via; char who[40]; } region_t;   // via: the outermost sdk return address on the way (the SDK API the request came through)
 static region_t *g_rgn; static int g_nrgn, g_rgn_cap; static pthread_mutex_t g_rgn_lock = PTHREAD_MUTEX_INITIALIZER;   // grows as needed: Unity 6 takes all its memory as regions
+static void region_table_clear(void) {
+    pthread_mutex_lock(&g_rgn_lock);
+    free(g_rgn); g_rgn = NULL; g_nrgn = g_rgn_cap = 0;
+    pthread_mutex_unlock(&g_rgn_lock);
+}
 static _Thread_local uint64_t t_rgn_size, t_rgn_via; static _Thread_local char t_rgn_who[40];
 // Where a request at an sdk function's entry gate returns to in the game: buf gets "main+0x…", *via the outermost sdk return address on the way (0 = none)
 static void guest_caller(const uint64_t *r, char *buf, size_t n, uint64_t *via) {
@@ -776,13 +850,13 @@ static void bits_span(const uint64_t *b, uint64_t lo, uint64_t hi, int64_t *firs
 static void *regions_thread(void *arg) {
     const char *path = arg; char tmp[1024]; snprintf(tmp, sizeof tmp, "%s.partial", path);
     uint64_t hpg = (uint64_t)getpagesize();
-    for (;;) {
+    while (!atomic_load(&g_gf_stop)) {
         FILE *f = fopen(tmp, "w");
         if (f) {
             fprintf(f, "# alias region %#llx; offset\tsize\treturns to\tmapped\tfirst opened\tend of the last opened (region-relative; - = none)\tvia (sdk offset)\n", (unsigned long long)g_alias_cap);
             pthread_mutex_lock(&g_rgn_lock); int n = g_nrgn; region_t *t = malloc(sizeof *t * (size_t)(n ? n : 1)); if (t && n) memcpy(t, g_rgn, sizeof *t * (size_t)n); pthread_mutex_unlock(&g_rgn_lock);
             pthread_mutex_lock(&g_map_lock);
-            for (int i = 0; t && i < n; i++) {
+            for (int i = 0; t && g_alias_bits && g_alias_exposed && i < n; i++) {
                 uint64_t lo = t[i].off, hi = t[i].off + t[i].size > g_alias_cap ? g_alias_cap : t[i].off + t[i].size, mapped = bits_set(g_alias_bits, lo >> 12, hi >> 12);
                 int64_t first, last; bits_span(g_alias_exposed, lo / hpg, (hi + hpg - 1) / hpg, &first, &last);
                 char fo[24] = "-", lo2[24] = "-";
@@ -794,7 +868,7 @@ static void *regions_thread(void *arg) {
             pthread_mutex_unlock(&g_map_lock); free(t);
             fclose(f); rename(tmp, path);
         }
-        sleep(2);
+        if (bg_sleep(2)) break;
     }
     return NULL;
 }
