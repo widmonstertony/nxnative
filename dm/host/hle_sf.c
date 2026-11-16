@@ -42,6 +42,24 @@ static uint32_t sf_new(const char *name, int domain, sf_answer answer, void *ctx
 }
 uint32_t sf_session(const char *name, sf_answer answer, void *ctx, void (*close)(void *)) { return sf_new(name, 0, answer, ctx, close); }
 
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// Call only after the owner's service-specific worker fences. An on-close
+// callback may hold g_sf_mu indirectly, so detach it before calling.
+int dm_sf_classic_close_all(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    for (unsigned i = 0; i < SF_MAX; i++) {
+        pthread_mutex_lock(&g_sf_mu);
+        void (*close)(void *) = g_sf[i].used ? g_sf[i].close : NULL;
+        void *ctx = g_sf[i].ctx;
+        memset(&g_sf[i], 0, sizeof g_sf[i]);
+        pthread_mutex_unlock(&g_sf_mu);
+        if (close) close(ctx);
+    }
+    return 1;
+}
+#endif
+
 // The Switch 2's camera (a USB camera, for GameChat's video). nn::camera::sdk::CreateCameraContext asks the graphics system's user session (gsv) for a session to the camera service and
 // gives it to the caller as a UniqueNativeHandle (a 32-bit handle; SDK 22.2.0 sdk+0x2c42c0 writes it), with 0x3af3 when the SDK has no gsv session, which the host never opens. The game then
 // talks to the camera through that session with the SDK's HIPC client. The host has no camera, so the session answers as a console with none: by Mario Kart World 1.8.0 (pull request #1116,

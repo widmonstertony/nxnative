@@ -169,6 +169,7 @@ static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
 #if TARGET_OS_IOS || defined(DM_TEST_GUEST_EXIT_WATCH)
 enum { RETIRE_IDLE, RETIRE_GATHER, RETIRE_COMMIT };
 static _Atomic int g_retire_phase;
+static int g_retire_skip_owned; // protected by G; classic stops these from the owner after commit
 static pthread_cond_t g_retire_cv = PTHREAD_COND_INITIALIZER;
 static void retire_checkpoint_locked(thr_t *t);
 #if TARGET_OS_IOS
@@ -230,7 +231,16 @@ static thr_t *cur(void) {
 // the caller's core runs until it blocks before the signalling thread continues.
 // See docs/reference/threads.md, "Same-core wake handoffs", for the movie lifetime failure this prevents.
 // svc_thread calls it after waking such a thread. Wait for guest blocking, not a host dispatch snapshot or a wall-clock deadline: neither establishes that the work has finished.
-void dm_thread_mark_host(void) { thr_t *t = pthread_getspecific(g_keythr); if (t) t->host_owned = 1; }
+void dm_thread_mark_host(void) {
+    thr_t *t = pthread_getspecific(g_keythr);
+    if (!t) return;
+    g_lock();
+    t->host_owned = 1;
+#if TARGET_OS_IOS || defined(DM_TEST_GUEST_EXIT_WATCH)
+    if (atomic_load(&g_retire_phase) == RETIRE_GATHER) pthread_cond_broadcast(&g_retire_cv);
+#endif
+    g_unlock();
+}
 // Holding G. wake() clears wkind before the pthread resumes; it must already count as runnable in that window, even if Mach still reports WAITING / STOPPED.
 // Explicit host GPU work and contended native codec locks do not occupy a guest core. Ordinary host dispatch delays and HLE calls do, until a guest wait / sleep / exit or a service request (dm_thread_service_request) says otherwise.
 static int thr_runnable(const thr_t *t) {
@@ -561,7 +571,7 @@ static void retire_checkpoint_locked(thr_t *t) {
 // Call from the owning host session, never a guest thread. The return value
 // says whether retirement has committed, not whether teardown is safe yet:
 // only dm_guest_pthreads_alive()==0 proves that pthread destructors ran.
-int dm_guest_retire_at_boundaries(unsigned budget_ms) {
+static int retire_at_boundaries(unsigned budget_ms, int stop_owned_separately) {
     struct timespec until;
     clock_gettime(CLOCK_REALTIME, &until);
     until.tv_sec += budget_ms / 1000;
@@ -571,23 +581,40 @@ int dm_guest_retire_at_boundaries(unsigned budget_ms) {
     if (!g_all || pthread_getspecific(g_keythr) || atomic_load(&g_retire_phase) != RETIRE_IDLE) {
         g_unlock(); return 0;
     }
+    g_retire_skip_owned = stop_owned_separately;
     atomic_store(&g_retire_phase, RETIRE_GATHER);
     for (thr_t *t = g_all; t; t = t->all) if (!t->exited) pthread_cond_signal(&t->cv);
     for (;;) {
         int ready = 1;
-        for (thr_t *t = g_all; t; t = t->all) if (!t->exited && !t->retirement_waiting) { ready = 0; break; }
+        for (thr_t *t = g_all; t; t = t->all)
+            if (!t->exited && !t->retirement_waiting && !(g_retire_skip_owned && t->host_owned)) { ready = 0; break; }
         // Creation publishes its pending pthread before the new thread enters
         // g_all. A real zero/parked count may not race that registration.
         pthread_mutex_lock(&g_exit_watch_mu);
         ready = ready && !g_exit_pending;
         pthread_mutex_unlock(&g_exit_watch_mu);
         if (ready || g_cond_wait(&g_retire_cv, &until) == ETIMEDOUT) {
+            if (!ready) {
+                unsigned blockers = 0;
+                for (thr_t *t = g_all; t; t = t->all) {
+                    if (t->exited || t->retirement_waiting || (g_retire_skip_owned && t->host_owned)) continue;
+                    if (++blockers <= 8) LOG("shelf: thread %#x (host=%d, entered=%d, SVC PC=%#llx) did not acknowledge the exit boundary",
+                                            t->handle, t->host_owned, t->entered, (unsigned long long)t->svc_pc);
+                }
+                g_retire_skip_owned = 0;
+            }
             atomic_store(&g_retire_phase, ready ? RETIRE_COMMIT : RETIRE_IDLE);
             pthread_cond_broadcast(&g_retire_cv);
             g_unlock(); return ready;
         }
     }
 }
+int dm_guest_retire_at_boundaries(unsigned budget_ms) { return retire_at_boundaries(budget_ms, 0); }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) || defined(DM_TEST_GUEST_EXIT_WATCH)
+// Only a coordinator that explicitly stops every host-owned guest worker
+// may use this mode; completion still requires the real Mach pthread fence.
+int dm_guest_classic_retire(unsigned budget_ms) { return retire_at_boundaries(budget_ms, 1); }
+#endif
 #endif
 static void thread_exit(thr_t *t) {
     t->exit_ns = now_ns(); t->exit_tick = dm_thread_tick_fn ? dm_thread_tick_fn() : 0;
@@ -1273,6 +1300,10 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     if (g_flag.thr && num != 0x0B) { thr_t *me = pthread_getspecific(g_keythr); LOG("[%#x] svc %#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx", me ? me->handle : 0, num, regs[0], regs[1], regs[2], regs[3]); }
     switch (num) {
     case 0x08: {  // CreateThread(→w1 handle; x1 entry, x2 argument, x3 stack top, w4 priority, w5 core)
+        g_lock();
+#if TARGET_OS_IOS || defined(DM_TEST_GUEST_EXIT_WATCH)
+        if (atomic_load(&g_retire_phase) == RETIRE_COMMIT) { g_unlock(); regs[0] = R_BAD_STATE; regs[1] = 0; return 1; }
+#endif
         thr_t *t = calloc(1, sizeof *t);
         pthread_cond_init(&t->cv, NULL); pthread_cond_init(&t->pcv, NULL);
         t->entry = regs[1]; t->arg = regs[2]; t->stack_top = regs[3] & ~0xFull;
@@ -1280,14 +1311,15 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         //   SMBW's font engine picks its per-core engine slot by the current core number and crashed indexing with -2 (main +0x107dbc0, SequenceBackgroundWorker thread)
         t->prio = (int)regs[4]; t->core = (int)regs[5] >= 0 ? (int)regs[5] : 0; t->mask = 1ull << t->core;
         t->born_ns = now_ns(); t->born_tick = dm_thread_tick_fn ? dm_thread_tick_fn() : 0;
-        g_lock(); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; g_unlock();
+        t->handle = h_new(O_THREAD, t); t->id = g_next_id++;
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
         pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);   // Host resources are reclaimed on exit (the guest waits through the handle, no join)
         exit_watch_pending();
         pthread_t pt; int rc = pthread_create(&pt, &a, thread_main, t); if (rc) die("pthread_create for guest thread %#x: %s", t->handle, strerror(rc));   // EAGAIN: no room for its 1 MB stack or a thread limit (the crash's address space line)
         pthread_attr_destroy(&a);
-        // pthread_create writes its output without G; publish that value and the registry link together.
-        g_lock(); t->pt = pt; t->all = g_all; g_all = t; g_unlock();
+        // Publish the registry link under the same lock as the retirement
+        // check and pending count. The new pthread cannot acquire G first.
+        t->pt = pt; t->all = g_all; g_all = t; g_unlock();
         if (g_flag.thr) LOG("CreateThread h=%#x entry=%#llx arg=%#llx sp=%#llx prio=%d core=%d", t->handle, t->entry, t->arg, t->stack_top, t->prio, t->core);
         regs[0] = 0; regs[1] = t->handle; return 1;
     }

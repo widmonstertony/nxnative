@@ -59,6 +59,35 @@ int dm_codec_video_release_drained(void);
 int dm_movie_release_drained(void);
 int dm_audio_classic_release_outputs(void);
 int dm_audren_classic_release(void);
+int dm_guest_classic_retire(unsigned budget_ms);
+int dm_audren_service_release_thread_metadata(void);
+int dm_sf_classic_close_all(void);
+void dm_audren_request_drain(void);
+void dm_audren_service_request_drain(void);
+void dm_movie_request_drain(void);
+void dm_vsync_stop_all(void);
+
+// Audio and video may be the very services that let a guest reach its
+// parking boundary. First attempt reversible parking of the game threads;
+// stop the host-owned guest workers only after the retirement has committed.
+// 0 means the game recovered, -1 means committed but not yet safe to detach.
+int dm_host_classic_retire_guest(int budget_ms) {
+    if (budget_ms <= 0 || getenv("DM_GUEST_SPAWN_TEST")) return 0;
+    uint64_t t0 = now_ns();
+    if (!dm_guest_classic_retire((unsigned)budget_ms / 2)) return 0;
+    dm_audren_request_drain();
+    dm_audren_service_request_drain();
+    dm_movie_request_drain();
+    while (dm_guest_pthreads_alive()) {
+        if (!ms_left(t0, budget_ms)) {
+            LOG("[RED] shelf: a committed session still has guest pthreads");
+            return -1;
+        }
+        usleep(1000);
+    }
+    dm_vsync_stop_all();
+    return 1;
+}
 
 // The shell must already have closed front-end admissions and retired its
 // guest. A successful worker fence is necessary but does not release renderer,
@@ -84,7 +113,8 @@ int dm_host_classic_fence_for_shell(int budget_ms) {
         LOG("[RED] shelf: a decoder still owns this session");
         return 0;
     }
-    if (!dm_audio_classic_release_outputs() || !dm_audren_classic_release()) {
+    if (!dm_audio_classic_release_outputs() || !dm_audren_classic_release() ||
+        !dm_audren_service_release_thread_metadata() || !dm_sf_classic_close_all()) {
         LOG("[RED] shelf: audio still owns this session");
         return 0;
     }

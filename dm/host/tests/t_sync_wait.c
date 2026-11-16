@@ -330,7 +330,7 @@ static void *retire_worker(void *arg) {
     return NULL;
 }
 
-static void retirement_boundaries(void) {
+static void retirement_boundaries(int managed) {
     // The coordinator is a shell thread, excluded from the guest registry.
     assert(!pthread_key_create(&g_keythr, NULL));
     retire_test clean = {.t = new_thread()}, native = {.t = new_thread(), .native_frame = 1};
@@ -341,10 +341,24 @@ static void retirement_boundaries(void) {
     assert(!dm_guest_retire_at_boundaries(100)); // native callback blocks retirement
     assert(dm_guest_pthreads_alive() == 2);
     while (!atomic_load(&clean.resumed)) sched_yield(); // pre-commit timeout released the parked guest
+    if (managed) {
+        // A coordinator with a real stop hook can commit the guest boundary
+        // without pretending that the managed native callback has exited.
+        g_lock(); native.t->host_owned = 1; g_unlock();
+        assert(dm_guest_classic_retire(1000));
+        assert(!pthread_join(a, NULL));
+        uint64_t deadline = now_ns() + 2000000000;
+        while (dm_guest_pthreads_alive() > 1) { assert(now_ns() < deadline); sched_yield(); }
+        assert(dm_guest_pthreads_alive() == 1);
+        uint64_t regs[104] = {0};
+        assert(svc_thread(0x08, regs) && regs[0] == R_BAD_STATE && !regs[1]);
+    }
     atomic_store(&native.stop, 1);
     assert(!pthread_join(b, NULL));
-    assert(dm_guest_retire_at_boundaries(1000));
-    assert(!pthread_join(a, NULL));
+    if (!managed) {
+        assert(dm_guest_retire_at_boundaries(1000));
+        assert(!pthread_join(a, NULL));
+    }
     uint64_t deadline = now_ns() + 2000000000;
     while (dm_guest_pthreads_alive()) { assert(now_ns() < deadline); sched_yield(); }
     g_lock();
@@ -356,17 +370,20 @@ static void retirement_boundaries(void) {
 
 int main(int argc, char **argv) {
     alarm(10);
-    if (argc == 1 || !strcmp(argv[1], "retirement")) {
+    if (argc == 1 || !strcmp(argv[1], "retirement") || !strcmp(argv[1], "managed-retirement")) {
         // Keep committed shutdown in a separate process from unrelated SVC cases.
         if (argc == 1) {
-            pid_t p = fork();
-            assert(p >= 0);
-            if (!p) { execl(argv[0], argv[0], "retirement", NULL); _exit(127); }
-            int status;
-            assert(waitpid(p, &status, 0) == p && WIFEXITED(status) && !WEXITSTATUS(status));
+            const char *modes[] = {"retirement", "managed-retirement"};
+            for (unsigned i = 0; i < sizeof modes / sizeof *modes; i++) {
+                pid_t p = fork();
+                assert(p >= 0);
+                if (!p) { execl(argv[0], argv[0], modes[i], NULL); _exit(127); }
+                int status;
+                assert(waitpid(p, &status, 0) == p && WIFEXITED(status) && !WEXITSTATUS(status));
+            }
         } else {
-            retirement_boundaries();
-            puts("PASS: retirement");
+            retirement_boundaries(!strcmp(argv[1], "managed-retirement"));
+            printf("PASS: %s\n", argv[1]);
             return 0;
         }
     }
