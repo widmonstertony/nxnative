@@ -148,6 +148,16 @@ static int g_pq_inflight;   // Under g_pq_mu: number of presents committed to th
 // Under g_pq_mu: claim the layer before attaching a display link, and keep each
 // classic frame protected from dequeue until its scheduled present call returns.
 static int g_link_owns_layer, g_classic_pending;
+#if !DM_HAVE_METAL_DISPLAY_LINK
+// 16.1 has no display-link run loop. Keep the late drawable callback's
+// lock and generation outside the state that the shell can restore.
+static pthread_t g_classic_worker;
+static int g_classic_worker_started, g_classic_worker_stop;
+#define CLASSIC_KEEP __attribute__((section("__DATA,__dm_keep")))
+static pthread_mutex_t g_classic_callback_mu CLASSIC_KEEP = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_classic_generation CLASSIC_KEEP;
+#undef CLASSIC_KEEP
+#endif
 int g_dm_present_link;   // Present pacing mode (runtime value of DM_PRESENT_LINK, modified directly during same-process alternating measurement): 0 = acquire the drawable itself; 1 = display link at 60 Hz; 2 = display link at 120 Hz, the game presents a frame every other display-link tick
 static int g_present_latency = 1;
 static uint64_t g_pq_done;
@@ -10075,11 +10085,21 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     (void)period;
 #else
     uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
-    [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
+#if !DM_HAVE_METAL_DISPLAY_LINK
+    uint64_t generation = atomic_load(&g_classic_generation);
+#endif
+    [dr addPresentedHandler:^(id<MTLDrawable> d) {
+#if !DM_HAVE_METAL_DISPLAY_LINK
+        pthread_mutex_lock(&g_classic_callback_mu);
+        if (generation != atomic_load(&g_classic_generation)) { pthread_mutex_unlock(&g_classic_callback_mu); return; }
+#endif   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
         if (tt > 0) atomic_fetch_add(&g_displayed_n, 1);
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
         present_probe_note(probe,4,tt > 0 ? tt : -1,0);
+#if !DM_HAVE_METAL_DISPLAY_LINK
+        pthread_mutex_unlock(&g_classic_callback_mu);
+#endif
     }];
 #endif
     // Scheduling stays asynchronous on both paths. A classic frame keeps its
@@ -10272,7 +10292,12 @@ static void *present_main(void *arg) {
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0; pthread_get_qos_class_np(pthread_self(), &qc, &rp); atomic_store(&g_present_qos, (uint32_t)qc);
     for (;;) {
         pthread_mutex_lock(&g_pq_mu);
+#if !DM_HAVE_METAL_DISPLAY_LINK
+        while (g_pq_read == g_pq_in && !g_classic_worker_stop) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+        if (g_classic_worker_stop) { pthread_mutex_unlock(&g_pq_mu); break; }
+#else
         while (g_pq_read == g_pq_in || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
+#endif
         pq_item it = g_pq[g_pq_read % PQ];
         uint64_t ticket = ++g_pq_read; g_classic_pending++;
         pthread_mutex_unlock(&g_pq_mu);
@@ -10289,8 +10314,31 @@ static void *present_main(void *arg) {
     return NULL;
 }
 uint32_t mtl_present_qos(void) { return atomic_load(&g_present_qos); }
+#if DM_HAVE_METAL_DISPLAY_LINK
 static void present_start(void) { pthread_t th; if (pthread_create(&th, NULL, present_main, NULL)) MDIE("出图线程起不来"); pthread_detach(th); }
+#endif
 static _Atomic int g_present_discard;
+#if !DM_HAVE_METAL_DISPLAY_LINK
+// Call after the guest renderer has been quiesced. This stops the presenter
+// only; workers that build shaders and the rest of the GPU state are separate.
+void mtl_classic_present_stop(void) {
+    pthread_mutex_lock(&g_pq_mu);
+    g_classic_worker_stop = 1;
+    atomic_store(&g_present_discard, 1);
+    pthread_cond_broadcast(&g_pq_cv);
+    pthread_mutex_unlock(&g_pq_mu);
+    if (g_classic_worker_started) pthread_join(g_classic_worker, NULL);
+    pthread_mutex_lock(&g_pq_mu);
+    g_classic_worker_started = 0;
+    while (g_pq_inflight || g_classic_pending) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+    g_pq_read = g_pq_done = g_pq_in;
+    pthread_cond_broadcast(&g_pq_cv);
+    pthread_mutex_unlock(&g_pq_mu);
+    pthread_mutex_lock(&g_classic_callback_mu);
+    atomic_fetch_add(&g_classic_generation, 1);
+    pthread_mutex_unlock(&g_classic_callback_mu);
+}
+#endif
 void mtl_link_pause(int on);
 // The short period when the front end goes to the background and waits for the game to save: presents are dropped directly (the display link does not call back in the background, enqueueing would block the game thread; nobody sees the picture anyway).
 // When turned on, also clear the frames already queued: the system first stops the display-link callback and only afterwards notifies about going to the background, and in that gap the game has already filled the swapchain and is stuck at "before acquiring the next texture, wait for its previous present to be processed"
@@ -10299,7 +10347,9 @@ void mtl_present_discard(int on) { atomic_store(&g_present_discard, on != 0); if
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     if (atomic_load(&g_present_discard)) return 0;   // Ticket number 0 = no pending present; the swapchain texture acquire does not wait
     if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
+#if DM_HAVE_METAL_DISPLAY_LINK
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
+#endif
     link_sync();
     {   // Test switch DM_TEST_LINK_STALL=start seconds,duration seconds: counting from the first present, pause the display link at that point (imitating the display link not calling back while in the foreground) and release it when the duration is up. For verifying the fallback; not set in the product
         static double t0, at = -1, dur; static int st; double now = CACurrentMediaTime();
@@ -10308,7 +10358,17 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         else if (st == 2 && now - t0 >= at + dur) { st = 3; mtl_link_pause(0); MLOG("DM_TEST_LINK_STALL：放开显示节拍（帧 %llu）", (unsigned long long)atomic_load(&g_cur_frame)); }
     }
     pthread_mutex_lock(&g_pq_mu);
+#if !DM_HAVE_METAL_DISPLAY_LINK
+    if (g_classic_worker_stop) { pthread_mutex_unlock(&g_pq_mu); return 0; }
+    if (!g_classic_worker_started) {
+        if (pthread_create(&g_classic_worker, NULL, present_main, NULL)) MDIE("present worker could not start");
+        g_classic_worker_started = 1;
+    }
+    while (g_pq_in - g_pq_done >= PQ && !g_classic_worker_stop) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+    if (g_classic_worker_stop) { pthread_mutex_unlock(&g_pq_mu); return 0; }
+#else
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // Wait only when the queue is full; normally AcquireTexture blocks first
+#endif
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime()};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
