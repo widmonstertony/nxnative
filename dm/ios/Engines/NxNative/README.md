@@ -199,9 +199,14 @@ the save sender, and refuses to hand back the session while an abandoned
 cloud fetch is still running. A test exercises an abandoned fetch blocked on
 a FIFO, followed by a successful teardown once the fetch releases it.
 
-This is a worker fence, not the entire return path. The classic frameworks
-do not advertise shelf return until UIKit ownership and renderer allocations
-can be released and M2 can launch two titles under the same process ID.
+The classic front end can close focus admission, remove notification
+observers, invalidate the display and FPS timers, and wait until the last
+UIKit save task has ended. A session generation outside the restored image
+sections prevents a delayed UIKit callback from affecting a new session.
+
+The classic frameworks do not advertise shelf return yet. The shell still
+needs to connect these fences to input and renderer allocation release and
+prove that M2 can launch two titles under the same process ID.
 Neither iPad received this candidate. No game shader chain changes with
 this fence.
 

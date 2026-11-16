@@ -91,11 +91,45 @@ static void tv_attach(void);
 - (void)startGame;
 @end
 static DmRootVC *g_root;
+static NSMutableArray<id> *g_session_observers;
+static NSTimer *g_fps_timer;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// The image's ordinary data is restored when the shelf returns. Keep the
+// generation outside those sections so delayed UIKit callbacks cannot match
+// the next session, even if the same framework is selected again.
+static dispatch_group_t g_front_saves; // created on main; only read after focus admission closes
+static _Atomic uint64_t g_front_epoch __attribute__((section("__DATA,__dm_keep"))) = 1;
+static BOOL front_epoch_current(uint64_t epoch) {
+    return (epoch & 1) && atomic_load(&g_front_epoch) == epoch;
+}
+#endif
+static void front_queue_main(dispatch_time_t time, dispatch_block_t work) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t epoch = atomic_load(&g_front_epoch);
+    dispatch_block_t checked = ^{ if (front_epoch_current(epoch)) work(); };
+#else
+    dispatch_block_t checked = work;
+#endif
+    if (time == DISPATCH_TIME_NOW) dispatch_async(dispatch_get_main_queue(), checked);
+    else dispatch_after(time, dispatch_get_main_queue(), checked);
+}
+static void front_watch_notification(NSNotificationName name, void (^work)(NSNotification *)) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t epoch = atomic_load(&g_front_epoch);
+    void (^checked)(NSNotification *) = ^(NSNotification *note) { if (front_epoch_current(epoch)) work(note); };
+#else
+    void (^checked)(NSNotification *) = work;
+#endif
+    if (!g_session_observers) g_session_observers = [NSMutableArray new];
+    id token = [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:checked];
+    [g_session_observers addObject:token];
+}
+
 void front_fullscreen_ready(void);
 void front_za_fullscreen_ready(void) { front_fullscreen_ready(); }
 int dm_game_fullscreen_active(void);
 void front_fullscreen_ready(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    front_queue_main(DISPATCH_TIME_NOW, ^{
         [g_root.view setNeedsLayout]; [g_root.view layoutIfNeeded];
     });
 }
@@ -209,7 +243,12 @@ static void launcher_done(void) { [g_root startGame]; }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 @end
-UIViewController *front_ios_root(void) { return [DmRootVC new]; }
+UIViewController *front_ios_root(void) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    if (!(atomic_load(&g_front_epoch) & 1)) atomic_fetch_add(&g_front_epoch, 1);
+#endif
+    return [DmRootVC new];
+}
 
 // A TV (cable or AirPlay): iOS gives the app the TV as a scene of its own instead of mirroring the phone. The game's view moves there, 16:9 fills the TV, and the game is
 // docked as a Switch on its dock (1080p, the operation mode change notification); the phone keeps the pad. Unplugging puts the view back and the mode the game had before
@@ -258,11 +297,11 @@ int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnable
 double dm_brightness_now(void) { return g_brightness; }
 static void front_ios_power_watch(void) {
     g_brightness = UIScreen.mainScreen.brightness;
-    [NSNotificationCenter.defaultCenter addObserverForName:UIScreenBrightnessDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; g_brightness = UIScreen.mainScreen.brightness; }];
-    [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        (void)n; LOG("front end: thermal state → %d (%.0f s after launch)", dm_thermal_now(), (now_ns() - g_t0_ns) / 1e9); }];
-    [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        (void)n; LOG("front end: Low Power Mode → %s (%.0f s after launch)", dm_low_power_now() ? "on" : "off", (now_ns() - g_t0_ns) / 1e9); }];
+    front_watch_notification(UIScreenBrightnessDidChangeNotification, ^(NSNotification *n) { (void)n; g_brightness = UIScreen.mainScreen.brightness; });
+    front_watch_notification(NSProcessInfoThermalStateDidChangeNotification, ^(NSNotification *n) {
+        (void)n; LOG("front end: thermal state → %d (%.0f s after launch)", dm_thermal_now(), (now_ns() - g_t0_ns) / 1e9); });
+    front_watch_notification(NSProcessInfoPowerStateDidChangeNotification, ^(NSNotification *n) {
+        (void)n; LOG("front end: Low Power Mode → %s (%.0f s after launch)", dm_low_power_now() ? "on" : "off", (now_ns() - g_t0_ns) / 1e9); });
     LOG("front end: thermal state %d, brightness %.2f, Low Power Mode %s", dm_thermal_now(), g_brightness, dm_low_power_now() ? "on" : "off");
 }
 
@@ -368,7 +407,8 @@ static UILabel *front_ios_fps_label(void) {
     __block uint64_t n0 = mtl_present_count(), e0=0,d0=0,r0=0;
     mtl_framegen_counts(&e0,&d0,&r0); __block double t0 = CACurrentMediaTime();
     BOOL flow=getenv("DM_FRAMEGEN") && !strcmp(getenv("DM_FRAMEGEN"),"opticalflow");
-    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+    [g_fps_timer invalidate];
+    g_fps_timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
         (void)t; uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
         uint64_t engine,shown,real; mtl_framegen_counts(&engine,&shown,&real);
         if (now-t0<1.5 && now>t0) {
@@ -387,7 +427,7 @@ static UIView *g_prog; static UILabel *g_prog_count; static UIProgressView *g_pr
 void front_progress(const char *title, long done, long total) {
     if (!g_layer) return;
     NSString *tt = title ? @(title) : nil;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    front_queue_main(DISPATCH_TIME_NOW, ^{
         if (!tt) { [g_prog removeFromSuperview]; g_prog = nil; return; }
         if (!g_prog) {
             UIView *root = g_root.view; if (!root) return;
@@ -421,7 +461,13 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSString *t = title && *title ? @(title) : @"", *m = [NSString stringWithFormat:@"%s%s%s", sub ? sub : "", sub && *sub && guide && *guide ? "\n" : "", guide ? guide : ""];
     NSString *init = initial ? @(initial) : @"", *ph = guide ? @(guide) : @"";
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t epoch = atomic_load(&g_front_epoch);
+#endif
     dispatch_async(dispatch_get_main_queue(), ^{
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        if (!front_epoch_current(epoch)) { dispatch_semaphore_signal(done); return; }
+#endif
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
         [ac addTextFieldWithConfigurationHandler:^(UITextField *f) { f.text = init; f.placeholder = ph; }];
         [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; r = 1; text = ac.textFields.firstObject.text; dispatch_semaphore_signal(done); }]];
@@ -443,7 +489,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 // the iOS front end used not to implement it, so there was only a log line and the player never learned that progress was not being saved
 void front_save_failed(int err) {
     LOG("front end: save data write failed errno=%d, telling the player", err);
-    dispatch_async(dispatch_get_main_queue(), ^{
+    front_queue_main(DISPATCH_TIME_NOW, ^{
         UIViewController *vc = nil;
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
         while (vc.presentedViewController) vc = vc.presentedViewController;
@@ -490,7 +536,7 @@ static void front_ios_audio_route_log_impl(const char *why, int force) {
 }
 static void front_ios_audio_route_log(const char *why) { front_ios_audio_route_log_impl(why, 0); }
 void front_ios_audio_session(void) {
-    if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ front_ios_audio_session(); }); return; }
+    if (!NSThread.isMainThread) { front_queue_main(DISPATCH_TIME_NOW, ^{ front_ios_audio_session(); }); return; }
     if (front_ios_audio_blocked()) { g_session_off = 1; front_ios_audio_apply(); return; }
     if (!g_audio_category_initialized) {
         g_audio_category_initialized = 1;
@@ -541,7 +587,7 @@ static void front_ios_audio_retry_schedule(void) {
     if (!milliseconds) return;
     if (g_audio_retry.attempts <= 4)
         LOG("audio session: activation retry %u in %u ms (epoch %llu); later unchanged failures remain eligible at 8-second intervals", g_audio_retry.attempts, milliseconds, (unsigned long long)token);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)milliseconds * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+    front_queue_main(dispatch_time(DISPATCH_TIME_NOW, (int64_t)milliseconds * NSEC_PER_MSEC), ^{
         if (!dm_audio_retry_fire(&g_audio_retry, token, front_ios_audio_blocked(), g_session_off)) return;
         front_ios_audio_session();
     });
@@ -559,7 +605,7 @@ static void front_ios_audio_env_changed(const char *key, const char *value) {
     int mode = dm_audio_session_category_parse(value);
     if (mode < 0) { LOG("[RED] audio session category diagnostic rejected: %s", value ?: "(null)"); return; }
     // Parse while CTL's line buffer is valid; capture only the enum across queues.
-    dispatch_async(dispatch_get_main_queue(), ^{
+    front_queue_main(DISPATCH_TIME_NOW, ^{
         g_audio_category_mode = mode; g_audio_category_initialized = 1;
         dm_audio_retry_reset(&g_audio_retry); // cancel any previous policy's retry
         if (front_ios_audio_blocked()) {
@@ -573,7 +619,7 @@ static void front_ios_audio_env_changed(const char *key, const char *value) {
         front_ios_audio_session();
         front_ios_audio_route_log_impl("category diagnostic after transition", 1);
         uint64_t epoch = g_audio_retry.generation;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        front_queue_main(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), ^{
             if (epoch != g_audio_retry.generation || mode != g_audio_category_mode || front_ios_audio_blocked()) return;
             uint64_t after = dm_audio_render_calls();
             LOG("audio category diagnostic settled: mode=%s new_callbacks=%llu", front_ios_audio_category_name(), (unsigned long long)(after >= before ? after - before : 0));
@@ -589,8 +635,7 @@ static void front_ios_audio_apply(void) { dm_audio_suspend(front_ios_audio_block
 static void front_ios_audio_watch(void) {
     static int installed; if (installed++) return;
     dm_audio_env_callback_set(front_ios_audio_env_changed);
-    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-    [nc addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+    front_watch_notification(AVAudioSessionInterruptionNotification, ^(NSNotification *n) {
         NSUInteger type = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue], reason = [n.userInfo[AVAudioSessionInterruptionReasonKey] unsignedIntegerValue];
         if (type == AVAudioSessionInterruptionTypeBegan) {
             LOG("audio session: interrupted (reason %lu)", (unsigned long)reason);
@@ -604,26 +649,26 @@ static void front_ios_audio_watch(void) {
         }
         front_ios_audio_apply();
         front_ios_audio_route_log("interruption notification");
-    }];
-    [nc addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+    });
+    front_watch_notification(AVAudioSessionRouteChangeNotification, ^(NSNotification *n) {
         NSUInteger reason = [n.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
         char why[64]; snprintf(why, sizeof why, "route changed reason=%lu", (unsigned long)reason);
         front_ios_audio_route_log(why);
         // Category changes can be generated by our own setup. Do not recursively
         // reconfigure/reactivate on every route notification or reset its budget.
         if (g_session_off) front_ios_audio_retry_schedule();
-    }];
-    [nc addObserverForName:AVAudioSessionMediaServicesWereLostNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+    });
+    front_watch_notification(AVAudioSessionMediaServicesWereLostNotification, ^(NSNotification *n) {
         (void)n; g_audio_lost = 1; g_session_off = 1; dm_audio_retry_reset(&g_audio_retry);
         front_ios_audio_apply(); front_ios_audio_route_log("media services lost");
-    }];
-    [nc addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+    });
+    front_watch_notification(AVAudioSessionMediaServicesWereResetNotification, ^(NSNotification *n) {
         (void)n; LOG("audio session: the media services were reset; setting the session and the outputs up again");
         g_audio_lost = 0; g_session_off = 1; dm_audio_retry_reset(&g_audio_retry);
         front_ios_audio_apply(); dm_audio_reset();
         if (!front_ios_audio_blocked()) front_ios_audio_session();
         front_ios_audio_route_log("media services reset");
-    }];
+    });
 }
 
 // Scene lifecycle (called by SceneDelegate in main.m): 0 resign active, 1 enter background, 2 return to foreground, 3 become active. On entering background, freeze the guest clock and suspend after in-flight GPU work completes (submitting GPU work in background gets the process killed).
@@ -634,13 +679,26 @@ static void save_sync_background(void) {
     __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
     void (^end)(void) = ^{ if (task != UIBackgroundTaskInvalid) { [app endBackgroundTask:task]; task = UIBackgroundTaskInvalid; } };   // on the main queue, as the expiry handler runs
     task = [app beginBackgroundTaskWithName:@"cloud save" expirationHandler:end];
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    if (!g_front_saves) g_front_saves = dispatch_group_create();
+    dispatch_group_t pending = g_front_saves;
+    dispatch_group_enter(pending);
+#endif
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         if (!save_sync_flush(20000)) LOG("front end: the save did not reach the cloud before the app was suspended; it goes after the next save or at the next start");
-        dispatch_async(dispatch_get_main_queue(), end);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            end();
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+            dispatch_group_leave(pending);
+#endif
+        });
     });
 }
 
 void front_ios_focus_event(int ev) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    if (!(atomic_load(&g_front_epoch) & 1)) return;
+#endif
     switch (ev) {
         case 0:
             front_ios_display_refresh_active(0);
@@ -670,6 +728,49 @@ void front_ios_focus_event(int ev) {
             } break;
     }
 }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// Main thread only. The owner must first dismiss or refuse to switch while a
+// game modal still owns a guest wait. Keep the layer alive until GPU quiescence.
+int front_ios_classic_close_admission(void) {
+    if (!NSThread.isMainThread || !g_root || g_root.presentedViewController) return 0;
+    if (!(atomic_load(&g_front_epoch) & 1)) return 0;
+    atomic_fetch_add(&g_front_epoch, 1);
+    for (id token in g_session_observers) [NSNotificationCenter.defaultCenter removeObserver:token];
+    g_session_observers = nil;
+    [g_fps_timer invalidate]; g_fps_timer = nil;
+    [g_display_refresh invalidate]; g_display_refresh = nil;
+    dm_audio_env_callback_set(NULL);
+    dm_audio_retry_reset(&g_audio_retry);
+    g_root.view.userInteractionEnabled = NO;
+    return 1;
+}
+
+// Call on the exit worker. The main queue must remain available for the
+// UIApplication background-task acknowledgement before returning to shelf.
+int front_ios_classic_wait_save_tasks(uint64_t timeout_ns) {
+    if (NSThread.isMainThread || (atomic_load(&g_front_epoch) & 1)) return 0;
+    dispatch_group_t pending = g_front_saves;
+    return !pending || !dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)MIN(timeout_ns, INT64_MAX)));
+}
+
+void front_ios_classic_release_views(void) {
+    // The owner has stopped the guest, physical input and GPU before calling.
+    if (!NSThread.isMainThread || (atomic_load(&g_front_epoch) & 1)) return;
+    [g_prog removeFromSuperview]; g_prog = nil;
+    g_prog_count = nil; g_prog_bar = nil; g_prog_title = nil;
+    [g_root.game removeFromSuperview]; g_root.game = nil;
+    [g_root.pad removeFromSuperview]; g_root.pad = nil;
+    [g_root.fps removeFromSuperview]; g_root.fps = nil;
+    g_root.tv = nil;
+    g_layer = nil;
+    g_tv = nil;
+    g_root = nil;
+    g_audio_error_domain = nil;
+    g_front_saves = nil;
+    UIApplication.sharedApplication.idleTimerDisabled = NO;
+}
+#endif
 
 void front_web_attach(UIView *box) {
     UIView *v = g_root.view; box.frame = v.bounds;
