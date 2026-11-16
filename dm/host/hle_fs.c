@@ -75,8 +75,8 @@ static void save_test_init(void) {
     g_save_kill_n = k && !strncmp(k, "write:", 6) ? atoi(k + 6) : 0;
     if (f && !strncmp(f, "write:", 6)) { g_save_fail_n = atoi(f + 6); const char *c = strchr(f + 6, ':'); g_save_fail_e = c ? atoi(c + 1) : ENOSPC; }
 }
-static pthread_rwlock_t g_txn_lock[MAX_MOUNT];
-static pthread_once_t g_txn_lock_once = PTHREAD_ONCE_INIT;
+static pthread_rwlock_t g_txn_lock[MAX_MOUNT] __attribute__((section("__DATA,__dm_keep")));
+static pthread_once_t g_txn_lock_once __attribute__((section("__DATA,__dm_keep"))) = PTHREAD_ONCE_INIT;
 static void txn_locks_init(void) { for (int i = 0; i < MAX_MOUNT; i++) pthread_rwlock_init(&g_txn_lock[i], NULL); }
 static void txn_unlock(pthread_rwlock_t **m) { if (*m) pthread_rwlock_unlock(*m); }
 // Write failures are refused per transaction: on the real device save space is reserved when the save is created, overwrites cannot fail, and the game does not check the return values of WriteFile / SetFileSize either, it Commits as usual after a failure
@@ -1299,7 +1299,22 @@ HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → 
 }
 
 // ---------- Directories ----------
-typedef struct { DIR *d; char path[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; } dirh_t;
+typedef struct dirh { DIR *d; char path[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; struct dirh *next, **prevp; } dirh_t;
+static dirh_t *g_dirs;
+static pthread_mutex_t g_dirs_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t dir_publish(dirh_t *h) {
+    pthread_mutex_lock(&g_dirs_lock);
+    h->prevp = &g_dirs; h->next = g_dirs;
+    if (g_dirs) g_dirs->prevp = &h->next;
+    g_dirs = h;
+    pthread_mutex_unlock(&g_dirs_lock);
+    return (uint64_t)h;
+}
+static void dir_release(dirh_t *h) {
+    if (h->d) closedir(h->d);
+    free(h->snap);
+    free(h);
+}
 typedef struct { const char *name; size_t at; } name_at;
 static int name_at_cmp(const void *a, const void *b) {
     const name_at *x = a, *y = b; int c = strcmp(x->name, y->name);
@@ -1379,7 +1394,7 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
             memcpy(o->name, m->names + c->name, c->nlen < sizeof o->name ? c->nlen : sizeof o->name - 1);
             o->type = c->type ? ENT_FILE : ENT_DIR; o->size = c->type ? (int64_t)c->b : 0;
         }
-        *out = (uint64_t)h; return RES_OK;
+        *out = dir_publish(h); return RES_OK;
     }
     HP(path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
@@ -1391,7 +1406,7 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
         if (dir_snapshot(h, &g_mnt[i], c + 1)) { int err = errno; closedir(d); free(h); errno = err; return err_res("opendir", hp); }
         break;
     }
-    *out = (uint64_t)h; return RES_OK;
+    *out = dir_publish(h); return RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", "fsp-srv → readdir(3)", Result, h_fs_ReadDirectory, int64_t *count, DirectoryEntry *ents, uint64_t hh, int64_t max) { dm_thread_service_request();
     SDK_HANDLE(hh, "_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", Result (*)(int64_t *, DirectoryEntry *, uint64_t, int64_t), RES_FAIL, count, ents, hh, max);
@@ -1420,7 +1435,12 @@ HLE_FORCE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", "fsp-srv → close
         return;
     }
     if (!hh) return;   // the game also closes after a failed open (handle 0): nothing to do in the original either
-    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); free(h->snap); free(h);
+    dirh_t *h = (dirh_t *)hh;
+    pthread_mutex_lock(&g_dirs_lock);
+    *h->prevp = h->next;
+    if (h->next) h->next->prevp = h->prevp;
+    pthread_mutex_unlock(&g_dirs_lock);
+    dir_release(h);
 }
 
 // ---------- Overloads from newer SDKs (SDK 16: MountRom without a cache, ReadFile without the bytes-read output / with read options, directory entry count) ----------
@@ -1482,3 +1502,37 @@ HLE_FORCE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", "fsp-srv; save dat
 HLE_FORCE("_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE", "fsp-srv; file read priority, ignored by the host", void, h_fs_SetPrio, int prio) { (void)prio; }
 HLE_FORCE("_ZN2nn2fs6detail18IsEnabledAccessLogEj", "fsp-srv; access log always off (returns bool)", unsigned, h_fs_AccessLogMask, unsigned mask) { (void)mask; return 0; }
 HLE_FORCE("_ZN2nn2fs6detail18IsEnabledAccessLogEv", "fsp-srv; access log always off (returns bool)", unsigned, h_fs_AccessLog, void) { return 0; }
+
+// Only after the guest and its file workers have stopped. Closing handles
+// does not commit an incomplete save transaction or touch the shell's files.
+void dm_fs_teardown(void) {
+    pthread_mutex_lock(&g_dirs_lock);
+    while (g_dirs) { dirh_t *h = g_dirs; g_dirs = h->next; dir_release(h); }
+    pthread_mutex_unlock(&g_dirs_lock);
+    pthread_mutex_lock(&g_sdk_h_lock);
+    memset(g_sdk_h, 0, sizeof g_sdk_h);
+    atomic_store(&g_sdk_nh, 0);
+    pthread_mutex_unlock(&g_sdk_h_lock);
+    pthread_mutex_lock(&g_lock);
+    for (int fd = 3; fd < 65536; fd++) {
+        if (g_fmode[fd]) {
+            close(fd);
+            g_fmode[fd] = 0;
+            atomic_store(&g_ftxn[fd], 0);
+        }
+    }
+    for (int i = 0; i < g_nmnt; i++) {
+        if (g_mnt[i].img) {
+            romfs_image_close(g_mnt[i].img);
+            g_mnt[i].img = NULL;
+        }
+    }
+    memset(g_mnt, 0, sizeof g_mnt);
+    g_nmnt = 0;
+    pthread_mutex_unlock(&g_lock);
+    pthread_mutex_lock(&g_fslog_lock);
+    if (g_fslog) fclose(g_fslog);
+    g_fslog = NULL;
+    for (size_t i = 0; i < sizeof g_fdpath / sizeof *g_fdpath; i++) { free(g_fdpath[i]); g_fdpath[i] = NULL; }
+    pthread_mutex_unlock(&g_fslog_lock);
+}
