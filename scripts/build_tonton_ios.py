@@ -22,7 +22,7 @@ import zipfile
 REPO = Path(__file__).resolve().parents[1]
 CLASSIC = 'b5ac83de5c3c01ab30b3e0dbac8eaf32fe2f9b14'
 TARGETS = ('16.1', '17.0', '26.0')
-OVERLAY_VERSION = 6
+OVERLAY_VERSION = 7
 
 
 def say(message):
@@ -97,6 +97,16 @@ def classic_engine(cache):
                     raise ValueError(f'Classic engine overlay moved: {rel}')
                 dst.write_text(body.replace(old, new))
                 additions.append(dst)
+
+            # Runtime-only backport: older Metal releases otherwise clear D16
+            # into a different quantization bin than an equal fragment depth.
+            legacy_renderer = 'dm/gfx/nvn/nvn_mtl_legacy.inc'
+            replace(legacy_renderer, '#include "nvn_mtl.h"\n',
+                    '#include "nvn_mtl.h"\n#include "nvn_depth_clear.h"\n')
+            replace(legacy_renderer, 'pd.depthAttachment.clearDepth = R.cd;',
+                    'pd.depthAttachment.clearDepth = pd.depthAttachment.texture.pixelFormat == MTLPixelFormatDepth16Unorm ? nvn_depth16_clear_value(R.cd) : R.cd;')
+            replace(legacy_renderer, 'rp.depthAttachment.clearDepth = c->c.f[0];',
+                    'rp.depthAttachment.clearDepth = pf == MTLPixelFormatDepth16Unorm ? nvn_depth16_clear_value(c->c.f[0]) : c->c.f[0];')
 
             pairs = (
                 ('dm/gfx/tools/dmsh_legacy_atomic.py', 'dm/gfx/tools/dmsh_legacy_atomic.py'),

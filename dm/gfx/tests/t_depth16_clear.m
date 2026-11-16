@@ -2,6 +2,9 @@
 // Expectations come from the GPU's fragment writes; count raw load-clear differences for comparison without requiring a particular GPU's unadjusted conversion.
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
+#if defined(DM_NVN_LEGACY_RENDERER_TEST)
+int front_screen_max_fps(void) { return 60; }
+#endif
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}

@@ -521,7 +521,12 @@ t_primitive_restart: t_primitive_restart.m $(MTL_T_DEP)
 check_t_primitive_restart: RUN_ENV = MTL_DEBUG_LAYER=1
 t_depth16_clear: t_depth16_clear.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_depth16_clear.m $(MTL_T_SRC) $(FW)
-check_t_depth16_clear: RUN_ENV = MTL_DEBUG_LAYER=1
+t_depth16_clear_legacy: t_depth16_clear.m $(MTL_T_DEP)
+	clang $(CFLAGS) -DDM_NVN_LEGACY_RENDERER_TEST=1 -fobjc-arc -o $@ t_depth16_clear.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_depth16_clear
+check_t_depth16_clear: t_depth16_clear t_depth16_clear_legacy
+	MTL_DEBUG_LAYER=1 ./t_depth16_clear
+	MTL_DEBUG_LAYER=1 ./t_depth16_clear_legacy
 t_clear_ds: t_clear_ds.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_clear_ds.m $(MTL_T_SRC) $(FW)
 check_t_clear_ds: RUN_ENV = MTL_DEBUG_LAYER=1

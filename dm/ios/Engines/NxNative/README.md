@@ -22,6 +22,22 @@ whose host lacks file-backed guest memory. Source SHA-256 before patching:
 - `dm/host/hle_svc.c`: `51f35785f230a7c3727f9f4ab7e4b839cd5633ff6c368e9a1b80a2e6dca50044`
 - `dm/gfx/nvn/nvn_mtl.m`: `2e311373518793777787f96d233c748a8fbb0fca8a17d3bc8d68e172d02ae40c`
 
+## Tears of the Kingdom: 16-bit depth clears on iPadOS 16.1
+
+The old renderer cleared a 16-bit depth buffer into a different quantization
+bin from a fragment writing the same NVN depth. A later equality test then
+dropped cave walls and stairs in large rectangular areas. Both legacy Metal
+clear paths now use the existing D16 conversion and retain normal depth
+testing. The pinned iOS 16/17 builder also applies the fix to its classic
+renderer without changing its shader chain.
+
+On M2 (iPadOS 16.1), the isolated 60.122 comparison recovered the walls and
+stairs beneath Hyrule Castle; they still rendered after moving Link. The
+matching test build also retained the previous experimental BC4 workaround.
+The cave check does not establish full shader coverage or other areas'
+rendering. The GPU fixture verified both clear paths against fragment writes
+at 1,042 depths with the modern and compatibility renderers.
+
 ## Ocarina of Time: opening movie on Metal 3 (M2 60.60)
 
 The opening video's decode kernel writes a private RGBA8 target which the
