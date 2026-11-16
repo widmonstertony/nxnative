@@ -100,6 +100,10 @@ extension BuildStore {
         if local != nil, LocalMacBuild.updating(titleID: tidHex) {
             fail(t("tonton.buildAlreadyUpdating")); return
         }
+        let engine = EngineLayout.root(repo.path)   // the checkout's engine/ (#214)
+        if let problem = local?.shaderInputProblem(titleID: tidHex, engine: engine) {
+            fail(shaderInputMessage(problem)); return
+        }
         let buildRoot = outDir.isEmpty ? baseDir : outDir
         let compatibilitySuffix = !requiresCompatibilityIPA ? "" : iosBuildTarget.workSuffix + (iosBuildTarget.compatibility ? "-" + iosLegacyGPU : "")
         let workDir = local?.workDirectory ?? buildRoot + "/" + tidHex + "_build" + compatibilitySuffix
@@ -153,7 +157,6 @@ extension BuildStore {
                 return
             }
         }
-        let engine = EngineLayout.root(repo.path)   // the checkout's engine/ (#214)
         // A game folder's files are not encrypted: the script ignores -k for it, and the launcher does not ask for the keys.
         let compatibilityDriver = engine + "/scripts/build_tonton_ios.py"
         var args = (target != BuildTarget.mac && requiresCompatibilityIPA

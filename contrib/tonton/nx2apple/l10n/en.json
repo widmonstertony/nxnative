@@ -2251,6 +2251,8 @@
   "target.tip": "Click to switch (a Mac app runs on this Mac, no iPhone needed)",
   "tonton.arm32BaseInput": "Base version %1$@ is 32-bit ARM. The native Mac engine requires 64-bit ARM and cannot build this base directly. An intact, supported 64-bit update is required.",
   "tonton.buildAlreadyUpdating": "This game is already in the update queue. See Builds for progress; after it finishes you can rebuild directly in the app.",
+  "tonton.preflightShaderTable": "The game profile is missing a readable shader conflict table. Restore this file from the matching profile and try again.\n%@",
+  "tonton.preflightShaderCaptures": "The game profile needs %d missing or unreadable shader captures (first key: %@). Restore both the .ctl and .code files in this folder and try again.\n%@",
   "tonton.damagedUpdateInput": "The existing %1$@ update failed integrity checks, including the drive backup. Associate an intact update of the same version before building normally.",
   "tonton.desktopControls": "Keyboard and mouse",
   "tonton.folderCloud": "Folder sync (iCloud Drive or another folder)",

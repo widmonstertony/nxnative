@@ -5,6 +5,15 @@ import NXCore
 // and monotonic overall stage progress tracking across `[k/n]` stages.
 
 extension BuildStore {
+    func shaderInputMessage(_ problem: LocalMacBuild.ShaderInputProblem) -> String {
+        switch problem {
+        case .missingConflictTable(let path):
+            return String(format: t("tonton.preflightShaderTable"), path)
+        case .missingCaptures(let directory, let keys):
+            return String(format: t("tonton.preflightShaderCaptures"), keys.count, keys.first ?? "", directory)
+        }
+    }
+
     package func invalidateKeyProblem() {
         keyCheckGeneration &+= 1
         if keyProblem != nil {

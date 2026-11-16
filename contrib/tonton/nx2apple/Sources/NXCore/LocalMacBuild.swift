@@ -55,6 +55,57 @@ package struct LocalMacBuild: Codable, Equatable, Sendable {
         return env
     }
 
+    package enum ShaderInputProblem: Equatable {
+        case missingConflictTable(String)
+        case missingCaptures(directory: String, keys: [String])
+    }
+
+    /// For the registered source and version, check the saved inputs before the packer extracts game data.
+    package func shaderInputProblem(titleID: String, engine: String) -> ShaderInputProblem? {
+        let files = FileManager.default
+        let work = URL(fileURLWithPath: workDirectory, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard files.fileExists(atPath: sourceDirectory, isDirectory: &isDirectory) else { return nil }
+        let source = URL(fileURLWithPath: sourceDirectory, isDirectory: isDirectory.boolValue)
+        let folder = isDirectory.boolValue ? source : source.deletingLastPathComponent()
+        let generated = [
+            work.appendingPathComponent("profile"),
+            folder.appendingPathComponent("\(titleID)_build/profile"),
+        ].map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+        let roots = profileDirectories + (engine.isEmpty ? [] : [engine + "/dm/games"])
+        let profile = roots.lazy.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            .filter { !generated.contains($0.resolvingSymlinksInPath().standardizedFileURL.path) }
+            .map { $0.appendingPathComponent(titleID, isDirectory: true) }
+            .first { files.fileExists(atPath: $0.appendingPathComponent("game.tsv").path) }
+        guard let profile,
+              let map = try? String(contentsOf: profile.appendingPathComponent("shader_map.tsv"), encoding: .utf8) else { return nil }
+        var hasShaders = false
+        var keys: Set<String> = []
+        let capturePrefix = "/nvn_capture/"
+        map.enumerateLines { line, _ in
+            let fields = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
+            guard fields.count == 5, fields[0].hasSuffix(".bin") else { return }
+            hasShaders = true
+            if fields[4].hasPrefix(capturePrefix) {
+                keys.insert(String(fields[4].dropFirst(capturePrefix.count)))
+            }
+        }
+        func readableFile(_ url: URL) -> Bool {
+            var isDirectory: ObjCBool = false
+            return files.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && !isDirectory.boolValue && files.isReadableFile(atPath: url.path)
+        }
+        let conflicts = profile.appendingPathComponent("shader_map.tsv.conflicts.tsv")
+        if hasShaders && !readableFile(conflicts) { return .missingConflictTable(conflicts.path) }
+        let captures = nvnCapture.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? work.appendingPathComponent("extract/v\(version)/nvn_capture", isDirectory: true)
+        let missing = keys.sorted().filter { key in
+            !readableFile(captures.appendingPathComponent(key + ".ctl"))
+                || !readableFile(captures.appendingPathComponent(key + ".code"))
+        }
+        return missing.isEmpty ? nil : .missingCaptures(directory: captures.path, keys: missing)
+    }
+
     package static func updating(titleID: String, report: String? = ProcessInfo.processInfo.environment["TONTON_UPDATE_REPORT"]) -> Bool {
         guard let report, let data = FileManager.default.contents(atPath: report),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
