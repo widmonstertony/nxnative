@@ -235,10 +235,17 @@ M2 build 60.117 rendered the auto-save prompt again after moving packaged
 texture resolution and upload to the serialized submission path. The
 display worker now only consumes a retained Metal texture. Its exit attempt
 identified a final guest worker blocked in `PopNotificationMessage` on a
-temporary HLE stack. The next build verifies the guest frame chain through
-the trampoline's saved entry frame, then runs pthread cleanup on the
-worker's original system stack. The old iPad rollout requires the two-title
-M2 test under one process ID. No game shader chain changes with this fence.
+temporary HLE stack. The worker now verifies its guest frame chain through
+the trampoline's saved entry frame and runs pthread cleanup on its original
+system stack. On iPadOS 16.1, classic builds leave the optional persistent
+Metal binary archive disabled: Metal failed archive serialization and then
+crashed in its release path, after the last GPU submission had completed.
+The shipped shader libraries and in-memory pipeline cache still work.
+On the M2 running iPadOS 16.1, build 60.119 rendered EXTELLA, returned to
+the game library after the runtime drained its workers and GPU, and started
+EXTELLA LINK under the same process. The test used separate scratch saves
+and verified the original saves were unchanged. No game shader chain
+changes with this fence.
 
 For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
 shader pairs matched the current inputs after reconstructing the original
@@ -247,6 +254,9 @@ version, which changed without changing the compiler build or iOS SDK.
 The last pair had no archive index and was rebuilt for the same chain.
 All 8,443 pairs and their variants (38,864 files), plus 396 Tears of the
 Kingdom sample and opening-scene pairs (1,409 files), passed M2 readback.
-The compatible signed frameworks and game data are already on M2. The
+The compatible signed frameworks and game data are already on M2. One
+Samurai Remnant and 54 Tears of the Kingdom non-point vertex sources were
+matched to the original 16.1 libraries by hash and read back on M2. Tears
+of the Kingdom also needed two shared fonts from the local library. The
 caches are still partial and carry no ready stamp; manual resume requires
 both titles to render an actual game scene correctly.

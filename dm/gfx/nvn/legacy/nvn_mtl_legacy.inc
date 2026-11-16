@@ -10529,7 +10529,7 @@ static void classic_drop_working_resources(void) {
     g_quad_ib = nil; g_fan_ib = nil; g_pass_order_fence = nil;
     g_safe_indirect_fence = nil; g_enc_pso = nil; g_enc_dss = nil;
     g_lp = nil; g_td_list = nil; g_diag_c0_cache = nil; g_l3_gpu_leaks = nil;
-    memset(g_pq, 0, sizeof g_pq);
+    for (unsigned i = 0; i < PQ; ++i) g_pq[i] = (pq_item){0};
 }
 
 // The caller has stopped guest submits and detached the UIKit display link.

@@ -40,6 +40,12 @@ static void cache_init(id<MTLDevice> device) {
     const char *override = getenv("DM_PIPELINE_CACHE_DIR");
     const char *enabled = getenv("DM_PIPELINE_CACHE");
     if (enabled && !strcmp(enabled, "off")) { stats.disabled = 1; return; }
+#if TARGET_OS_IOS && defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    // Some classic iOS builds still link this source directly. iPadOS 16.1
+    // can crash releasing an archive after Metal serialization has failed.
+    if (@available(iOS 17.0, *)) { /* Cache ABI starts at iOS 17. */ }
+    else { stats.disabled = 1; PCLOG("legacy binary archive persistence requires iOS 17"); return; }
+#endif
 #if !TARGET_OS_IPHONE
     if (!override) { stats.disabled = 1; return; } // Host fixtures opt in explicitly.
 #endif
