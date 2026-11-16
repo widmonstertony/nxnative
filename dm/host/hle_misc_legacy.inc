@@ -60,20 +60,9 @@ HLE_FORCE("_ZN2nn2ec17GetPurchasedEventEv", "bound idle purchase event", void *,
 }
 HLE_FORCE("_ZN2nn2ec22FinalizePurchasedEventEv", "offline purchase event stays idle until process exit", void, h_ec_FiniPurchase, void) {}
 HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ShowShop, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut)"); }
-// Super Kirby Clash waits on the purchased-item notification after account selection. The guest SDK's initializer
-// uses an AOC service session which the offline host does not open. There are no purchases to enqueue: give every
-// watcher the same borrowed, unsignalled SystemEvent for the life of the process, including after reinitialization.
-static _Alignas(16) uint8_t purchase_event[0x80];
-static pthread_once_t purchase_event_once = PTHREAD_ONCE_INIT;
-static void bind_purchase_event(void) { hle_bind_system_event(purchase_event, 0); }
-HLE_FORCE("_ZN2nn2ec24InitializePurchasedEventEv", "offline purchased-item queue is empty", void, h_ec_InitPurchased, void) {}
+// The remaining purchase queue calls share the legacy idle event above.
 HLE_FORCE("_ZN2nn2ec27InitializeAllPurchasedEventEv", "offline purchased-item queue is empty for every application", void, h_ec_InitAllPurchased, void) {}
 HLE_FORCE("_ZN2nn2ec27InitializeAllPurchasedEventERKNS_13ApplicationIdE", "offline purchased-item queue is empty for this application", void, h_ec_InitAppPurchased, const void *app) { (void)app; }
-HLE_FORCE("_ZN2nn2ec22FinalizePurchasedEventEv", "offline purchased-item queue has no service session to close", void, h_ec_FinalizePurchased, void) {}
-HLE_FORCE("_ZN2nn2ec17GetPurchasedEventEv", "borrow the offline queue's unsignalled event", void *, h_ec_GetPurchased, void) {
-    pthread_once(&purchase_event_once, bind_purchase_event);
-    return purchase_event;
-}
 HLE_FORCE("_ZN2nn2ec20PopPurchasedItemInfoEPNS0_17PurchasedItemInfoE", "no offline purchases to pop", unsigned, h_ec_PopPurchased, void *out) { (void)out; return 0; }
 HLE_FORCE("_ZN2nn2ec20PopPurchasedItemInfoEPNS0_27PurchasedItemInfoForPrivateE", "no private offline purchases to pop", unsigned, h_ec_PopPurchasedPrivate, void *out) { (void)out; return 0; }
 // The other shop entry points (Engage's title menu item "DLC" calls ShowShopAddOnContentList(ApplicationId, UserHandle)): the original starts the shop applet through applet::CreateLibraryApplet,

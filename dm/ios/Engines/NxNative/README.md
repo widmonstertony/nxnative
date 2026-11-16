@@ -221,17 +221,22 @@ observers, invalidate the display and FPS timers, and wait until the last
 UIKit save task has ended. A session generation outside the restored image
 sections prevents a delayed UIKit callback from affecting a new session.
 
-The classic frameworks do not advertise shelf return yet. The shell still
-needs to connect these fences to input and renderer allocation release and
-prove that M2 can launch two titles under the same process ID.
-Neither iPad received this candidate. No game shader chain changes with
-this fence.
+The classic independent EXTELLA framework is the first to opt in. Its
+launcher wires the return callback to the library window. Guest workers,
+save tasks and Metal have to finish before the launcher restores its
+environment. The 60.112 M2 smoke test aborted at startup: remapping a
+positive-offset signed game image removed execute access on iPadOS 16.1.
+The follow-up leaves code in place and reinitializes only the writable
+guest data. The old iPad rollout still requires the two-title M2 test
+under one process ID. No game shader chain changes with this fence.
 
 For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
 shader pairs matched the current inputs after reconstructing the original
 Metal compiler identity. Its version output included the Mac's Darwin
 version, which changed without changing the compiler build or iOS SDK.
-The last pair has no archive index. Tears of the Kingdom gained 48 more
-same-chain iPadOS 16.1 pairs, bringing the verified local sample to 66.
-Neither game has passed a real scene on the paired framework, so manual
-resume remains disabled.
+The last pair had no archive index and was rebuilt for the same chain.
+All 8,443 pairs and their variants (38,864 files), plus 150 Tears of the
+Kingdom sample pairs (449 files), passed M2 readback. The compatible
+frameworks and game data are already on M2. The caches are still partial
+and carry no ready stamp; manual resume requires both titles to render an
+actual game scene correctly.
