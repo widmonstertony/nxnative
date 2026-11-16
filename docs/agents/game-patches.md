@@ -25,6 +25,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 | Now → goal | Patch | Purpose | Status | Evidence | Games | Where | Why |
 |---|---|---|---|---|---|---|---|
+| `build` → `engine` | Fate/EXTELLA's SDK 0.12 stack and alias allocators | address space | gap | judgement | 1 | [Fate/EXTELLA](../../dm/games/010053E002EA2000/README.md) | This SDK initializes the allocators at fixed addresses. The host substitutes the mapped ranges only when the SDK identity and constructor fields both agree. |
 | `build` → `game` | frame limiter 30 → 60 fps and the 1/60 update step | frame rate | gap | judgement | 1 | [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md) | the game's own limiter constant and fixed step |
 | `build` → `game` | frame limiter spin: its branch back cut | frame rate | gap | judgement | 1 | [Need For Speed™ Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md) | the engine's own spin limiter; a function-matched rule could carry it over the game's updates |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | gap | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step; MATCH_CUTS and MATCH_FRAME_STEP could carry the cut and the stub, both near the step's function (main+0x2e7750; one function not checked yet) |
@@ -68,6 +69,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Diablo II: Resurrected](#diablo-ii-resurrected) | 2 | 0 | 0 | 1 | 0 | `game` |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
+| [Fate/EXTELLA](#fateextella) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Fire Emblem: Three Houses](#fire-emblem-three-houses) | 7 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Hades II](#hades-ii) | 0 | 0 | 1 | 0 | 0 | `game` |
@@ -294,6 +296,15 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **1.8d.310c `main`** `a48c0de3…`
   - host [hle_fpslock.c:53](../../dm/host/hle_fpslock.c#L53): engine frame limit set to fps_target: FIFA frame regulator
+
+### Fate/EXTELLA
+
+[Fate/EXTELLA](../../dm/games/010053E002EA2000/README.md), `010053E002EA2000`.
+
+- **`build` → `engine`**, address space, gap, judgement: Fate/EXTELLA's SDK 0.12 stack and alias allocators. This SDK initializes the allocators at fixed addresses. The host substitutes the mapped ranges only when the SDK identity and constructor fields both agree.
+
+- **1.0.0 `sdk`** `3b353895…`
+  - host [main.c:30](../../dm/host/main.c#L30): build check
 
 ### FINAL FANTASY TACTICS - The Ivalice Chronicles
 

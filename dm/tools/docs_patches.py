@@ -68,6 +68,8 @@ def payoff(gap):   # the Gaps order: open gaps, then blocked, kept and unreviewe
 
 # The host's build-keyed rows: (table, the start of the row's label ('' = any), main build ('' = any), entry); the first that fits classifies a row
 HOST_BINDING = [
+    ('', '', '3b353895d8e688841c45c34b45169228', {'what': "Fate/EXTELLA's SDK 0.12 stack and alias allocators", 'now': 'build', 'goal': 'engine', 'purpose': 'address space',
+     'why': "This SDK initializes the allocators at fixed addresses. The host substitutes the mapped ranges only when the SDK identity and constructor fields both agree."}),
     ('', '', 'b151a224a429f9a73abb05c5a3de9468', {'what': 'Classic Witcher 3 REDengine timing observation', 'now': 'build', 'goal': 'engine', 'purpose': 'frame rate',
      'why': 'The retained timing observer uses fixed sites for this verified main build; other REDengine builds need their own disassembly'}),
     ('k_locks', 'RE Engine', '', {'what': "RE Engine's frame limit at a fixed pointer", 'now': 'build', 'goal': 'engine', 'purpose': 'frame rate',
