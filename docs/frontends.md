@@ -80,6 +80,7 @@ Each app keeps the player's choices in its own preferences domain, its bundle ID
 - **Launch overrides are temporary.** A front end that starts the game with a variable in its environment overrides the saved choice for that start only. It writes the store only when the player means to keep the choice.
 - **`DM_SAVED_CHOICES=0`** (in the environment or an `env.txt`) starts with the tested defaults and leaves the saved choices as they are. **`DM_LAUNCHER=0`** only skips the settings screen (the iPhone's, or a Mac app's window): the saved choices still apply.
 - **`DM_SCREEN=<number>`** opens the Mac game's window on the screen with that `NSScreenNumber` (`CGDirectDisplayID`), centred, before any `DM_FULLSCREEN` request, so a front end can keep the game on its own display. An unknown number is ignored and logged. NX2Apple sets it to the screen of its own window.
+- **`DM_SCREEN_MATCH=1`** opts into matching the display's refresh rate to the game's frame pacing in fullscreen. TonTon and packaged Mac apps default to `0`, which keeps the current macOS display mode.
 - **A sandboxed front end** cannot write another app's preferences domain; this store is for front ends outside the App Sandbox, as NX2Apple is.
 
 ### App-managed iCloud saves

@@ -1467,6 +1467,8 @@
   "launch.set.DM_FPS_TARGET": "帧率",
   "launch.set.DM_FPS_TARGET.note": "解除上限时按实际经过时间推进游戏，并保留影片节奏。",
   "launch.set.DM_FULLSCREEN": "显示模式",
+  "launch.set.DM_SCREEN_MATCH": "全屏时匹配刷新率",
+  "launch.set.DM_SCREEN_MATCH.note": "全屏时可切换到与游戏帧率匹配的固定刷新率。切换时屏幕可能短暂黑一下。",
   "launch.set.DM_KEYMAP": "自定义键盘与鼠标",
   "launch.set.DM_LANG": "游戏语言",
   "launch.set.DM_LANG.note": "这份游戏文件没有提供语言列表，部分选项可能不受支持，游戏可能改用其他语言。",

@@ -55,6 +55,30 @@ final class MacGameModeOptionsTests: IsolatedDefaultsTestCase {
         return app
     }
 
+    @MainActor func testRefreshRateMatchingIsOptInForAnOlderInstalledBundle() throws {
+        let app = try makePlayableMacApp()
+        let labels = { L10n.string($0, .en) }
+        let row = try XCTUnwrap(LaunchSetting.forMac(app: app.path, titleID: titleID, repo: "", labels: labels)?
+            .first { $0.env == "DM_SCREEN_MATCH" })
+        XCTAssertTrue(row.isBasic)
+        XCTAssertEqual(row.def, "0")
+        let library = GameLibrary(file: temporary.appendingPathComponent("library.json"))
+        _ = try library.addApp(app)
+        let game = try XCTUnwrap(library.games.first)
+        let store = SavedChoices(app: app.path, titleID: titleID)
+        defer { store.set(row, "0") }
+        func launchValue(fullscreen: Bool) -> String? {
+            GameStart.environment(for: game, library: library, controls: ControlLayout(defaults: testDefaults),
+                                  repo: "", labels: labels, fullscreen: fullscreen, screen: nil)["DM_SCREEN_MATCH"]
+        }
+        XCTAssertEqual(launchValue(fullscreen: false), "0")
+        XCTAssertEqual(launchValue(fullscreen: true), "0")
+        store.set(row, "1")
+        XCTAssertEqual(launchValue(fullscreen: true), "1")
+        store.set(row, "0")
+        XCTAssertEqual(launchValue(fullscreen: true), "0")
+    }
+
     @MainActor func testPlayableMacAppOffersGameModeToggleUpdatesPlistWithoutPollutingEnvironmentAndResetsCleanly() throws {
         let app = try makePlayableMacApp()
         for lang in Lang.all {

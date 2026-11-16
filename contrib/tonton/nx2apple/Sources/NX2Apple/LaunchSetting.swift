@@ -68,6 +68,14 @@ struct LaunchSetting: Decodable, Identifiable {
                                         min: nil, max: nil, step: nil, on: nil, off: nil, unsetValue: "")
             list.insert(display, at: (list.firstIndex { $0.env == "DM_RENDER_SCALE" }).map { $0 + 1 } ?? 0)
         }
+        if let display = list.firstIndex(where: { $0.env == "DM_FULLSCREEN" }),
+           !list.contains(where: { $0.env == "DM_SCREEN_MATCH" }) {
+            let match = LaunchSetting(env: "DM_SCREEN_MATCH", kind: "toggle",
+                                      label: labels("launch.set.DM_SCREEN_MATCH"), note: labels("launch.set.DM_SCREEN_MATCH.note"),
+                                      def: "0", section: "Game", options: nil, min: nil, max: nil, step: nil,
+                                      on: "1", off: "0", level: "basic")
+            list.insert(match, at: display + 1)
+        }
         if let i = list.firstIndex(where: { $0.env == "DM_LANG" }) {
             // A game with no language list gets every language and a note from the engine (seedds/nxnative aafe01d, #668): the
             // RomFS names the ones it really has

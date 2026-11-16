@@ -614,6 +614,13 @@ class App(unittest.TestCase):
             k, _, v = ln.partition('='); out[k] = v
         return out
 
+    def test_fullscreen_refresh_matching_is_opt_in(self):
+        for environment, expected in (({}, '0'), ({'DM_SCREEN_MATCH': '1'}, '1')):
+            with self.launch(**environment) as process:
+                process.communicate(timeout=15)
+                self.assertEqual(process.returncode, 7)
+            self.assertEqual(self.host_run()['DM_SCREEN_MATCH'], expected)
+
     def test_layout(self):
         c = self.app / 'Contents'
         self.assertFalse(self.app.with_name(self.app.name + '.partial').exists())

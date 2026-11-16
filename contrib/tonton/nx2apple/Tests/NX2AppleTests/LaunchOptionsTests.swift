@@ -73,7 +73,7 @@ final class LaunchOptionsTests: IsolatedDefaultsTestCase {
     func testDisplayModeComesAfterTheRenderScaleAndWindowLeavesTheVariableUnset() throws {
         let (app, repo) = try app([scale, opmode].joined(separator: ","))
         let list = try XCTUnwrap(LaunchSetting.forMac(app: app, titleID: "01007EF00011E000", repo: repo, labels: { $0 }))
-        XCTAssertEqual(list.map(\.env), ["DM_RENDER_SCALE", "DM_FULLSCREEN", "DM_OPMODE"])
+        XCTAssertEqual(list.map(\.env), ["DM_RENDER_SCALE", "DM_FULLSCREEN", "DM_SCREEN_MATCH", "DM_OPMODE"])
         var game = LibraryGame(titleID: "01007EF00011E000", name: "Zelda")
         XCTAssertNil(game.launchEnvironment(list)["DM_FULLSCREEN"], "the host starts fullscreen when the variable is set at all")
         game.launchOptions["DM_FULLSCREEN"] = "1"
@@ -84,7 +84,7 @@ final class LaunchOptionsTests: IsolatedDefaultsTestCase {
         let leveled = #"{"env": "DM_METAL_HUD", "kind": "toggle", "label": "Metal HUD", "note": "", "default": "0", "section": "Performance", "on": "1", "off": "0", "level": "basic"}"#
         let (app, repo) = try app([scale, hud].joined(separator: ","))
         let list = try XCTUnwrap(LaunchSetting.forMac(app: app, titleID: "01007EF00011E000", repo: repo, labels: { $0 }))
-        XCTAssertEqual(list.filter(\.isBasic).map(\.env), ["DM_RENDER_SCALE", "DM_FULLSCREEN"])
+        XCTAssertEqual(list.filter(\.isBasic).map(\.env), ["DM_RENDER_SCALE", "DM_FULLSCREEN", "DM_SCREEN_MATCH"])
         XCTAssertEqual(list.filter { !$0.isBasic }.map(\.env), ["DM_METAL_HUD"])
         let (app2, _) = try self.app(leveled)
         XCTAssertTrue(try XCTUnwrap(LaunchSetting.read(app: app2)).first!.isBasic, "a level in launcher.json wins over the default split")

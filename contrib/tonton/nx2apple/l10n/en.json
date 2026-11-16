@@ -1466,6 +1466,8 @@
   "launch.set.DM_FPS_TARGET": "Frame rate",
   "launch.set.DM_FPS_TARGET.note": "The uncapped setting steps gameplay by elapsed time and keeps movie pacing.",
   "launch.set.DM_FULLSCREEN": "Display mode",
+  "launch.set.DM_SCREEN_MATCH": "Match refresh rate in fullscreen",
+  "launch.set.DM_SCREEN_MATCH.note": "Use a fixed display refresh rate that matches the game's frame pacing. The screen may briefly go black when it switches.",
   "launch.set.DM_KEYMAP": "Customize keyboard and mouse",
   "launch.set.DM_LANG": "Game language",
   "launch.set.DM_LANG.note": "This game's files do not list its languages, so some of these may not be in the game. It may then show another one.",

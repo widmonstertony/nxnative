@@ -16,6 +16,8 @@
 "Console mode" = "主机模式";
 "Controls" = "操作";
 "Display mode" = "显示模式";
+"Match refresh rate in fullscreen" = "全屏时匹配刷新率";
+"Use a fixed display refresh rate that matches the game's frame pacing. The screen may briefly go black when it switches." = "全屏时可切换到与游戏帧率匹配的固定刷新率。切换时屏幕可能短暂黑一下。";
 "Docked" = "底座模式";
 "Dutch" = "荷兰语";
 "Dynamic resolution" = "动态分辨率";

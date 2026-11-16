@@ -11,6 +11,7 @@ import Foundation
 /// - A setting this launcher adds that launcher.json has no row for (Display mode, DM_FULLSCREEN, today) is not: launcher.c would
 ///   ignore a key it has no rule for. It stays in the library file and goes into the environment at Play, like the mods'
 ///   DM_ROMFS_OVERLAY. Controller maps use their own capability marker and shared preferences schema.
+/// - Refresh rate matching uses the same saved preference before and after repacking. GameStart passes it to older bundles too.
 /// - A launch override (anything in the environment at Play) is temporary and is never written here.
 struct SavedChoices {
     let domain: String

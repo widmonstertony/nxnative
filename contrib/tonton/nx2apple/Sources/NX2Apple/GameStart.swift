@@ -26,11 +26,14 @@ enum GameStart {
         if FileManager.default.fileExists(atPath: game.appPath + "/Contents/Resources/dm/desktop.tsv") {
             layout.removeValue(forKey: "DM_KEYMAP")
         }
+        let store = SavedChoices(app: game.appPath, titleID: game.titleID)
         var environment = game.startEnvironment(controls: layout, settings: settings, mods: mods,
-                                                store: SavedChoices(app: game.appPath, titleID: game.titleID),
+                                                store: store,
                                                 appReadsStore: SavedChoices.appReadsStore(app: game.appPath),
                                                 controllerStore: mappings, savingEnabled: savingEnabled)
         if fullscreen, settings.contains(where: { $0.env == "DM_FULLSCREEN" }) { environment["DM_FULLSCREEN"] = "1" }
+        // Older installed bundles switch the screen by default and cannot read this saved choice themselves.
+        environment["DM_SCREEN_MATCH"] = settings.first { $0.env == "DM_SCREEN_MATCH" }.map(store.current) ?? "0"
         if let id = displayID(of: screen) { environment["DM_SCREEN"] = String(id) }
         environment["DM_HOME_QUIT_TEXT"] = HomeButtonHint.promptText(gameName: game.displayName(lang), labels: labels, homeMenu: homeMenu)   // the game's Home button quit prompt in the launcher's language (#336)
         // Console mode's game: the Home menu's Back to console mode, which pauses it in the background (#952). The desktop's Play passes none.
