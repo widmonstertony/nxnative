@@ -2026,13 +2026,15 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         int lag = 0; for (int i = 0; i < lag_k; i++) if (o->presents % (uint64_t)lag_n[i] < (uint64_t)lag_run[i]) lag += lag_ms[i];
         if (lag) usleep((useconds_t)lag * 1000);
     }
+    dm_host_mutex_lock(&g_sub_mu);
     gfx_enter();
     uint64_t t0 = now_ns();
-    if (idx >= 0 && idx < o->ntex && idx < 4) {   // enqueue only, return immediately
+    if (idx >= 0 && idx < o->ntex && idx < 4) {
         const tex_t *t = CTX(o->tex[idx]); int lc[4]; const int *crop = present_crop(o->crop, (int)t->d.width, (int)t->d.height, lc);
         nvn_cap_present(t, crop);   // DM_NVN_CAPTURE (nvn_capture.inc)
         o->ticket[idx] = mtl_present(t, present_period(o) / 1e9, crop);
     }
+    pthread_mutex_unlock(&g_sub_mu);
     gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);

@@ -10071,7 +10071,7 @@ static void classic_present_done(void) {
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
 }
-static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, double queued_at) {
+static int present_now(id<MTLTexture> src, uint64_t serial, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, double queued_at) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
     if (g_use != USE_OFF && g_use != USE_DONE) use_tick();
@@ -10083,8 +10083,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
              g_bp_up_bytes / 1048576.0, g_pkg_uploads, g_pkg_reuploads,
              g_up_total_ns / 1e6, g_bp_first_present / 1e9);
     }
-    PD("X ser=%llu", t->serial);
-    id<MTLTexture> src = tex_mtl(t);
+    PD("X ser=%llu", serial);
     if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture"); return 0; }
     // DM_NVN_REGLUM=x0,y0,x1,y1:file (normalized coordinates): read back this region on every present and record "present sequence number, present time ns, region mean luminance, subsampled grayscale thumbnail (hex)" (diagnostic: verify that animation speed is independent of frame rate).
     // A separate command buffer is queued after this frame's rendering (the same queue executes in submit order); does not wait for the GPU and does not disturb frame pacing
@@ -10214,10 +10213,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 // Swapchain texture return: before AcquireTexture gets a texture it waits for the ticket of that texture's previous present to be processed (mtl_present_wait), after which the commands the game draws into it
 // are necessarily ordered after that blit on the GPU queue.
 #define PQ 8
-typedef struct { tex_t t; double period; uint64_t frame; int crop[4]; double t_in; } pq_item;   // t_in: the time the game handed this frame into the present queue (CACurrentMediaTime)
+typedef struct { __strong id<MTLTexture> src; uint64_t serial; double period; uint64_t frame; int crop[4]; double t_in; } pq_item;
 static pq_item g_pq[PQ];
 static uint64_t g_pq_in;
-static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double, double);
+// Holding g_pq_mu. ARC owns queued sources until the worker takes or drops them.
+static void present_clear_sources(uint64_t first, uint64_t last) {
+    for (uint64_t n = first; n <= last; n++) g_pq[(n - 1) % PQ].src = nil;
+}
 
 #if DM_HAVE_METAL_DISPLAY_LINK
 @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -10259,13 +10261,14 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
     if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
     pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
+    present_clear_sources(first, ticket);
     g_pq_read = ticket;
     if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
     if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
-    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp,it.t_in); }
+    @autoreleasepool { submitted = present_now(it.src, it.serial, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp,it.t_in); }
     g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
     if (!submitted) {
         pthread_mutex_lock(&g_pq_mu);
@@ -10347,6 +10350,7 @@ static void present_drop_for_suspend(void) {
     if (g_link_owns_layer) {
         uint64_t n = g_pq_in - g_pq_read;
         for (uint64_t k = g_pq_read + 1; k <= g_pq_in; k++) g_pres[k % PRING] = (pres_ent){k, -1};
+        present_clear_sources(g_pq_read + 1, g_pq_in);
         g_link_dropped += n; g_pq_read = g_pq_in;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
         if (g_pq_done < g_pq_in) g_pq_done = g_pq_in;
@@ -10374,10 +10378,11 @@ static void *present_main(void *arg) {
         while (g_pq_read == g_pq_in || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
 #endif
         pq_item it = g_pq[g_pq_read % PQ];
+        g_pq[g_pq_read % PQ].src = nil;
         uint64_t ticket = ++g_pq_read; g_classic_pending++;
         pthread_mutex_unlock(&g_pq_mu);
         int submitted;
-        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0,it.t_in); }
+        @autoreleasepool { submitted = present_now(it.src, it.serial, it.period, it.frame, ticket, it.crop, nil, 0,it.t_in); }
         if (!submitted) {
             classic_present_done();   // No scheduled callback owns this failed frame
             pthread_mutex_lock(&g_pq_mu);
@@ -10414,6 +10419,7 @@ static int classic_present_stop(uint64_t deadline) {
         classic_present_wait(left);
     }
     int started = g_classic_worker_started;
+    present_clear_sources(g_pq_read + 1, g_pq_in);
     g_pq_read = g_pq_done = g_pq_in;
     pthread_mutex_unlock(&g_pq_mu);
     if (started && pthread_join(g_classic_worker, NULL)) return 0;
@@ -10558,9 +10564,8 @@ void mtl_link_pause(int on);
 // When turned on, also clear the frames already queued: the system first stops the display-link callback and only afterwards notifies about going to the background, and in that gap the game has already filled the swapchain and is stuck at "before acquiring the next texture, wait for its previous present to be processed"
 // (hle_nvn.c nvnWindowAcquireTexture -> mtl_present_wait). Without clearing, the game cannot advance a single tick during those 2.5 seconds of waiting for the save, and the save is not written (the same pattern three times in player logs: 3 frames queued, 0 submits)
 void mtl_present_discard(int on) { atomic_store(&g_present_discard, on != 0); if (on) present_drop_for_suspend(); }
-uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
-    if (atomic_load(&g_present_discard)) return 0;   // Ticket number 0 = no pending present; the swapchain texture acquire does not wait
-    if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
+static uint64_t present_enqueue_source(id<MTLTexture> src, uint64_t serial, double period, const int crop[4]) {
+    if (!src || atomic_load(&g_present_discard)) return 0;   // Ticket 0 = AcquireTexture does not wait
 #if DM_HAVE_METAL_DISPLAY_LINK
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
 #endif
@@ -10583,12 +10588,25 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
 #else
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // Wait only when the queue is full; normally AcquireTexture blocks first
 #endif
-    pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime()};
+    pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){src, serial, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime()};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     return tk;
+}
+// The caller holds the same serialization lock as QueueSubmitCommands.
+// Resolve packaged/CPU-written textures and submit any upload before the
+// display worker can read the source. The worker must never encode uploads.
+uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+    if (!t || atomic_load(&g_present_discard)) return 0;
+    xv_check(t->serial, 0, 0, "出图");
+    if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial;
+    g_sub_thread = pthread_self();
+    atomic_store(&g_sub_thread_set, 1);
+    id<MTLTexture> src = tex_mtl(t);
+    up_flush();
+    return present_enqueue_source(src, t->serial, period, crop);
 }
 
 // Bridge used by the Vulkan/OpenGL front ends that are linked into the common
@@ -10627,8 +10645,8 @@ void mtl_ext_tex_release(uint64_t serial) {
 }
 uint64_t mtl_present_ext(uint64_t serial, double period, void *event, uint64_t event_value, const int crop[4]) {
     (void)event; (void)event_value;
-    tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 0); t.serial = serial;
-    return mtl_present(&t, period, crop);
+    id<MTLTexture> src = tex_get(serial);
+    return present_enqueue_source(src, serial, period, crop);
 }
 void mtl_present_progress(uint64_t *queued, uint64_t *done) {
     pthread_mutex_lock(&g_pq_mu);
@@ -10651,6 +10669,7 @@ void mtl_present_wait(uint64_t tk) {
         if (now - last < STALL_NS) { pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts); continue; }   // The display link is still running, it is just not this one's turn yet: keep waiting (bounded, no busy spinning)
         uint64_t n = tk - g_pq_read;
         for (uint64_t k = g_pq_read + 1; k <= tk; k++) g_pres[k % PRING] = (pres_ent){k, -1};
+        present_clear_sources(g_pq_read + 1, tk);
         g_link_dropped += n; g_pq_read = tk;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
         if (g_pq_done < tk) g_pq_done = tk;

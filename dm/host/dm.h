@@ -248,6 +248,10 @@ void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg);   
 void dm_host_shutdown(const char *why);   // Graceful exit (hle_lifecycle.c): stop background threads and audio, stop the pipeline prewarm, drain graphics, write the pipeline archive, then _exit(0); used by SIGTERM and oe::ExecuteProgram
 #if defined(DM_CLASSIC_SHELF_LIFECYCLE)
 int dm_host_classic_fence_for_shell(int budget_ms);
+int dm_guest_classic_is_gathering(void);
+uintptr_t dm_bigstack_guest_frame(const void *return_address);
+void dm_guest_classic_at_notification_wait(uintptr_t frame);
+void dm_oe_wake_teardown(void);
 #endif
 int dm_teardown_is_parking(void);
 void dm_teardown_check_current_thread(void);

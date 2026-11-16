@@ -231,16 +231,22 @@ guest data. On M2 build 60.114 EXTELLA rendered the auto-save prompt,
 but the shelf fence declined to detach: the legacy loader did not record
 the signed patch extent for positive-offset modules. Build 60.115 records
 that extent so the original gate provenance check can accept those SVCs.
-The old iPad rollout requires the two-title M2 test under one process ID.
-No game shader chain changes with this fence.
+M2 build 60.117 rendered the auto-save prompt again after moving packaged
+texture resolution and upload to the serialized submission path. The
+display worker now only consumes a retained Metal texture. Its exit attempt
+identified a final guest worker blocked in `PopNotificationMessage` on a
+temporary HLE stack. The next build verifies the guest frame chain through
+the trampoline's saved entry frame, then runs pthread cleanup on the
+worker's original system stack. The old iPad rollout requires the two-title
+M2 test under one process ID. No game shader chain changes with this fence.
 
 For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
 shader pairs matched the current inputs after reconstructing the original
 Metal compiler identity. Its version output included the Mac's Darwin
 version, which changed without changing the compiler build or iOS SDK.
 The last pair had no archive index and was rebuilt for the same chain.
-All 8,443 pairs and their variants (38,864 files), plus 150 Tears of the
-Kingdom sample pairs (449 files), passed M2 readback. The compatible
-frameworks and game data are already on M2. The caches are still partial
-and carry no ready stamp; manual resume requires both titles to render an
-actual game scene correctly.
+All 8,443 pairs and their variants (38,864 files), plus 396 Tears of the
+Kingdom sample and opening-scene pairs (1,409 files), passed M2 readback.
+The compatible signed frameworks and game data are already on M2. The
+caches are still partial and carry no ready stamp; manual resume requires
+both titles to render an actual game scene correctly.

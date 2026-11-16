@@ -96,6 +96,9 @@ typedef struct thr {
 #if TARGET_OS_IOS || defined(DM_TEST_GUEST_EXIT_WATCH)
     int retirement_waiting;
     uintptr_t retirement_root, retirement_stack_top;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+    uintptr_t retirement_worker_sp;
+#endif
 #endif
     sync_ref_t wobjs[MAX_SYNC_OBJECTS]; int wn, widx;   // WaitSynchronization's retained objects (the first wn) and the index the completing signal recorded, independent of handle reuse and guest memory (Horizon: KThread's sync object buffer)
     int ctx_ok; uint64_t ctx_x[29], ctx_fp, ctx_lr, ctx_sp, ctx_pc; uint32_t ctx_pstate, ctx_fpcr, ctx_fpsr; __uint128_t ctx_v[32];
@@ -501,6 +504,9 @@ static void *thread_main(void *p) {
 #if TARGET_OS_IOS
     t->retirement_root = (uintptr_t)dm_guest_worker_end;
     t->retirement_stack_top = t->stack_top;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    __asm__ volatile("mov %0, sp" : "=r"(t->retirement_worker_sp));
+#endif
 #endif
     dm_thread_enter(t->entry, t->arg, t->stack_top);   // Does not return: the guest must exit through ExitThread
     die("guest thread entry returned");
@@ -520,11 +526,33 @@ static void thr_put(thr_t *t) {   // Holding G; drop a reference taken with t->r
     if (!--t->refs && t->closed && t->exited) thr_free(t);
 }
 static void wake_sync_waiters(const void *obj);
+typedef struct {   // copied under G; the thread can exit once the lock is released
+    uint32_t handle, svc; int prio, core, rs, sleeping, host_work, wkind;
+    uint64_t mask, waddr, wkey, lr;
+    char name[48];
+    int have, npc, guest;
+    uint64_t x[10], pc[24];   // x0–x2 and x19–x25, then PC, LR and frame-pointer chain
+} hitch_t;
+static void hitch_grab(thr_t *t, hitch_t *h);
+static void hitch_log(const hitch_t *h);
 #if TARGET_OS_IOS || defined(DM_TEST_GUEST_EXIT_WATCH)
 static void sync_close(sync_ref_t ref);
 static int retire_guest_text(uintptr_t addr) {
     const module_t *m = module_of((void *)addr);
     return m && addr - (uintptr_t)m->base < m->text_end;
+}
+static int retire_walk_to_root(const thr_t *t, uintptr_t fp) {
+    uintptr_t top = t->retirement_stack_top;
+    if (!t->retirement_root || top < 16 || fp > top - 16 || top - fp > (64u << 20)) return 0;
+    for (unsigned n = 0; n < 256; n++) {
+        uint64_t pair[2]; vm_size_t got;
+        if ((fp & 15u) || vm_read_overwrite(mach_task_self(), fp, sizeof pair, (vm_address_t)pair, &got) ||
+            got != sizeof pair) return 0;
+        if (pair[1] == t->retirement_root) return pair[0] == 0;
+        if (!retire_guest_text(pair[1]) || pair[0] <= fp || pair[0] > top - 16) return 0;
+        fp = pair[0];
+    }
+    return 0;
 }
 static int retire_stack_root(const thr_t *t) {
     if (!t->entered) return !t->started; // a dormant worker has no guest frames
@@ -543,23 +571,18 @@ static int retire_stack_root(const thr_t *t) {
     if (sp & 15u || top < 16 || sp > top - 16 || top - sp > (64u << 20)) return 0;
     if (vm_read_overwrite(mach_task_self(), sp, sizeof pair, (vm_address_t)pair, &got) || got != sizeof pair) return 0;
     if (pair[1] == t->retirement_root) return pair[0] == 0;
-    if (!retire_guest_text(pair[1])) return 0;
-    uintptr_t fp = pair[0];
-    for (int n = 0; n < 256; n++) {
-        if (fp & 15u || fp <= sp || fp > top - 16) return 0;
-        if (vm_read_overwrite(mach_task_self(), fp, sizeof pair, (vm_address_t)pair, &got) || got != sizeof pair) return 0;
-        if (pair[1] == t->retirement_root) return pair[0] == 0;
-        if (!retire_guest_text(pair[1])) return 0;
-        sp = fp; fp = pair[0];
-    }
-    return 0;
+    return retire_guest_text(pair[1]) && pair[0] > sp && retire_walk_to_root(t, pair[0]);
 }
 // Retire at an outer guest boundary only. A parked thread is reversible until
 // every participant arrives. Never count a suspended Mach thread as exited.
-static void retire_checkpoint_locked(thr_t *t) {
-    if (atomic_load(&g_retire_phase) != RETIRE_GATHER) return;
-    if (!t || t->host_owned || t->native_wait || atomic_load(&dm_host_work) ||
-        !retire_stack_root(t)) return;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+// pthread exit runs TLS destructors, including the one that unmaps the
+// temporary HLE stack. Enter it from this worker's original pthread stack.
+__attribute__((naked, noreturn)) static void retire_exit_on_worker_stack(thr_t *, uintptr_t, void (*)(thr_t *)) {
+    __asm__ volatile("mov sp, x1\nmov x29, #0\nmov x30, #0\nbr x2");
+}
+#endif
+static void retire_park_locked(thr_t *t, uintptr_t worker_sp) {
     t->retirement_waiting = 1;
     pthread_cond_broadcast(&g_retire_cv);
     while (atomic_load(&g_retire_phase) == RETIRE_GATHER) g_cond_wait(&g_retire_cv, NULL);
@@ -569,8 +592,36 @@ static void retire_checkpoint_locked(thr_t *t) {
     if (t->wkind) { wait_unlink(t); t->wkind = 0; }
     while (t->wn) sync_close(t->wobjs[--t->wn]);
     g_unlock();
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+    if (worker_sp) retire_exit_on_worker_stack(t, worker_sp, thread_exit);
+#else
+    (void)worker_sp;
+#endif
     thread_exit(t);
 }
+static int retire_can_park(const thr_t *t) {
+    return atomic_load(&g_retire_phase) == RETIRE_GATHER &&
+        t && !t->host_owned && !t->native_wait && !atomic_load(&dm_host_work);
+}
+static void retire_checkpoint_locked(thr_t *t) {
+    if (retire_can_park(t) && retire_stack_root(t)) retire_park_locked(t, 0);
+}
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+int dm_guest_classic_is_gathering(void) {
+    return atomic_load(&g_retire_phase) == RETIRE_GATHER;
+}
+// Called only by the blocking applet notification hook after it has
+// released its host mutex. Its immediate caller and every ancestor up
+// to the entry marker must be original guest code.
+void dm_guest_classic_at_notification_wait(uintptr_t frame) {
+    thr_t *t = pthread_getspecific(g_keythr);
+    g_lock();
+    if (retire_can_park(t) && t->retirement_worker_sp && retire_walk_to_root(t, frame))
+        retire_park_locked(t, t->retirement_worker_sp);
+    g_unlock();
+}
+#endif
 
 // Call from the owning host session, never a guest thread. The return value
 // says whether retirement has committed, not whether teardown is safe yet:
@@ -588,6 +639,11 @@ static int retire_at_boundaries(unsigned budget_ms, int stop_owned_separately) {
     g_retire_skip_owned = stop_owned_separately;
     atomic_store(&g_retire_phase, RETIRE_GATHER);
     for (thr_t *t = g_all; t; t = t->all) if (!t->exited) pthread_cond_signal(&t->cv);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+    // This notifier takes the applet mutex; the applet wait takes G only
+    // after releasing that mutex. Preserve its existing lock order.
+    g_unlock(); dm_oe_wake_teardown(); g_lock();
+#endif
     for (;;) {
         int ready = 1;
         for (thr_t *t = g_all; t; t = t->all)
@@ -598,18 +654,24 @@ static int retire_at_boundaries(unsigned budget_ms, int stop_owned_separately) {
         ready = ready && !g_exit_pending;
         pthread_mutex_unlock(&g_exit_watch_mu);
         if (ready || g_cond_wait(&g_retire_cv, &until) == ETIMEDOUT) {
+            hitch_t snapshots[8];
+            unsigned count = 0;
             if (!ready) {
-                unsigned blockers = 0;
                 for (thr_t *t = g_all; t; t = t->all) {
                     if (t->exited || t->retirement_waiting || (g_retire_skip_owned && t->host_owned)) continue;
-                    if (++blockers <= 8) LOG("shelf: thread %#x (host=%d, entered=%d, SVC PC=%#llx) did not acknowledge the exit boundary",
-                                            t->handle, t->host_owned, t->entered, (unsigned long long)t->svc_pc);
+                    if (count == sizeof snapshots / sizeof *snapshots) break;
+                    hitch_grab(t, &snapshots[count++]);
                 }
                 g_retire_skip_owned = 0;
             }
             atomic_store(&g_retire_phase, ready ? RETIRE_COMMIT : RETIRE_IDLE);
             pthread_cond_broadcast(&g_retire_cv);
-            g_unlock(); return ready;
+            g_unlock();
+            // The stack is sampled read-only; symbol lookup only happens after
+            // the rest of the game has been released from its trial park.
+            if (count) LOG("shelf: %u sampled thread(s) did not acknowledge the exit boundary", count);
+            for (unsigned i = 0; i < count; i++) hitch_log(&snapshots[i]);
+            return ready;
         }
     }
 }
@@ -740,13 +802,6 @@ static void ctx_fill(const thr_t *t, hz_ctx_t *o) {   // holding G, t is stopped
 // mask, what it waits on, its last SVC and call site, and where it is (pc, lr and the frame-pointer chain: up to 8 guest frames, the host frames above them; x0-x2 and x19-x25
 // when it runs guest code), read with the thread suspended for a moment. At most 24 stalls per run. It found Breath of the Wild's job queue poll (patch_nso.py "Spin waits")
 _Atomic uint64_t dm_present_ns;   // nvn_mtl.m present_enqueue (every graphics API): when the last present was made (host monotonic ns)
-typedef struct {   // what one dump line needs, copied under G so that a thread that exits meanwhile is not read
-    uint32_t handle, svc; int prio, core, rs, sleeping, host_work, wkind;
-    uint64_t mask, waddr, wkey, lr;
-    char name[48];
-    int have, npc, guest;   // have: the registers were read; guest: pc is in a guest module
-    uint64_t x[10], pc[24];   // x0-x2, x19-x25; the pc, the lr and the frame-pointer chain
-} hitch_t;
 // Holding G (thr_free and the exit flag need it, so no thread in the list is freed or leaves meanwhile). Between the suspend and the resume only mach calls and memory reads
 // run: no malloc, no stdio, no dladdr (the suspended thread may hold their locks). The symbols are looked up after every thread runs again
 static void hitch_grab(thr_t *t, hitch_t *h) {

@@ -14,6 +14,8 @@ static int observed_wait(pthread_cond_t *, pthread_mutex_t *);
 #include HLE_OE_SOURCE
 void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg) { (void)why; (void)then; (void)arg; }   // oe::ExecuteProgram: not exercised here
 void dm_host_shutdown(const char *why) { (void)why; }
+int dm_teardown_is_parking(void) { return 0; }   // No session teardown in the scheduler test.
+void dm_teardown_check_current_thread(void) {}
 void dm_hid_opmode_changed(void) {}   // hle_hid.c: the npads follow the mode; not exercised here
 #undef pthread_cond_wait
 static _Atomic int waiting, resumed, finish;
