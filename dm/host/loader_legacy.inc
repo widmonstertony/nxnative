@@ -615,7 +615,7 @@ static void map_image(module_t *m, const char *dir) {
         x0 + z0 != w || w + zw != x1 || x1 != x0 + m->patch_off ||
         (((uintptr_t)x0 | z0 | zw | z1) & 0x3FFF))
         die("%s invalid static tvOS guest segment layout", m->name);
-    m->base = (uint8_t *)x0; m->size = z0 + zw + z1;
+    m->base = (uint8_t *)x0; m->size = z0 + zw + z1; m->patch_len = z1;
     install_key_page(m);
     LOG("%s using static signed tvOS RX/RW/RX segments; no TEXT protection change", m->name);
     return;
@@ -630,9 +630,10 @@ static void map_image(module_t *m, const char *dir) {
         char si[17]; snprintf(si, sizeof si, "__dm%s%simg", ns, m->name);
         unsigned long zi; const uint8_t *img = getsectiondata(IMAGE_MH, "__TEXT", si, &zi);
         if (!img) die("embedded section __TEXT,%s missing", si);
-        if (z0 + zw != (uint64_t)m->patch_off || (zi & 0x3FFF) || ((uintptr_t)img & 0x3FFF) || ((uintptr_t)w & 0x3FFF))
+        if (z0 + zw != (uint64_t)m->patch_off || zi < (uint64_t)m->patch_off || (zi & 0x3FFF) || ((uintptr_t)img & 0x3FFF) || ((uintptr_t)w & 0x3FFF))
             die("%s embedded section layout mismatch (image %#lx W %#lx PATCH_OFF %#llx)", m->name, zi, zw, (unsigned long long)m->patch_off);
         m->size = zi;
+        m->patch_len = zi - (uint64_t)m->patch_off;
         // Keep positive-offset code at its original signed address. iPadOS
         // 16.1 strips execute permission from an alias made with vm_remap.
         // Reloading the pristine W segment also resets its key page on replay.
@@ -665,7 +666,7 @@ static void map_image(module_t *m, const char *dir) {
         die("%s embedded section layout mismatch (x0 %#lx w %#lx x1 %#lx, PATCH_OFF %#llx)", m->name, z0, zw, z1, (unsigned long long)m->patch_off);
     m->size = front ? m->image_size : m->patch_off + z1;
     uint64_t pre = front ? (uint64_t)-m->patch_off : 0;
-    if (front) m->patch_len = z1;
+    m->patch_len = z1;
     vm_address_t base = 0;
     if (vm_allocate(mach_task_self(), &base, pre + m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s failed to reserve address space", m->name);
     base += pre;
@@ -748,6 +749,8 @@ static void map_image(module_t *m, const char *dir) {
         return;
     }
     m->size = (sz + 0x3FFF) & ~0x3FFFull;
+    if ((uint64_t)m->patch_off > m->size) die("%s PATCH_OFF beyond mapped image", path);
+    m->patch_len = m->size - (uint64_t)m->patch_off;
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);

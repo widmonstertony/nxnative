@@ -831,7 +831,7 @@ static void map_image(module_t *m, const char *dir) {
         die("%s embedded section layout mismatch (x0 %#lx w %#lx x1 %#lx, PATCH_OFF %#llx)", m->name, z0, zw, z1, (unsigned long long)m->patch_off);
     m->size = front ? m->image_size : m->patch_off + z1;
     uint64_t pre = front ? (uint64_t)-m->patch_off : 0;
-    if (front) m->patch_len = z1;
+    m->patch_len = z1;
     vm_address_t base = 0; uint8_t *slot = jit_slot(m, m->size, pre);
     if (slot) base = (vm_address_t)slot - pre;   // inside the jit layout's reservation
     else if (vm_allocate(mach_task_self(), &base, pre + m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s failed to reserve %#llx bytes of address space", m->name, (unsigned long long)(pre + m->size));
@@ -880,6 +880,8 @@ static void map_image(module_t *m, const char *dir) {
         return;
     }
     m->size = (sz + 0x3FFF) & ~0x3FFFull;
+    if ((uint64_t)m->patch_off > m->size) die("%s PATCH_OFF beyond mapped image", path);
+    m->patch_len = m->size - (uint64_t)m->patch_off;
     uint8_t *slot = jit_slot(m, m->size, 0);
     m->base = mmap(slot, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | (slot ? MAP_FIXED : 0), -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);

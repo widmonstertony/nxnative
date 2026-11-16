@@ -227,8 +227,12 @@ save tasks and Metal have to finish before the launcher restores its
 environment. The 60.112 M2 smoke test aborted at startup: remapping a
 positive-offset signed game image removed execute access on iPadOS 16.1.
 The follow-up leaves code in place and reinitializes only the writable
-guest data. The old iPad rollout still requires the two-title M2 test
-under one process ID. No game shader chain changes with this fence.
+guest data. On M2 build 60.114 EXTELLA rendered the auto-save prompt,
+but the shelf fence declined to detach: the legacy loader did not record
+the signed patch extent for positive-offset modules. Build 60.115 records
+that extent so the original gate provenance check can accept those SVCs.
+The old iPad rollout requires the two-title M2 test under one process ID.
+No game shader chain changes with this fence.
 
 For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
 shader pairs matched the current inputs after reconstructing the original
