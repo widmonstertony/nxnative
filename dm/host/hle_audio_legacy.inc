@@ -52,6 +52,8 @@ typedef struct {
 static aout *g_aos[AOMAX];
 static pthread_mutex_t g_aos_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_suspended;
+static pthread_t g_audio_watchdog;
+static int g_audio_watchdog_started, g_audio_watchdog_end;  // under g_aos_lock
 // Platform-neutral CTL notification. A Mac host or a test has no UIKit observer;
 // the iOS frontend registers a static callback and dispatches onto its main queue.
 static _Atomic(void (*)(const char *, const char *)) g_audio_env_callback;
@@ -394,6 +396,10 @@ static void *au_watchdog(void *p) {
     for (;;) {
         usleep(WD_TICK_MS * 1000);
         pthread_mutex_lock(&g_aos_lock);
+        if (g_audio_watchdog_end) {
+            pthread_mutex_unlock(&g_aos_lock);
+            break;
+        }
         uint64_t t = now_ns(), gap = t - last; last = t;
         au_watchdog_step_locked(t, gap);
         pthread_mutex_unlock(&g_aos_lock);
@@ -401,7 +407,29 @@ static void *au_watchdog(void *p) {
     }
     return NULL;
 }
-static void au_watchdog_start(void) { pthread_t t; if (!pthread_create(&t, NULL, au_watchdog, NULL)) pthread_detach(t); }
+// Called under the same lock that publishes new outputs. A later output can
+// retry thread creation if the first one could not start a watchdog.
+static void au_watchdog_start_locked(void) {
+    if (!g_audio_watchdog_started && !g_audio_watchdog_end &&
+        !pthread_create(&g_audio_watchdog, NULL, au_watchdog, NULL))
+        g_audio_watchdog_started = 1;
+}
+
+// The quit coordinator calls this after guest/AudioRenderer users are joined
+// and before detaching the session. Backgrounding alone must not drain it.
+// Do not hold g_aos_lock across the join: the worker checks its stop under it.
+int dm_audio_legacy_join_watchdog(void) {
+    pthread_mutex_lock(&g_aos_lock);
+    g_audio_watchdog_end = 1;
+    int started = g_audio_watchdog_started;
+    pthread_t worker = g_audio_watchdog;
+    pthread_mutex_unlock(&g_aos_lock);
+    if (started && pthread_join(worker, NULL)) return 0;
+    pthread_mutex_lock(&g_aos_lock);
+    g_audio_watchdog_started = 0;
+    pthread_mutex_unlock(&g_aos_lock);
+    return 1;
+}
 
 // AudioOutParameter = { int32 sampleRate; uint16 channelCount; uint16 _r; ... }, 0 = system default (48 kHz / 2 channels)
 HLE_FORCE("_ZN2nn5audio27InitializeAudioOutParameterEPNS0_17AudioOutParameterE", "audio output parameter defaults", void, h_au_InitParam, uint8_t *p) { memset(p, 0, 8); }
@@ -438,10 +466,10 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     int slot = -1; for (int i = 0; i < AOMAX; i++) if (!g_aos[i]) { slot = i; break; }
     if (slot < 0) die("more than %d AudioOuts open at once", AOMAX);
     g_aos[slot] = a;
+    if (a->real_requested) au_watchdog_start_locked();
     pthread_mutex_unlock(&g_aos_lock);
     char sb[64];
     LOG("audio #%d OpenAudioOut %s channels %d %s%s (call site %s)", a->id, name ? name : "(default)", ch, a->real_requested ? "real output" : "silent sink", ev ? "" : ", no release event (the game polls)", site(lr, sb, sizeof sb));
-    if (a->real_requested) { static pthread_once_t wd = PTHREAD_ONCE_INIT; pthread_once(&wd, au_watchdog_start); }
     au_info(g, ch, STATE_STOPPED);
     return RES_OK;
 }

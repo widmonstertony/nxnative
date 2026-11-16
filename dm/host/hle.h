@@ -95,5 +95,8 @@ extern int dm_fps_realtime;     // the selected Mac mode uses state +0xa0 for st
 extern int dm_fps_step_max;   // loader.c: the largest step the frame step stubs give the game (patch_nso.py ctx.step_max; 0 = FSTEP_MAX)
 int dm_movie_playing(void);   // hle_movie.c: a video decoder of the SDK's movie library handed out a picture in the last half second (the frame step then holds 30 fps)
 void dm_audio_suspend(int on);
+// iOS classic: join the session's AudioUnit watchdog, once its guest and
+// AudioRenderer workers have stopped. Returns false if it could not join.
+int dm_audio_legacy_join_watchdog(void);
 uint64_t dm_audio_render_calls(void);   // Cumulative sound card callback count (the silent sink is not counted)
 void dm_audio_reset(void);   // iOS media services reset: recreate the AudioUnits (hle_audio.c)
