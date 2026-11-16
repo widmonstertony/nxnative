@@ -9,13 +9,15 @@
 static uintptr_t g_lo, g_hi;   // the fake guest stack: 16 KB above a guard page
 int dm_guest_as_contains(uintptr_t a) { return a >= g_lo && a < g_hi; }
 
-static uintptr_t g_fp;
+uintptr_t dm_bigstack_guest_frame(const void *ra);
+static uintptr_t g_fp, g_guest_frame;
 static void *g_site;
 // 64 KB of locals: four times the fake guest stack, so running on it would fault in the guard page
 HLE_FORCE("_ZN4test5probeEmmd", "unit test", uint64_t, probe, uint64_t a, uint64_t b, double d) {
     volatile char big[64 << 10];
     big[0] = 1; big[sizeof big - 1] = 2;
     g_fp = (uintptr_t)__builtin_frame_address(0);
+    g_guest_frame = dm_bigstack_guest_frame(__builtin_return_address(0));
     g_site = dm_bigstack_caller(__builtin_return_address(0));
     return a * 3 + b + (uint64_t)d + (uint64_t)(big[0] + big[sizeof big - 1]);
 }
@@ -69,6 +71,8 @@ int main(void) {
     CHECK(r == 5 * 3 + 7 + 2 + 3, "arguments carried over through the switch");
     CHECK(g_fp && !dm_guest_as_contains(g_fp), "the implementation ran off the guest stack");
     CHECK(g_site == (void *)call_on_site, "dm_bigstack_caller gives the call site back after a switch");
+    CHECK(dm_guest_as_contains(g_guest_frame) && ((const uintptr_t *)g_guest_frame)[1] == (uintptr_t)call_on_site,
+          "the retirement walk starts at the trampoline's saved guest record");
 
     // a second call on the same thread reuses the thread's host stack
     g_site = NULL; r = call_on(1, 1, 1.0, g_hi, probe_bs);
@@ -78,6 +82,7 @@ int main(void) {
     g_site = NULL; r = call_on(2, 0, 0.0, 0, probe_bs);
     CHECK(r == 6 + 3, "arguments on the direct path");
     CHECK(g_site == (void *)call_on_site, "dm_bigstack_caller passes the call site through on the direct path");
+    CHECK(!g_guest_frame, "the direct path never reuses a previous call's guest frame");
 
     // stack arguments: called from the very top of the guest stack, the 4 on the stack arrive and nothing above them is read
     g_fp = 0; r = call_args(g_hi, many_bs);

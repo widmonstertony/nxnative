@@ -101,6 +101,29 @@ static void publish(void) {
 // (1.5 G by default; Documents/env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole cycle)
 // and shaking on keeps it going. Holding the phone and pressing the screen stays far below the threshold. Each detected shake is logged with its peak
 static CMMotionManager *g_motion;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// These two gates survive restoration of the engine image. A system callback
+// captured by a previous game must never enter a reset engine.
+static _Atomic uint64_t g_pad_session __attribute__((section("__DATA,__dm_keep")));
+static pthread_mutex_t g_pad_sensors __attribute__((section("__DATA,__dm_keep"))) = PTHREAD_MUTEX_INITIALIZER;
+static NSMapTable<id, NSArray<dispatch_block_t> *> *g_pad_bindings;
+static NSOperationQueue *g_accel_queue, *g_gyro_queue;
+static uint64_t pad_session(void) { return atomic_load(&g_pad_session); }
+static BOOL pad_session_current(uint64_t session) { return (session & 1) && session == pad_session(); }
+static void pad_on_main(uint64_t session, dispatch_block_t block) {
+    if (!pad_session_current(session)) return;
+    if (NSThread.isMainThread) block();
+    else dispatch_async(dispatch_get_main_queue(), ^{ if (pad_session_current(session)) block(); });
+}
+static BOOL pad_sensor_enter(uint64_t session) {
+    if (!pad_session_current(session)) return NO;
+    pthread_mutex_lock(&g_pad_sensors);
+    if (pad_session_current(session)) return YES;
+    pthread_mutex_unlock(&g_pad_sensors);
+    return NO;
+}
+static void pad_sensor_leave(void) { pthread_mutex_unlock(&g_pad_sensors); }
+#endif
 static void motion_start(void) {
     if (g_motion) return;
     g_motion = [CMMotionManager new];
@@ -109,9 +132,16 @@ static void motion_start(void) {
     LOG("front end: shaking the phone shakes the controller (threshold %.2f G)", thr);
     g_motion.accelerometerUpdateInterval = 1.0 / 60;
     NSOperationQueue *q = [NSOperationQueue new]; q.maxConcurrentOperationCount = 1;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_accel_queue = q;
+    uint64_t session = pad_session();
+#endif
     __block double gx = 0, gy = 0, gz = 0, last = -1, peak = 0; __block BOOL init = NO;
     [g_motion startAccelerometerUpdatesToQueue:q withHandler:^(CMAccelerometerData *d, NSError *err) {
         (void)err; if (!d) return;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        if (!pad_sensor_enter(session)) return;
+#endif
         CMAcceleration a = d.acceleration;
         if (!init) { gx = a.x; gy = a.y; gz = a.z; init = YES; }
         double dx = a.x - gx, dy = a.y - gy, dz = a.z - gz, g = sqrt(dx * dx + dy * dy + dz * dz);
@@ -122,6 +152,9 @@ static void motion_start(void) {
         uint64_t want = on ? DM_BTN_SHAKE : 0;
         pthread_mutex_lock(&g_mu); BOOL changed = g_shake_btn != want; g_shake_btn = want; pthread_mutex_unlock(&g_mu);
         if (changed) publish();
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        pad_sensor_leave();
+#endif
     }];
 }
 
@@ -149,13 +182,23 @@ static void phone_motion_start(UIView *body) {
     g_motion.deviceMotionUpdateInterval = 1.0 / 100;
     if (@available(iOS 27.0, *)) { g_motion.deviceMotionBody = body; g_motion_body = YES; LOG("front end: the phone's motion comes in the pad view's frame (deviceMotionBody)"); }
     NSOperationQueue *q = [NSOperationQueue new]; q.maxConcurrentOperationCount = 1;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_gyro_queue = q;
+    uint64_t session = pad_session();
+#endif
     [g_motion startDeviceMotionUpdatesToQueue:q withHandler:^(CMDeviceMotion *d, NSError *err) {
         (void)err; if (!d) return;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        if (!pad_sensor_enter(session)) return;
+#endif
         float a[3] = {(float)(d.gravity.x + d.userAcceleration.x), (float)(d.gravity.y + d.userAcceleration.y), (float)(d.gravity.z + d.userAcceleration.z)};
         float w[3] = {(float)d.rotationRate.x, (float)d.rotationRate.y, (float)d.rotationRate.z}, as[3], ws[3];
         int o = g_motion_body ? 1 : atomic_load(&g_iface_orient);   // the body's frame is already the picture's: the portrait map, which leaves it as it is
         motion_phone_to_switch(o, a, as); motion_phone_to_switch(o, w, ws);
         dm_motion_set_switch(0, as, ws);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        pad_sensor_leave();
+#endif
     }];
 }
 
@@ -205,6 +248,11 @@ static BOOL pad_keep_touch(void) { return pad_env_on("DM_PAD_KEEP_TOUCH"); }
 static __weak DmGamepad *g_view;
 void dm_gamepad_active(void);
 static void pads_start(void);   // Physical controllers, below
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+@interface DmGamepad (ShelfInput)
+- (void)stopShelfInput;
+@end
+#endif
 
 @implementation DmGamepad {
     NSMapTable<UITouch *, NSNumber *> *_owner;     // touch → control (with the key for C_BTN or the stick for C_STICK, << 8)
@@ -231,9 +279,21 @@ static void pads_start(void);   // Physical controllers, below
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
     CGPoint _hoverLast;
     BOOL _hoverValid;
+    NSTimer *_releaseTimer;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t _shelfSession;
+#endif
 }
 
-static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+#define PAD_PALETTE __attribute__((section("__DATA,__dm_keep")))
+#else
+#define PAD_PALETTE
+#endif
+static UIColor *k_idle PAD_PALETTE, *k_on PAD_PALETTE, *k_line PAD_PALETTE;
+static UIColor *k_ringFill PAD_PALETTE, *k_text PAD_PALETTE, *k_textOn PAD_PALETTE;
+static dispatch_once_t g_pad_palette_once PAD_PALETTE;
+#undef PAD_PALETTE
 static CAShapeLayer *shape(CALayer *parent) {
     CAShapeLayer *l = [CAShapeLayer layer];
     l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = 1.5;
@@ -256,8 +316,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
             [_touchFeedback prepare];
         }
         _owner = [NSMapTable strongToStrongObjectsMapTable]; _faceOf = [NSMapTable strongToStrongObjectsMapTable];
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{
+        dispatch_once(&g_pad_palette_once, ^{
             // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
             k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
             k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
@@ -302,6 +361,9 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
         _full = l == 1; _tap = l == 2;
         [self applyLayout];
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        _shelfSession = pad_session();
+#endif
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
         [nc addObserver:self selector:@selector(inputDevicesChanged:) name:GCControllerDidConnectNotification object:nil];
         [nc addObserver:self selector:@selector(inputDevicesChanged:) name:GCControllerDidDisconnectNotification object:nil];
@@ -321,8 +383,14 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
         scroll.cancelsTouchesInView = NO;
         [self addGestureRecognizer:scroll];
         __weak DmGamepad *weakSelf = self;
-        NSTimer *releaseTimer = [NSTimer timerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        uint64_t session = _shelfSession;
+#endif
+        _releaseTimer = [NSTimer timerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+            if (!pad_session_current(session)) return;
+#endif
             pthread_mutex_lock(&g_mu);
             BOOL expired = g_mouse_deadline > 0 && CACurrentMediaTime() >= g_mouse_deadline;
             if (expired) { g_mouse_rx = g_mouse_ry = 0; g_mouse_deadline = 0; }
@@ -330,13 +398,22 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS; }   // stick clicks
             if (expired) publish();
             [weakSelf updateSkillFaceLayout];   // the main run loop owns geometry and touch routing together
         }];
-        [NSRunLoop.mainRunLoop addTimer:releaseTimer forMode:NSRunLoopCommonModes];
+        [NSRunLoop.mainRunLoop addTimer:_releaseTimer forMode:NSRunLoopCommonModes];
         LOG("front end: trackpad raw/hover/scroll camera input with bounded release timer");
         motion_start();
         phone_motion_start(self);
     }
     return self;
 }
+- (void)dealloc { [_releaseTimer invalidate]; }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+- (void)stopShelfInput {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    [_releaseTimer invalidate]; _releaseTimer = nil;
+    [self resignFirstResponder];
+    [self reset];
+}
+#endif
 - (BOOL)canBecomeFirstResponder { return YES; }
 - (void)didMoveToWindow { [super didMoveToWindow]; if (self.window) [self becomeFirstResponder]; }
 - (NSArray<UIKeyCommand *> *)keyCommands {
@@ -855,7 +932,11 @@ static void clear_mouse(void) {
     if (!NSThread.isMainThread) {
         pthread_mutex_lock(&g_mu); uint64_t epoch = g_input_epoch; BOOL eligible = g_input_active; pthread_mutex_unlock(&g_mu);
         if (!eligible) return;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        pad_on_main(pad_session(), ^{
+#else
         dispatch_async(dispatch_get_main_queue(), ^{
+#endif
             pthread_mutex_lock(&g_mu); BOOL current = g_input_active && epoch == g_input_epoch; pthread_mutex_unlock(&g_mu);
             if (current) [self mouseMotionX:dx y:dy raw:raw];
         });
@@ -872,8 +953,66 @@ static void clear_mouse(void) {
     read_mouse(dx, dy);
     if (raw) { static int once; if (!once++) LOG("front end: raw mouse/trackpad motion is driving the camera"); }
 }
-// Home and Capture: without this iOS takes them as system gestures (Home opens the Games overlay, Capture a screenshot); the app gives them no function
-static void pad_keep_system_buttons(GCController *c) { for (NSString *b in @[GCInputButtonHome, GCInputButtonShare]) c.physicalInputProfile.buttons[b].preferredSystemGestureState = GCSystemGestureStateDisabled; }
+// Home and Capture: without this iOS takes them as system gestures.
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static void pad_unbind(id device) {
+    if (!device) return;
+    for (dispatch_block_t undo in [g_pad_bindings objectForKey:device].reverseObjectEnumerator) undo();
+    [g_pad_bindings removeObjectForKey:device];
+}
+// Restore only if our callback is still installed. The library can change its
+// own handler independently (e.g. on a GameController reconnect).
+#define PAD_OWN_HANDLER(undo, object, property, handler) do { \
+    __auto_type dm_handler_owner = (object); \
+    __auto_type dm_handler_previous = dm_handler_owner.property; \
+    dm_handler_owner.property = (handler); \
+    __auto_type dm_handler_installed = dm_handler_owner.property; \
+    [(undo) addObject:^{ if (dm_handler_owner.property == dm_handler_installed) dm_handler_owner.property = dm_handler_previous; }]; \
+} while (0)
+static void pad_bind(GCController *c, int p) {
+    if ([g_pad_bindings objectForKey:c]) return;
+    NSMutableArray<dispatch_block_t> *undo = [NSMutableArray array];
+    uint64_t session = pad_session();
+    PAD_OWN_HANDLER(undo, c.extendedGamepad, valueChangedHandler, ^(GCExtendedGamepad *g, GCControllerElement *el) {
+        (void)el; pad_on_main(session, ^{ read_pad(g); });
+    });
+    for (NSString *name in @[GCInputButtonHome, GCInputButtonShare]) {
+        GCControllerButtonInput *b = c.physicalInputProfile.buttons[name];
+        if (!b || b.preferredSystemGestureState == GCSystemGestureStateDisabled) continue;
+        GCSystemGestureState was = b.preferredSystemGestureState;
+        b.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        [undo addObject:^{ if (b.preferredSystemGestureState == GCSystemGestureStateDisabled) b.preferredSystemGestureState = was; }];
+    }
+    GCMotion *motion = c.motion;
+    if (motion.hasRotationRate) {
+        void (^previous)(GCMotion *) = motion.valueChangedHandler;
+        BOOL manuallyActivated = motion.sensorsRequireManualActivation;
+        BOOL wasActive = manuallyActivated && motion.sensorsActive;
+        dm_motion_attach_with_delivery(c, p, ^(dispatch_block_t read) { pad_on_main(session, read); });
+        void (^installed)(GCMotion *) = motion.valueChangedHandler;
+        if (installed != previous) [undo addObject:^{
+            if (motion.valueChangedHandler != installed) return;
+            motion.valueChangedHandler = previous;
+            if (manuallyActivated) motion.sensorsActive = wasActive;
+        }];
+    }
+    [g_pad_bindings setObject:undo forKey:c];
+}
+static void pad_unbind_controller(GCController *c, int p) {
+    pad_unbind(c);
+    dm_motion_clear(p);
+}
+#else
+static void pad_bind(GCController *c, int p) {
+    for (NSString *b in @[GCInputButtonHome, GCInputButtonShare]) c.physicalInputProfile.buttons[b].preferredSystemGestureState = GCSystemGestureStateDisabled;
+    c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
+    dm_motion_attach(c, p);
+}
+static void pad_unbind_controller(GCController *c, int p) {
+    c.extendedGamepad.valueChangedHandler = nil;
+    dm_motion_detach(c, p);
+}
+#endif
 static const char *pad_name(GCController *c) { return c.vendorName.UTF8String ?: "?"; }
 static void npad_name(int p, char *out, size_t cap) { uint32_t id = dm_player_npad(p); if (id == 0x20) snprintf(out, cap, "handheld"); else snprintf(out, cap, "%u", id); }
 static void pads_start(void) {
@@ -882,12 +1021,11 @@ static void pads_start(void) {
 }
 // Called at start and on every connect / disconnect (gone: the controller that was just removed, nil otherwise); returns whether a controller is in use
 static BOOL pads_merged(GCController *gone) {
-    if (gone) { gone.extendedGamepad.valueChangedHandler = nil; dm_motion_detach(gone, 0); }
+    if (gone) pad_unbind_controller(gone, 0);
     BOOL any = NO; int motion = 0;
     for (GCController *c in GCController.controllers) if (c != gone && c.extendedGamepad) {
         if (c.motion.hasRotationRate) motion = 1;
-        any = YES; pad_keep_system_buttons(c); c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
-        dm_motion_attach(c, 0);   // every controller is player 1: the last one moved drives its six-axis sensor
+        any = YES; pad_bind(c, 0);   // every controller is player 1
         read_pad(c.extendedGamepad);
     }
     if (!any || !motion) dm_motion_clear(0);   // the phone's gyro (if on) takes over from its next sample
@@ -898,8 +1036,7 @@ static BOOL pads_slotted(GCController *gone) {
     NSArray<GCController *> *now = GCController.controllers; char nb[16];
     for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p] && (g_held[p] == gone || ![now containsObject:g_held[p]])) {
         npad_name(p, nb, sizeof nb); LOG("controller '%s' disconnected: player %d (npad %s) is free", pad_name(g_held[p]), p + 1, nb);
-        g_held[p].extendedGamepad.valueChangedHandler = nil;
-        dm_motion_detach(g_held[p], p);   // player 1's: the phone's gyro (if on) takes over from its next sample
+        pad_unbind_controller(g_held[p], p);   // player 1's: the phone's gyro (if on) takes over from its next sample
         dm_haptics_apple_controller(p, nil);
         pad_slot_free(&g_slots, (__bridge const void *)g_held[p]); g_held[p] = nil;
         dm_pad_set_player(p, 0, 0, 0, 0, 0);   // nothing stays pressed
@@ -907,9 +1044,7 @@ static BOOL pads_slotted(GCController *gone) {
     for (GCController *c in now) if (c.extendedGamepad && c != gone && pad_slot_of(&g_slots, (__bridge const void *)c) < 0) {
         int p = pad_slot_take(&g_slots, (__bridge const void *)c, pad_name(c));
         if (p < 0) { LOG("controller '%s' connected: all %d players are taken, not used", pad_name(c), DM_PLAYERS); continue; }
-        g_held[p] = c; pad_keep_system_buttons(c);
-        c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
-        dm_motion_attach(c, p);
+        g_held[p] = c; pad_bind(c, p);
         npad_name(p, nb, sizeof nb); LOG("controller '%s' connected: player %d (npad %s)%s", pad_name(c), p + 1, nb, c.motion.hasRotationRate ? ", with motion (gyro)" : "");
         read_pad(c.extendedGamepad);
     }
@@ -917,10 +1052,22 @@ static BOOL pads_slotted(GCController *gone) {
     return pad_slot_mask(&g_slots) != 0;
 }
 - (void)inputDevicesChanged:(NSNotification *)note {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t session = _shelfSession;
+    if (!pad_session_current(session)) return;
+    if (!NSThread.isMainThread) {
+        __weak DmGamepad *owner = self;
+        pad_on_main(session, ^{ [owner inputDevicesChanged:note]; });
+        return;
+    }
+    if ([note.name isEqual:GCKeyboardDidDisconnectNotification] || [note.name isEqual:GCMouseDidDisconnectNotification])
+        pad_unbind(note.object);
+#else
     if (!NSThread.isMainThread) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self inputDevicesChanged:note]; });
         return;
     }
+#endif
     GCController *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? note.object : nil;
     BOOL controller = g_merge ? pads_merged(gone) : pads_slotted(gone);
     GCKeyboard *keyboard = GCKeyboard.coalescedKeyboard;
@@ -928,18 +1075,42 @@ static BOOL pads_slotted(GCController *gone) {
     _controllerOrKeyboard = controller || hasKeyboard;
     if (_controllerOrKeyboard) _touchPreferred = NO;
     if (hasKeyboard) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        if (![g_pad_bindings objectForKey:keyboard]) {
+            NSMutableArray<dispatch_block_t> *undo = [NSMutableArray array];
+            PAD_OWN_HANDLER(undo, keyboard.keyboardInput, keyChangedHandler, ^(GCKeyboardInput *input, GCDeviceButtonInput *button, GCKeyCode key, BOOL pressed) {
+                (void)input; (void)button; pad_on_main(session, ^{ read_key(key, pressed); });
+            });
+            [g_pad_bindings setObject:undo forKey:keyboard];
+        }
+#else
         keyboard.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *input, GCDeviceButtonInput *button, GCKeyCode key, BOOL pressed) {
             (void)input; (void)button; read_key(key, pressed);
         };
+#endif
     } else clear_keyboard();
     BOOL mouse = NO;
     for (GCMouse *m in GCMouse.mice) if (m.mouseInput) {
         mouse = YES;
         LOG("front end: mouse inventory vendor=%s category=%s", m.vendorName.UTF8String ?: "unknown", m.productCategory.UTF8String ?: "unknown");
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        if (![g_pad_bindings objectForKey:m]) {
+            NSMutableArray<dispatch_block_t> *undo = [NSMutableArray array];
+            __weak DmGamepad *owner = self;
+            PAD_OWN_HANDLER(undo, m.mouseInput, mouseMovedHandler, ^(GCMouseInput *input, float dx, float dy) {
+                (void)input; pad_on_main(session, ^{ [owner mouseMotionX:dx y:dy raw:YES]; });
+            });
+            [g_pad_bindings setObject:undo forKey:m];
+        }
+#else
         m.mouseInput.mouseMovedHandler = ^(GCMouseInput *input, float dx, float dy) {
             (void)input; [g_view mouseMotionX:dx y:dy raw:YES];
         };
+#endif
     }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+#undef PAD_OWN_HANDLER
+#endif
     if (!mouse) clear_mouse();
     BOOL keepTouch = pad_keep_touch();
     BOOL any = dm_controller_hides_touch(controller, hasKeyboard, mouse, _touchPreferred, keepTouch);
@@ -950,8 +1121,41 @@ static BOOL pads_slotted(GCController *gone) {
 }
 @end
 
-UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
-void dm_gamepad_active(void) { dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); }); }   // On become active: motion_apple.h
+UIView *dm_gamepad_view(CGRect frame) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_pad_bindings = [NSMapTable strongToStrongObjectsMapTable];
+    atomic_fetch_add(&g_pad_session, 1);
+#endif
+    DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v;
+}
+void dm_gamepad_active(void) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    pad_on_main(pad_session(), ^{
+        for (GCController *c in GCController.controllers)
+            if ([g_pad_bindings objectForKey:c]) dm_motion_rearm(c);
+    });
+#else
+    dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); });
+#endif
+}
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// Main queue serializes old GameController deliveries and UIKit against this
+// call. Core Motion callbacks that haven't entered can now only drop a sample.
+void dm_gamepad_classic_close(void) {
+    if (!(pad_session() & 1)) return;
+    atomic_fetch_add(&g_pad_session, 1);
+    [g_view stopShelfInput];
+    g_view = nil;
+    for (NSArray<dispatch_block_t> *bindings in g_pad_bindings.objectEnumerator.allObjects)
+        for (dispatch_block_t undo in bindings.reverseObjectEnumerator) undo();
+    g_pad_bindings = nil;
+    [g_motion stopAccelerometerUpdates];
+    [g_motion stopDeviceMotionUpdates];
+    if (@available(iOS 27.0, *)) g_motion.deviceMotionBody = nil;
+    [g_accel_queue cancelAllOperations]; [g_gyro_queue cancelAllOperations];
+    g_accel_queue = nil; g_gyro_queue = nil; g_motion = nil;
+}
+#endif
 static void clear_input_locked(void) {
     g_touch_btn = g_pad_btn = g_key_btn = 0; g_shake_btn = 0;
     g_touch_face = g_touch_native = 0;
@@ -962,9 +1166,32 @@ static void clear_input_locked(void) {
     g_shift_left = g_shift_right = NO;
     g_command_left = g_command_right = NO;
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// Run before restoring the image. The only admitted sensor work is the short
+// math/input publication under this gate, with no synchronous main-queue call.
+void dm_gamepad_classic_fence(void) {
+    pthread_mutex_lock(&g_pad_sensors);
+    pthread_mutex_unlock(&g_pad_sensors);
+    pthread_mutex_lock(&g_mu);
+    g_input_active = NO;
+    clear_input_locked();
+    pthread_mutex_unlock(&g_mu);
+    dm_input_set(0, 0, 0, 0, 0);
+    dm_touch_set(NULL, 0);
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        dm_pad_set_player(p, 0, 0, 0, 0, 0);
+        dm_motion_clear(p);
+        g_held[p] = nil;
+    }
+}
+#endif
 static void reset_touch_owners(void) {
     if (NSThread.isMainThread) [g_view reset];
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    else pad_on_main(pad_session(), ^{ [g_view reset]; });
+#else
     else dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
+#endif
 }
 void dm_gamepad_reset(void) {   // A key held while switching away and released in background gets no "release"
     // Publish neutral touch axes immediately too: a queued UIKit reset must not
@@ -982,7 +1209,11 @@ void dm_gamepad_set_active(int active) {
     if (g_merge) dm_pad_set(0, 0, 0, 0, 0);
     else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p]) dm_pad_set_player(p, 0, 0, 0, 0, 0);
     if (active) dm_gamepad_active();
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    if (active) pad_on_main(pad_session(), ^{
+#else
     if (active) dispatch_async(dispatch_get_main_queue(), ^{
+#endif
         if (g_input_active && g_view.window) [g_view becomeFirstResponder];
     });
     LOG("front end: input focus active=%d; all input neutralized", active != 0);

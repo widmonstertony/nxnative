@@ -120,6 +120,16 @@ void *dm_bigstack_caller(void *ra) {
     return top ? top[-1] : ra;
 }
 
+// The trampoline sets x29 to its saved guest FP/LR record at sp+0xa0.
+// Recover that record only for its own implementation return site; an
+// arbitrary host or nested HLE frame must not be treated as guest code.
+uintptr_t dm_bigstack_guest_frame(const void *ra);
+uintptr_t dm_bigstack_guest_frame(const void *ra) {
+    extern const char dm_bigstack_ret[];
+    const uintptr_t *top = ra == dm_bigstack_ret ? pthread_getspecific(g_bs_key) : NULL;
+    return top ? top[-2] + 0xa0 : 0;
+}
+
 // A log line (dm.h LOG). The variable arguments stay where the caller put them (on its stack, which stays mapped); only the formatting moves: log_emit is entered through
 // dm_bigstack_enter as a take-over is, with the argument list by address, so on a guest stack it runs on the host stack and anywhere else it is jumped to directly
 static void log_emit(const char *fmt, va_list *ap) __attribute__((used));

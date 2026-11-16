@@ -92,15 +92,77 @@ static _Atomic uint32_t g_prepare_total, g_prepare_done, g_prepare_failed, g_pre
 static pthread_mutex_t g_prepare_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_prepare_cv = PTHREAD_COND_INITIALIZER;
 static int g_prepare_active = 1;
+static int g_compile_stopping;
+static dispatch_group_t g_compile_tasks;
+// Metal command completion is not proof that all host callbacks have returned.
+// Track them before submission, including callbacks that consume guest pointers.
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static dispatch_group_t classic_gpu_callbacks(void) {
+    static dispatch_once_t once;
+    static dispatch_group_t group;
+    dispatch_once(&once, ^{ group = dispatch_group_create(); });
+    return group;
+}
+typedef void (^classic_command_callback)(id<MTLCommandBuffer>);
+static classic_command_callback classic_track_command(classic_command_callback work) {
+    dispatch_group_t group = classic_gpu_callbacks();
+    dispatch_group_enter(group);
+    return ^(id<MTLCommandBuffer> buffer) {
+        work(buffer);
+        dispatch_group_leave(group);
+    };
+}
+#if !TARGET_OS_SIMULATOR
+typedef void (^classic_drawable_callback)(id<MTLDrawable>);
+static classic_drawable_callback classic_track_drawable(classic_drawable_callback work) {
+    dispatch_group_t group = classic_gpu_callbacks();
+    dispatch_group_enter(group);
+    return ^(id<MTLDrawable> drawable) {
+        work(drawable);
+        dispatch_group_leave(group);
+    };
+}
+#endif
+#else
+#define classic_track_command(...) (__VA_ARGS__)
+#define classic_track_drawable(...) (__VA_ARGS__)
+#endif
+
+static int classic_compile_async(dispatch_queue_t queue, dispatch_block_t work) {
+    pthread_mutex_lock(&g_prepare_mu);
+    int accepted = !g_compile_stopping;
+    if (accepted) {
+        if (!g_compile_tasks) g_compile_tasks = dispatch_group_create();
+        dispatch_group_async(g_compile_tasks, queue, work);
+    }
+    pthread_mutex_unlock(&g_prepare_mu);
+    return accepted;
+}
+// Call after the submit thread has stopped making synchronous renderer calls.
+// A timeout is a teardown failure: the host must keep this session allocated.
+int mtl_classic_compile_stop(uint64_t timeout_ns) {
+    pthread_mutex_lock(&g_prepare_mu);
+    g_compile_stopping = 1;
+    dispatch_group_t pending = g_compile_tasks;
+    pthread_cond_broadcast(&g_prepare_cv);
+    pthread_mutex_unlock(&g_prepare_mu);
+    if (pending && dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)MIN(timeout_ns, INT64_MAX)))) return 0;
+    pthread_mutex_lock(&g_prepare_mu);
+    g_compile_tasks = nil;
+    pthread_mutex_unlock(&g_prepare_mu);
+    return 1;
+}
 void mtl_prepare_active(int active) {
     pthread_mutex_lock(&g_prepare_mu); g_prepare_active = active;
     pthread_cond_broadcast(&g_prepare_cv); pthread_mutex_unlock(&g_prepare_mu);
 }
-static void prepare_foreground_wait(void) {
-    if (!atomic_load(&g_prepare_frontend)) return;
+static int prepare_can_continue(void) {
     pthread_mutex_lock(&g_prepare_mu);
-    while (!g_prepare_active) pthread_cond_wait(&g_prepare_cv, &g_prepare_mu);
+    while (atomic_load(&g_prepare_frontend) && !g_prepare_active && !g_compile_stopping)
+        pthread_cond_wait(&g_prepare_cv, &g_prepare_mu);
+    int active = !g_compile_stopping;
     pthread_mutex_unlock(&g_prepare_mu);
+    return active;
 }
 void mtl_prepare_snapshot(nvn_prepare_status *out) {
     // State publication pairs with READY/PARTIAL after all PSO tables are claimed.
@@ -116,6 +178,7 @@ static uint32_t g_selected_slice;
 static NSMutableArray *g_l3_gpu_leaks;
 static int g_nvn_deswz_gpu;
 static id<MTLCommandQueue> g_q;
+static id<CAMetalDrawable> g_prefetched_drawable; // Used for compositing straight onto the drawable
 
 
 static _Atomic uint32_t g_present_qos;
@@ -148,6 +211,16 @@ static int g_pq_inflight;   // Under g_pq_mu: number of presents committed to th
 // Under g_pq_mu: claim the layer before attaching a display link, and keep each
 // classic frame protected from dequeue until its scheduled present call returns.
 static int g_link_owns_layer, g_classic_pending;
+#if !DM_HAVE_METAL_DISPLAY_LINK
+// 16.1 has no display-link run loop. Keep the late drawable callback's
+// lock and generation outside the state that the shell can restore.
+static pthread_t g_classic_worker;
+static int g_classic_worker_started, g_classic_worker_stop, g_classic_worker_done;
+#define CLASSIC_KEEP __attribute__((section("__DATA,__dm_keep")))
+static pthread_mutex_t g_classic_callback_mu CLASSIC_KEEP = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_classic_generation CLASSIC_KEEP;
+#undef CLASSIC_KEEP
+#endif
 int g_dm_present_link;   // Present pacing mode (runtime value of DM_PRESENT_LINK, modified directly during same-process alternating measurement): 0 = acquire the drawable itself; 1 = display link at 60 Hz; 2 = display link at 120 Hz, the game presents a frame every other display-link tick
 static int g_present_latency = 1;
 static uint64_t g_pq_done;
@@ -1363,7 +1436,7 @@ static void gpu_tag_done(uint64_t f, double g0, double g1) {
     }
     atomic_fetch_sub(&g_gpu[k].pending, 1);
 }
-static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); }]; }
+static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); })]; }
 void gpu_tag(id<MTLCommandBuffer> cb) { gpu_tag_f(cb, atomic_load(&g_cur_frame)); }
 double mtl_gpu_ms(uint64_t f) {
     unsigned k = f % GRING;
@@ -1391,12 +1464,12 @@ uint64_t mtl_sub_commit(void) {
     NSArray<dispatch_block_t> *commit_blocks = [g_commit_blocks copy];
     __block NSArray<id<MTLSamplerState>> *sampler_refs = g_sub_samplers.allObjects;
 
-    [g_cb addCompletedHandler:^(id<MTLCommandBuffer> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); sampler_refs = nil; }];
+    [g_cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); sampler_refs = nil; })];
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
     NSString *sample_notes = [g_sub_sample_notes copy];
     NSArray<dispatch_block_t> *argument_checks = [g_sub_argument_checks copy];
-    [g_cb addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    [g_cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> cb) {
         // The diagnostic reads run in this callback before g_done advances,
         // so an arena cannot be legitimately recycled before the comparison.
         for (dispatch_block_t check in argument_checks) check();
@@ -1417,7 +1490,7 @@ uint64_t mtl_sub_commit(void) {
         free(ops);
         pthread_mutex_lock(&g_mu); if (fence > g_done) g_done = fence; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
         defer_drain();
-    }];
+    })];
     void arena_commit(uint64_t fence); arena_commit(fence);
     res_commit();
     [g_cb encodeSignalEvent:g_ev value:fence];
@@ -1926,7 +1999,7 @@ static void up_flush(void) {
     static int lost_at = -2; static uint64_t batch_n; if (lost_at == -2) { const char *e = getenv("DM_TEST_UP_LOST"); lost_at = e ? atoi(e) : -1; } int fake_lost = dsts.count && lost_at > 0 && (int)++batch_n == lost_at;
 
     atomic_fetch_add(&g_up_pending, 1);
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> f) {
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> f) {
         if (f.error) MLOG("【红】上传命令缓冲执行出错：%s", f.error.description.UTF8String);
         if (f.error || fake_lost) {
             os_unfair_lock_lock(&g_up_lost_lk); if (!g_up_lost) g_up_lost = [NSHashTable weakObjectsHashTable]; for (id d in dsts) [g_up_lost addObject:d]; int n = (int)g_up_lost.allObjects.count; atomic_store(&g_up_lost_n, n); os_unfair_lock_unlock(&g_up_lost_lk);
@@ -1947,7 +2020,7 @@ static void up_flush(void) {
         atomic_store(&g_up_alloc_busy[slot], 0);
         atomic_fetch_sub(&g_up_pending, 1);
         up_wake();
-    }];
+    })];
     res_commit();
     [cb commit];
     g_up_cb = nil;
@@ -2931,7 +3004,7 @@ static void pg_commit(id<MTLCommandBuffer> cb) {   // Hand this submission's pas
     if (!g_pg || !g_pg_np) return;
     int n = g_pg_np; pg_pass *ps = malloc(n * sizeof *ps); memcpy(ps, g_pg_pass, n * sizeof *ps);
     id<MTLCounterSampleBuffer> buf = g_pg_buf[g_pg_b]; uint32_t used = g_pg_used;
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) {
         (void)c;
         NSData *d = [buf resolveCounterRange:NSMakeRange(0, used)];
         const MTLCounterResultTimestamp *ts = d.bytes;
@@ -2963,7 +3036,7 @@ static void pg_commit(id<MTLCommandBuffer> cb) {   // Hand this submission's pas
         }
         pthread_mutex_unlock(&g_pg_mu);
         free(ps);
-    }];
+    })];
 }
 void ts_after(void);
 void ms_after(void);
@@ -4197,7 +4270,7 @@ static id<MTLTexture> tex_promote_2d_cube(int tid, id<MTLTexture> t, uint64_t *r
         }
     }
     [b endEncoding];
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { if (done.error) MLOG("【红】2D→Cube 提升拷贝失败（贴图号 %d）：%s", tid, done.error.description.UTF8String); }];
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> done) { if (done.error) MLOG("【红】2D→Cube 提升拷贝失败（贴图号 %d）：%s", tid, done.error.description.UTF8String); })];
     res_commit(); [cb commit];
 
     id<MTLTexture> v = [base newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureTypeCube
@@ -4943,10 +5016,16 @@ static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // C
     pthread_mutex_unlock(&g_pp_mu);
     if (at >= 0 || slot < 0) return;
     pso_key pk = *k; g_pp_kicked++;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (!classic_compile_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *e = nil; id<MTLRenderPipelineState> ps = pso_build(&pk, vs, fs, nil, 0, vs->specialized || (fs && fs->specialized), &e);
         pthread_mutex_lock(&g_pp_mu); g_pp[slot].ps = ps; g_pp[slot].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
-    });
+    })) {
+        // An observer that already found this entry must still wake.
+        pthread_mutex_lock(&g_pp_mu);
+        g_pp[slot].done = 1;
+        pthread_cond_broadcast(&g_pp_cv);
+        pthread_mutex_unlock(&g_pp_mu);
+    }
 }
 static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // Called by the submit thread: if it is in the table, wait for it to finish compiling and take it; otherwise return nil
     pthread_mutex_lock(&g_pp_mu);
@@ -5083,6 +5162,7 @@ static void warm_worker(NSArray<NSString *> *paths) {
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         NSMutableOrderedSet<NSString *> *rows = [NSMutableOrderedSet orderedSet];
         for (NSString *path in paths) {
+            if (!prepare_can_continue()) break;
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { atomic_fetch_add(&g_prepare_failed, 1); MLOG("【红】Warmup manifest unavailable: %s", path.UTF8String); continue; }
             for (NSString *raw in [txt componentsSeparatedByString:@"\n"]) {
@@ -5094,7 +5174,7 @@ static void warm_worker(NSArray<NSString *> *paths) {
         if (!rows.count) atomic_fetch_add(&g_prepare_failed, 1);
         if (atomic_load(&g_prepare_frontend)) atomic_store(&g_prepare_state, NVN_PREP_WORKING);
         for (NSString *line in rows) {
-            prepare_foreground_wait();
+            if (!prepare_can_continue()) break;
             @autoreleasepool {
                 int result = warm_row(line, dict);
                 if (result == 1) atomic_fetch_add(&g_prepare_failed, 1);
@@ -5144,15 +5224,15 @@ static void warm_start(void) {
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     atomic_store(&g_warm_running, 1);
     if (atomic_load(&g_prepare_frontend)) warm_worker(paths);
-    else dispatch_async(q, ^{ warm_worker(paths); });
+    else if (!classic_compile_async(q, ^{ warm_worker(paths); })) atomic_store(&g_warm_running, 0);
 }
 void mtl_prepare_start(void) {
     int expected = NVN_PREP_IDLE;
     if (!atomic_compare_exchange_strong(&g_prepare_state, &expected, NVN_PREP_LOADING)) return;
     atomic_store(&g_prepare_frontend, 1);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (!classic_compile_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
-            prepare_foreground_wait();
+            if (!prepare_can_continue()) return;
             const char *map = getenv("DM_NVN_SHMAP"), *msl = getenv("DM_MSL_DIR");
             NSString *libraries = msl ? [@(msl) stringByAppendingPathComponent:@"b-" DMSH_CHAIN] : nil;
             if (!map || !libraries || ![NSFileManager.defaultManager fileExistsAtPath:@(map)] ||
@@ -5161,15 +5241,15 @@ void mtl_prepare_start(void) {
                 MLOG("【红】Startup preparation missing shader map/libraries"); return;
             }
             mtl_init(); shmap_load(); // warm_start runs synchronously on this worker.
+            if (!prepare_can_continue()) return;
             warm_claim();
-            prepare_foreground_wait();
             atomic_store(&g_prepare_state, NVN_PREP_SAVING);
             nvn_cache_flush();
             nvn_cache_status cs; nvn_cache_snapshot(&cs);
             MLOG("Startup gate ready: hits=%llu misses=%llu bypassed=%llu persisted=%llu failed_write=%d", cs.hits, cs.misses, cs.bypassed, cs.saved, cs.write_failed);
             atomic_store(&g_prepare_state, atomic_load(&g_prepare_failed) || atomic_load(&g_prepare_skipped) || cs.write_failed ? NVN_PREP_PARTIAL : NVN_PREP_READY);
         }
-    });
+    })) atomic_store(&g_prepare_state, NVN_PREP_IDLE);
 }
 static int g_rt_ovr;   // Stencil override for runtime extrapolation: 0 no override; 1 pass only on the unit / effect / extrapolation-hole bits (0xD0), no stencil write; 3 depth test as usual, write the effect bit 0x40 where it passes
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
@@ -6462,12 +6542,12 @@ static void lp_finish(void) {
         [b copyFromTexture:ref sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:br destinationOffset:0 destinationBytesPerRow:bpp destinationBytesPerImage:bpp];
     enc_b_end(b);
         unsigned long long pass = [e[3] unsignedLongLongValue], ser = [e[5] unsignedLongLongValue]; int idx = [e[4] intValue];
-        [dcb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c;
+        [dcb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c;
             const uint8_t *p = bt.contents, *r = br.contents; uint64_t left = 0; char at[96] = ""; size_t ao = 0;
             for (NSUInteger k = 0; k < W * H; k++) if (!memcmp(p + k * bpp, r, bpp)) { if (left++ < 4) ao += snprintf(at + ao, sizeof at - ao, " (%lu,%lu)", (unsigned long)(k % W), (unsigned long)(k / W)); }
             if (left) MLOG("【红】读入可省探针：通道 %llu c%d ser=%llu lv%lu sl%lu %lux%lu 剩哨兵像素 %llu，前几个位置%s", pass, idx, ser, (unsigned long)lv, (unsigned long)sl, (unsigned long)W, (unsigned long)H, (unsigned long long)left, at);
             else MLOG("读入可省探针：通道 %llu c%d ser=%llu lv%lu sl%lu %lux%lu 全覆盖（哨兵剩 0）", pass, idx, ser, (unsigned long)lv, (unsigned long)sl, (unsigned long)W, (unsigned long)H);
-        }];
+        })];
     }
     [dcb commit];
 }
@@ -9207,13 +9287,13 @@ static void sub_cut(void) {
     uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
     NSArray<NvDeferredRelease *> *cut_retire = defer_take_cut_batch();
 
-    [g_cb addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    [g_cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> cb) {
         log_function_errors(cb, "split", f);
         gpu_tag_done(f, cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int k; if (k++ < 8) MLOG("【红】分段命令缓冲执行出错：%s", cb.error.description.UTF8String); }
         defer_release_batch(cut_retire);
         res_commit();
-    }];
+    })];
     res_commit();
     [g_cb commit];
     atomic_fetch_add_explicit(&g_cut_committed_diag, 1, memory_order_relaxed);
@@ -9560,11 +9640,11 @@ static void grab_present(id<MTLTexture> src, const int crop[4], CGSize sz) {
     id<MTLBlitCommandEncoder> b = [cb2 blitCommandEncoder];
     [b copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1) toBuffer:buf destinationOffset:0 destinationBytesPerRow:row destinationBytesPerImage:row * h];
     [b endEncoding];
-    [cb2 addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c;
+    [cb2 addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c;
         CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGContextRef ctx = CGBitmapContextCreate(buf.contents, w, h, 8, row, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
         CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; cb(img);
-        CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs); }];
+        CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs); })];
     [cb2 commit];
 }
 void dm_gfx_shot_at(long k, const char *path) {
@@ -9930,7 +10010,7 @@ static id<MTLTexture> legacy_present_upscale(id<MTLCommandBuffer> cb, id<MTLText
     scaler.inputContentWidth = size.width; scaler.inputContentHeight = size.height;
     [scaler encodeToCommandBuffer:cb];
     id<MTLFXSpatialScaler> submitted = scaler;
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c; (void)submitted; }];
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c; (void)submitted; })];
     return out;
 }
 
@@ -9991,7 +10071,7 @@ static void classic_present_done(void) {
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
 }
-static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, double queued_at) {
+static int present_now(id<MTLTexture> src, uint64_t serial, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, double queued_at) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
     if (g_use != USE_OFF && g_use != USE_DONE) use_tick();
@@ -10003,8 +10083,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
              g_bp_up_bytes / 1048576.0, g_pkg_uploads, g_pkg_reuploads,
              g_up_total_ns / 1e6, g_bp_first_present / 1e9);
     }
-    PD("X ser=%llu", t->serial);
-    id<MTLTexture> src = tex_mtl(t);
+    PD("X ser=%llu", serial);
     if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture"); return 0; }
     // DM_NVN_REGLUM=x0,y0,x1,y1:file (normalized coordinates): read back this region on every present and record "present sequence number, present time ns, region mean luminance, subsampled grayscale thumbnail (hex)" (diagnostic: verify that animation speed is independent of frame rate).
     // A separate command buffer is queued after this frame's rendering (the same queue executes in submit order); does not wait for the GPU and does not disturb frame pacing
@@ -10019,13 +10098,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x0, y0, 0) sourceSize:MTLSizeMake(w, h, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:w * 4 destinationBytesPerImage:w * h * 4];
         [b endEncoding];
         unsigned long long n = g_present_n, tns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-        [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c; const uint8_t *q = rb.contents; uint64_t sum = 0;
+        [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c; const uint8_t *q = rb.contents; uint64_t sum = 0;
             uint8_t g[4096]; NSUInteger ng = 0;   // Subsampled grayscale thumbnail (every 4th row / column, at most 4096 points), recorded along with the mean, for per-frame image correlation analysis
             for (NSUInteger y = 0; y < h; y += 4) for (NSUInteger x = 0; x < w && ng < sizeof g; x += 4) { const uint8_t *px = q + 4 * (y * w + x); g[ng++] = (uint8_t)((px[0] + px[1] + px[2]) / 3); }
             for (NSUInteger k = 0; k < w * h; k++) sum += q[4 * k] + q[4 * k + 1] + q[4 * k + 2];
             pthread_mutex_lock(&rlmu); fprintf(rlf, "%llu\t%llu\t%.4f\t", n, tns, sum / (3.0 * w * h));
             for (NSUInteger k = 0; k < ng; k++) fprintf(rlf, "%02x", g[k]);
-            fputc('\n', rlf); fflush(rlf); pthread_mutex_unlock(&rlmu); }];
+            fputc('\n', rlf); fflush(rlf); pthread_mutex_unlock(&rlmu); })];
         [cb commit];
     }
     // DM_NVN_SHOT=frame number[,frame number...]:path (%d in the path is replaced with the frame number)
@@ -10061,32 +10140,42 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 
     NvPresentProbe *probe = ticket % 120 == 0 ? [NvPresentProbe new] : nil;
     if (probe) { probe->lock = (os_unfair_lock)OS_UNFAIR_LOCK_INIT; probe->ticket=ticket;probe->frame=frame;probe->queued=queued_at; }
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> f) {
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> f) {
         if (f.error) MLOG("【红】上屏命令缓冲错误：%s", f.error.description.UTF8String);
 #if TARGET_OS_SIMULATOR
         if (f.status == MTLCommandBufferStatusCompleted) atomic_fetch_add(&g_displayed_n, 1);
 #endif
         present_probe_note(probe,2,f.GPUStartTime,f.GPUEndTime);
         pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
-    }];
+    })];
     pthread_mutex_lock(&g_pq_mu); g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
     g_present_alloc_fence[alloc_i] = ticket;
 #if TARGET_OS_SIMULATOR   // The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
     (void)period;
 #else
     uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
-    [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
+#if !DM_HAVE_METAL_DISPLAY_LINK
+    uint64_t generation = atomic_load(&g_classic_generation);
+#endif
+    [dr addPresentedHandler:classic_track_drawable(^(id<MTLDrawable> d) {
+#if !DM_HAVE_METAL_DISPLAY_LINK
+        pthread_mutex_lock(&g_classic_callback_mu);
+        if (generation != atomic_load(&g_classic_generation)) { pthread_mutex_unlock(&g_classic_callback_mu); return; }
+#endif   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
         if (tt > 0) atomic_fetch_add(&g_displayed_n, 1);
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
         present_probe_note(probe,4,tt > 0 ? tt : -1,0);
-    }];
+#if !DM_HAVE_METAL_DISPLAY_LINK
+        pthread_mutex_unlock(&g_classic_callback_mu);
+#endif
+    })];
 #endif
     // Scheduling stays asynchronous on both paths. A classic frame keeps its
     // layer handoff claim until the drawable's present call returns, not merely
     // until commit returns: attaching a link earlier forbids minimum duration.
     // GPU completion independently gates swapchain/UV-buffer reuse.
-    [cb addScheduledHandler:^(id<MTLCommandBuffer> scheduled) {
+    [cb addScheduledHandler:classic_track_command(^(id<MTLCommandBuffer> scheduled) {
         (void)scheduled;
         double scheduled_at = probe ? CACurrentMediaTime() : 0;
 #if TARGET_OS_SIMULATOR
@@ -10096,7 +10185,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #endif
         present_probe_note(probe,1,scheduled_at,0);
         if (!supplied) classic_present_done();
-    }];
+    })];
     if (probe) probe->commit = CACurrentMediaTime();
     [cb commit];
     if (target_ts > 0) {
@@ -10124,10 +10213,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 // Swapchain texture return: before AcquireTexture gets a texture it waits for the ticket of that texture's previous present to be processed (mtl_present_wait), after which the commands the game draws into it
 // are necessarily ordered after that blit on the GPU queue.
 #define PQ 8
-typedef struct { tex_t t; double period; uint64_t frame; int crop[4]; double t_in; } pq_item;   // t_in: the time the game handed this frame into the present queue (CACurrentMediaTime)
+typedef struct { __strong id<MTLTexture> src; uint64_t serial; double period; uint64_t frame; int crop[4]; double t_in; } pq_item;
 static pq_item g_pq[PQ];
 static uint64_t g_pq_in;
-static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double, double);
+// Holding g_pq_mu. ARC owns queued sources until the worker takes or drops them.
+static void present_clear_sources(uint64_t first, uint64_t last) {
+    for (uint64_t n = first; n <= last; n++) g_pq[(n - 1) % PQ].src = nil;
+}
 
 #if DM_HAVE_METAL_DISPLAY_LINK
 @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -10169,13 +10261,14 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
     if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
     pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
+    present_clear_sources(first, ticket);
     g_pq_read = ticket;
     if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
     if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
-    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp,it.t_in); }
+    @autoreleasepool { submitted = present_now(it.src, it.serial, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp,it.t_in); }
     g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
     if (!submitted) {
         pthread_mutex_lock(&g_pq_mu);
@@ -10257,6 +10350,7 @@ static void present_drop_for_suspend(void) {
     if (g_link_owns_layer) {
         uint64_t n = g_pq_in - g_pq_read;
         for (uint64_t k = g_pq_read + 1; k <= g_pq_in; k++) g_pres[k % PRING] = (pres_ent){k, -1};
+        present_clear_sources(g_pq_read + 1, g_pq_in);
         g_link_dropped += n; g_pq_read = g_pq_in;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
         if (g_pq_done < g_pq_in) g_pq_done = g_pq_in;
@@ -10272,12 +10366,23 @@ static void *present_main(void *arg) {
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0; pthread_get_qos_class_np(pthread_self(), &qc, &rp); atomic_store(&g_present_qos, (uint32_t)qc);
     for (;;) {
         pthread_mutex_lock(&g_pq_mu);
+#if !DM_HAVE_METAL_DISPLAY_LINK
+        while (g_pq_read == g_pq_in && !g_classic_worker_stop) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+        if (g_classic_worker_stop) {
+            g_classic_worker_done = 1;
+            pthread_cond_broadcast(&g_pq_cv);
+            pthread_mutex_unlock(&g_pq_mu);
+            break;
+        }
+#else
         while (g_pq_read == g_pq_in || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
+#endif
         pq_item it = g_pq[g_pq_read % PQ];
+        g_pq[g_pq_read % PQ].src = nil;
         uint64_t ticket = ++g_pq_read; g_classic_pending++;
         pthread_mutex_unlock(&g_pq_mu);
         int submitted;
-        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0,it.t_in); }
+        @autoreleasepool { submitted = present_now(it.src, it.serial, it.period, it.frame, ticket, it.crop, nil, 0,it.t_in); }
         if (!submitted) {
             classic_present_done();   // No scheduled callback owns this failed frame
             pthread_mutex_lock(&g_pq_mu);
@@ -10289,17 +10394,181 @@ static void *present_main(void *arg) {
     return NULL;
 }
 uint32_t mtl_present_qos(void) { return atomic_load(&g_present_qos); }
+#if DM_HAVE_METAL_DISPLAY_LINK
 static void present_start(void) { pthread_t th; if (pthread_create(&th, NULL, present_main, NULL)) MDIE("出图线程起不来"); pthread_detach(th); }
+#endif
 static _Atomic int g_present_discard;
+#if !DM_HAVE_METAL_DISPLAY_LINK && defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static uint64_t classic_gpu_time_left(uint64_t deadline) {
+    uint64_t now = now_ns();
+    return deadline > now ? deadline - now : 0;
+}
+static void classic_present_wait(uint64_t left) {
+    struct timespec remaining = { (time_t)(left / NSEC_PER_SEC), (long)(left % NSEC_PER_SEC) };
+    pthread_cond_timedwait_relative_np(&g_pq_cv, &g_pq_mu, &remaining);
+}
+// Only one exit coordinator calls this, after the guest renderer stopped.
+static int classic_present_stop(uint64_t deadline) {
+    pthread_mutex_lock(&g_pq_mu);
+    g_classic_worker_stop = 1;
+    atomic_store(&g_present_discard, 1);
+    pthread_cond_broadcast(&g_pq_cv);
+    while ((g_classic_worker_started && !g_classic_worker_done) || g_pq_inflight || g_classic_pending) {
+        uint64_t left = classic_gpu_time_left(deadline);
+        if (!left) { pthread_mutex_unlock(&g_pq_mu); return 0; }
+        classic_present_wait(left);
+    }
+    int started = g_classic_worker_started;
+    present_clear_sources(g_pq_read + 1, g_pq_in);
+    g_pq_read = g_pq_done = g_pq_in;
+    pthread_mutex_unlock(&g_pq_mu);
+    if (started && pthread_join(g_classic_worker, NULL)) return 0;
+    g_classic_worker_started = 0;
+    pthread_mutex_lock(&g_classic_callback_mu);
+    atomic_fetch_add(&g_classic_generation, 1);
+    pthread_mutex_unlock(&g_classic_callback_mu);
+    return 1;
+}
+
+// Stop-time destruction is separate from per-frame eviction: nothing here
+// should enqueue another GPU operation or put an object on a deferred list.
+static void classic_table_dispose(nvn_hmap *map, void (*release_value)(void *)) {
+    nvn_hm_clear(map, release_value);
+    free(map->keys); free(map->vals);
+    map->keys = NULL; map->vals = NULL; map->cap = 0;
+}
+
+static void classic_drop_registered_resources(void) {
+    // No descriptor registry can be read after the submit & callback fence.
+    for (int i = 0; i < g_ntreg; i++) {
+        if (g_treg[i].view) CFRelease(g_treg[i].view);
+        if (g_treg[i].alt) CFRelease(g_treg[i].alt);
+        if (g_treg[i].ar) CFRelease(g_treg[i].ar);
+    }
+    free(g_treg); g_treg = NULL; g_ntreg = 0;
+    for (int i = 0; i < g_nsreg; i++) {
+        if (g_sview[i]) CFRelease(g_sview[i]);
+        if (g_sview_w[i]) CFRelease(g_sview_w[i]);
+    }
+    free(g_sreg); g_sreg = NULL; free(g_sreg_ok); g_sreg_ok = NULL;
+    free(g_sview); g_sview = NULL; free(g_srid); g_srid = NULL;
+    free(g_sview_w); g_sview_w = NULL; free(g_srid_w); g_srid_w = NULL;
+    free(g_sbk); g_sbk = NULL; g_nsreg = 0;
+    if (g_alias_set) { CFRelease(g_alias_set); g_alias_set = NULL; }
+    classic_table_dispose(&g_by_serial, hm_rel);
+    classic_table_dispose(&g_alias, hm_rel);
+    classic_table_dispose(&g_ghost, hm_rel);
+    // These two sets hold marker integers, never CF objects.
+    classic_table_dispose(&g_tex_live, NULL);
+    classic_table_dispose(&g_use_seen, NULL);
+
+    for (int i = 0; i < PSO_PEND_MAX; i++) {
+        g_pp[i].ps = nil;
+        g_pp[i].used = g_pp[i].done = 0;
+    }
+    classic_table_dispose(&g_pso, hm_rel);
+    classic_table_dispose(&g_dss, hm_rel);
+    classic_table_dispose(&g_pso_fail, hm_rel);
+    classic_table_dispose(&g_cps, hm_rel);
+
+    // Drop these references before any teardown path unmaps guest memory.
+    // pool_ent.buf is non-owning; g_keep is its actual ARC owner.
+    g_deferred = nil;
+    g_keep = nil; g_dead_pools = nil;
+    free(g_pools); g_pools = NULL; g_npool = g_cap = 0;
+    free(g_pidx); g_pidx = NULL; g_pidx_cap = g_pidx_ok = 0; g_plast = -1;
+
+    g_shmap = nil; g_msl_dir = nil; g_shcache = nil;
+    g_builtin = nil; g_builtin_lib = nil;
+    g_c1_banks = nil; g_c1_full = nil;
+    g_bf_fn_cache = nil; g_bf_lib_cache = nil; g_pso_fsfn = nil;
+    g_warm_items = nil;
+    if (g_use_f) { fclose(g_use_f); g_use_f = NULL; }
+    if (g_pg_f) { fclose(g_pg_f); g_pg_f = NULL; }
+    if (g_pso_record) { fclose(g_pso_record); g_pso_record = NULL; }
+}
+
+// These buffers are not registered through a guest NVN handle. Releasing
+// only the descriptor tables leaves arena, upload and frame history storage
+// attached to the old game even after the final draw has completed.
+static void classic_drop_working_resources(void) {
+    g_sub_samplers = nil; g_sub_sample_notes = nil;
+    g_cur_arena = nil; g_arenas = nil; g_sub_arenas = nil;
+    g_ubs_buf = nil;
+    g_up_texs = nil; g_up_keep = nil; g_up_pblock = nil; g_up_block = nil;
+    for (unsigned i = 0; i < sizeof g_up_slot_blk / sizeof g_up_slot_blk[0]; i++) g_up_slot_blk[i] = nil;
+    free(g_up_blits); g_up_blits = NULL; g_nup_blits = g_up_blitcap = 0;
+    free(g_up_decs); g_up_decs = NULL; g_nup_decs = g_up_deccap = 0;
+    free(g_up_asts); g_up_asts = NULL; g_nup_asts = g_up_astcap = 0;
+
+    vis_clear();
+    free(g_vs); g_vs = NULL; g_vscap = 0;
+    for (unsigned i = 0; i < sizeof g_vis_ring / sizeof g_vis_ring[0]; i++) g_vis_ring[i].buf = nil;
+    g_vis = nil; g_vis_ring_n = 0; g_vis_ring_i = -1;
+    // post ops in the completed submission were copied into its callback;
+    // g_post now contains old, non-owning copies of those entries.
+    free(g_post); g_post = NULL; g_npost = g_postcap = 0;
+    for (unsigned i = 0; i < PG_RING; i++) g_pg_buf[i] = nil;
+    free(g_pg_pass); g_pg_pass = NULL; g_pg_np = g_pg_cap = 0;
+
+    for (unsigned i = 0; i < ALLOC_MAX; i++) g_za_atomic_ring[i] = nil;
+    g_za_atomic_pending_buf = nil; g_za_atomic_pending_tex = nil;
+    g_za_diag_atomic = nil; g_za_diag_out = nil; g_za_diag_src = nil;
+    for (unsigned i = 0; i < sizeof g_fb_use / sizeof g_fb_use[0]; i++) { g_fb_use[i] = nil; g_fb_src[i] = nil; }
+    for (unsigned i = 0; i < sizeof g_ms_att / sizeof g_ms_att[0]; i++) g_ms_att[i] = nil;
+    for (unsigned i = 0; i < sizeof g_ts_att / sizeof g_ts_att[0]; i++) g_ts_att[i] = nil;
+    for (int i = 0; i < g_nfzs; i++) free(g_fzs[i].S_);
+    g_nfzs = 0;
+    g_rt.ldr = g_rt.pl468 = g_rt.pl469 = nil;
+    g_rt.ds = g_rt.hdr = g_rt.pds = g_rt.phdr = nil;
+    g_rx_stv = nil; g_rx_stv_src = nil;
+    for (unsigned i = 0; i < 3; i++) { g_present_uv[i] = nil; g_bloomq_const[i] = nil; g_rx_const[i] = nil; }
+    g_rx_pso1 = nil; g_rx_dss = nil;
+    g_bloomq_samp = nil; g_bloomq_pso = nil; g_bloomq_view = nil;
+    g_blit_pso = nil; g_blit_samp = nil; g_prefetched_drawable = nil;
+    g_quad_ib = nil; g_fan_ib = nil; g_pass_order_fence = nil;
+    g_safe_indirect_fence = nil; g_enc_pso = nil; g_enc_dss = nil;
+    g_lp = nil; g_td_list = nil; g_diag_c0_cache = nil; g_l3_gpu_leaks = nil;
+    for (unsigned i = 0; i < PQ; ++i) g_pq[i] = (pq_item){0};
+}
+
+// The caller has stopped guest submits and detached the UIKit display link.
+// Fence the queue even if a submission had no host callback of its own.
+int mtl_classic_gpu_stop(uint64_t timeout_ns) {
+    uint64_t deadline = now_ns() + MIN(timeout_ns, INT64_MAX);
+    if (!mtl_classic_compile_stop(classic_gpu_time_left(deadline))) return 0;
+    if (!classic_present_stop(deadline)) return 0;
+    // These must have closed on their owning thread. In particular, popping
+    // the replay's autorelease pool here would be invalid on this worker.
+    if (g_sub_pool || g_cb || g_enc || g_blit || g_up_cb || g_up_ce || atomic_load(&g_sub_active)) return 0;
+    dispatch_group_t pending = classic_gpu_callbacks();
+    __block MTLCommandBufferStatus fence_status = MTLCommandBufferStatusCompleted;
+    if (g_q) {
+        id<MTLCommandBuffer> fence = [g_q commandBuffer];
+        if (!fence) return 0;
+        [fence addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> completed) { fence_status = completed.status; })];
+        [fence commit];
+    }
+    if (dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)classic_gpu_time_left(deadline)))) return 0;
+    if (fence_status != MTLCommandBufferStatusCompleted || atomic_load(&g_up_pending)) return 0;
+    if (!nvn_cache_stop_for_shell(classic_gpu_time_left(deadline))) return 0;
+    classic_drop_working_resources();
+    classic_drop_registered_resources();
+    g_ev = nil; g_q = nil; g_dev = nil;
+    return 1;
+}
+#endif
+
 void mtl_link_pause(int on);
 // The short period when the front end goes to the background and waits for the game to save: presents are dropped directly (the display link does not call back in the background, enqueueing would block the game thread; nobody sees the picture anyway).
 // When turned on, also clear the frames already queued: the system first stops the display-link callback and only afterwards notifies about going to the background, and in that gap the game has already filled the swapchain and is stuck at "before acquiring the next texture, wait for its previous present to be processed"
 // (hle_nvn.c nvnWindowAcquireTexture -> mtl_present_wait). Without clearing, the game cannot advance a single tick during those 2.5 seconds of waiting for the save, and the save is not written (the same pattern three times in player logs: 3 frames queued, 0 submits)
 void mtl_present_discard(int on) { atomic_store(&g_present_discard, on != 0); if (on) present_drop_for_suspend(); }
-uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
-    if (atomic_load(&g_present_discard)) return 0;   // Ticket number 0 = no pending present; the swapchain texture acquire does not wait
-    if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
+static uint64_t present_enqueue_source(id<MTLTexture> src, uint64_t serial, double period, const int crop[4]) {
+    if (!src || atomic_load(&g_present_discard)) return 0;   // Ticket 0 = AcquireTexture does not wait
+#if DM_HAVE_METAL_DISPLAY_LINK
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
+#endif
     link_sync();
     {   // Test switch DM_TEST_LINK_STALL=start seconds,duration seconds: counting from the first present, pause the display link at that point (imitating the display link not calling back while in the foreground) and release it when the duration is up. For verifying the fallback; not set in the product
         static double t0, at = -1, dur; static int st; double now = CACurrentMediaTime();
@@ -10308,13 +10577,36 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         else if (st == 2 && now - t0 >= at + dur) { st = 3; mtl_link_pause(0); MLOG("DM_TEST_LINK_STALL：放开显示节拍（帧 %llu）", (unsigned long long)atomic_load(&g_cur_frame)); }
     }
     pthread_mutex_lock(&g_pq_mu);
+#if !DM_HAVE_METAL_DISPLAY_LINK
+    if (g_classic_worker_stop) { pthread_mutex_unlock(&g_pq_mu); return 0; }
+    if (!g_classic_worker_started) {
+        if (pthread_create(&g_classic_worker, NULL, present_main, NULL)) MDIE("present worker could not start");
+        g_classic_worker_started = 1;
+    }
+    while (g_pq_in - g_pq_done >= PQ && !g_classic_worker_stop) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+    if (g_classic_worker_stop) { pthread_mutex_unlock(&g_pq_mu); return 0; }
+#else
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // Wait only when the queue is full; normally AcquireTexture blocks first
-    pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime()};
+#endif
+    pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){src, serial, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime()};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     return tk;
+}
+// The caller holds the same serialization lock as QueueSubmitCommands.
+// Resolve packaged/CPU-written textures and submit any upload before the
+// display worker can read the source. The worker must never encode uploads.
+uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+    if (!t || atomic_load(&g_present_discard)) return 0;
+    xv_check(t->serial, 0, 0, "出图");
+    if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial;
+    g_sub_thread = pthread_self();
+    atomic_store(&g_sub_thread_set, 1);
+    id<MTLTexture> src = tex_mtl(t);
+    up_flush();
+    return present_enqueue_source(src, t->serial, period, crop);
 }
 
 // Bridge used by the Vulkan/OpenGL front ends that are linked into the common
@@ -10353,8 +10645,14 @@ void mtl_ext_tex_release(uint64_t serial) {
 }
 uint64_t mtl_present_ext(uint64_t serial, double period, void *event, uint64_t event_value, const int crop[4]) {
     (void)event; (void)event_value;
-    tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 0); t.serial = serial;
-    return mtl_present(&t, period, crop);
+    id<MTLTexture> src = tex_get(serial);
+    return present_enqueue_source(src, serial, period, crop);
+}
+void mtl_present_progress(uint64_t *queued, uint64_t *done) {
+    pthread_mutex_lock(&g_pq_mu);
+    *queued = g_pq_in;
+    *done = g_pq_done;
+    pthread_mutex_unlock(&g_pq_mu);
 }
 // Do not wait during discard: the frame enqueued only after the flag was set (the present thread had just passed the flag check) has nobody to take it, and waiting for it would stall again; it is left for the following mtl_drain to clear
 // Do not wait indefinitely in display-link mode: see the note at STALL_NS. Only frames "not yet taken by the display link" are dropped; the one already on its way to the screen is waited for until handed to the GPU (same dropping as when entering the background)
@@ -10371,6 +10669,7 @@ void mtl_present_wait(uint64_t tk) {
         if (now - last < STALL_NS) { pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts); continue; }   // The display link is still running, it is just not this one's turn yet: keep waiting (bounded, no busy spinning)
         uint64_t n = tk - g_pq_read;
         for (uint64_t k = g_pq_read + 1; k <= tk; k++) g_pres[k % PRING] = (pres_ent){k, -1};
+        present_clear_sources(g_pq_read + 1, tk);
         g_link_dropped += n; g_pq_read = tk;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
         if (g_pq_done < tk) g_pq_done = tk;
@@ -10454,7 +10753,6 @@ int mtl_link_wait_vsync(uint64_t *seen, uint64_t timeout_ns) {
     pthread_mutex_unlock(&g_link_mu); return 1;
 }
 
-static id<CAMetalDrawable> g_prefetched_drawable; // Used for compositing straight onto the drawable
 id<CAMetalDrawable> mtl_present_take_prefetched(void) { return g_prefetched_drawable; }
 
 #ifdef NVN_RT_RANGE_TEST

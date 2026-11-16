@@ -154,6 +154,34 @@ The Air 60.78 installation preserves all existing frameworks and 27 game
 directories; the new Fate card is ready. The new quit/relaunch path has not
 been player-tested. M2 60.102 separately installs the classic Fate host with all matched resources and 58 DLC; its card is ready. Classic M2 hosts do not advertise this lifecycle capability yet.
 
+### Classic iPadOS 16.1 return candidate
+
+Apply `m2-independent-return-to-library.patch` to the M2 library entry whose
+unmodified SHA-256 is
+`42a7cbadda8cec9f746a82174ad58b8afd516ce3fd8ffbcbe999f3f0b6cd4a8b`.
+Use the lifecycle headers from the same checkout, including the updated
+`IndependentGameHost.h` in both framework and shader-identity checks. The
+profile registry must provide `dm_profile_release_selection`.
+
+Build a compatible NVN framework with `--classic-shelf` and the matching
+shader/reflection chain. This enables the optional return capability; it is
+off by default in the compatible builder. The guest exits at cooperative
+thread boundaries before audio, UIKit, GPU, save workers, and guest mappings
+are released. A failed or incomplete drain leaves the library closed. Do not
+claim support for a title until it exits to the library on iPadOS 16.1 and
+another title can start in the same process.
+
+The classic iPad host's retirement path first parks threads at checked guest
+boundaries. A native callback or a thread that cannot reach a boundary makes
+that attempt time out and releases the parked threads. After commitment the
+owner must still wait for the kernel to observe actual pthread exit, including
+thread destructors, before reclaiming the mapped gate stacks. Switch 2 video
+decoders keep their guest pools mapped until the native workers join and the
+GPU is done with their images. This host work does not enable the shell
+capability: the owner still has to shut down the remaining host producers and
+bind the return callback. Require two successful game launches in one M2
+iPadOS 16.1 process before enabling it on the older iPad.
+
 Air Fate's pinned engine also needs `fate-extella-ios-touch-preferences.patch`
 on top of its teardown queue (`553db40` in the prepared engine checkout). It
 reads version 2 layout coordinates while retaining version 1 presets and
@@ -177,3 +205,58 @@ reported 27 games ready. The in-game quit and relaunch have not been
 play-tested on this build. The iOS 27.2 bookshelf preview uses the real UIKit glass
 button styles; the iOS 16.1 bookshelf build uses its availability-checked
 fallback.
+
+## Classic iPad: safe return worker fence (November 16)
+
+The iPadOS 16.1 NVN host has an opt-in fence for library return. After the
+guest has retired and the front end has stopped submitting display work, it
+waits for pipeline preparation, the classic presenter, explicitly registered
+Metal callbacks, and the last archive write. It closes the cheat worker and
+the save sender, and refuses to hand back the session while an abandoned
+cloud fetch is still running. A test exercises an abandoned fetch blocked on
+a FIFO, followed by a successful teardown once the fetch releases it.
+
+The classic front end can close focus admission, remove notification
+observers, invalidate the display and FPS timers, and wait until the last
+UIKit save task has ended. A session generation outside the restored image
+sections prevents a delayed UIKit callback from affecting a new session.
+
+The classic independent EXTELLA framework is the first to opt in. Its
+launcher wires the return callback to the library window. Guest workers,
+save tasks and Metal have to finish before the launcher restores its
+environment. The 60.112 M2 smoke test aborted at startup: remapping a
+positive-offset signed game image removed execute access on iPadOS 16.1.
+The follow-up leaves code in place and reinitializes only the writable
+guest data. On M2 build 60.114 EXTELLA rendered the auto-save prompt,
+but the shelf fence declined to detach: the legacy loader did not record
+the signed patch extent for positive-offset modules. Build 60.115 records
+that extent so the original gate provenance check can accept those SVCs.
+M2 build 60.117 rendered the auto-save prompt again after moving packaged
+texture resolution and upload to the serialized submission path. The
+display worker now only consumes a retained Metal texture. Its exit attempt
+identified a final guest worker blocked in `PopNotificationMessage` on a
+temporary HLE stack. The worker now verifies its guest frame chain through
+the trampoline's saved entry frame and runs pthread cleanup on its original
+system stack. On iPadOS 16.1, classic builds leave the optional persistent
+Metal binary archive disabled: Metal failed archive serialization and then
+crashed in its release path, after the last GPU submission had completed.
+The shipped shader libraries and in-memory pipeline cache still work.
+On the M2 running iPadOS 16.1, build 60.119 rendered EXTELLA, returned to
+the game library after the runtime drained its workers and GPU, and started
+EXTELLA LINK under the same process. The test used separate scratch saves
+and verified the original saves were unchanged. No game shader chain
+changes with this fence.
+
+For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
+shader pairs matched the current inputs after reconstructing the original
+Metal compiler identity. Its version output included the Mac's Darwin
+version, which changed without changing the compiler build or iOS SDK.
+The last pair had no archive index and was rebuilt for the same chain.
+All 8,443 pairs and their variants (38,864 files), plus 396 Tears of the
+Kingdom sample and opening-scene pairs (1,409 files), passed M2 readback.
+The compatible signed frameworks and game data are already on M2. One
+Samurai Remnant and 54 Tears of the Kingdom non-point vertex sources were
+matched to the original 16.1 libraries by hash and read back on M2. Tears
+of the Kingdom also needed two shared fonts from the local library. The
+caches are still partial and carry no ready stamp; manual resume requires
+both titles to render an actual game scene correctly.

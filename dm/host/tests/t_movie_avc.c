@@ -253,6 +253,57 @@ static void tex_slots(void) {
     assert(md_rel(&d, 2) && md_rel(&d, 3) && !md_rel(&d, 3));   // a second release changes nothing
     take(&d, 1); md_reset(&d, 0); assert(!d.out[1].used && !d.out[1].rnd && d.tex_rel);
 }
+// Native output buffers describe an opaque NVN object, not a byte allocation.
+static int native_texture, native_copies;
+typedef struct { void *object; size_t capacity; } native_buffer;
+static void *native_data(const void *b) { return ((const native_buffer *)b)->object; }
+static size_t native_capacity(const void *b) { return ((const native_buffer *)b)->capacity; }
+void *guest_sym(const char *name) { (void)name; return NULL; }
+int nvn_host_signal_sync(void *sync) { (void)sync; return 0; }
+int nvn_host_write_texture(const void *tex, const void *src, int w, int h, size_t row, int *tw, int *th) {
+    if (tex != &native_texture) return -1;
+    if (tw) *tw = 2;
+    if (th) *th = 2;
+    if (src) { assert(w == 2 && h == 2 && row == 8); native_copies++; }
+    return 0x25;
+}
+static void native_buffers(void) {
+    mdec_t d = { .type = MD_TYPE_AVC, .mode = MD_MODE_TEX, .nout = 1, .w = 2, .h = 2 };
+    uint8_t pixels[16] = {0};
+    pthread_mutex_init(&d.mu, NULL);
+    d.out[0].pic = 1; d.out[0].frm = pixels;
+    G.data = native_data; G.cap = native_capacity;
+    native_buffer b = { &native_texture, 0 };
+    assert(!md_out_tex(&d, 0, &b) && native_copies == 1); // MK11
+    b.capacity = 8;
+    assert(!md_out_tex(&d, 0, &b) && native_copies == 2); // Dread
+    b.object = NULL;
+    assert(md_out_tex(&d, 0, &b) == 0x100b && native_copies == 2);
+    b.object = pixels;
+    assert(md_out_tex(&d, 0, &b) == 0x100b && native_copies == 2);
+    pthread_mutex_destroy(&d.mu);
+}
+static void drain_live_decoders(void) {
+    // Two registered decoders with real codec threads; the video decoder
+    // also owns a packet pump. The game never called their destructors.
+    mdec_t *audio = calloc(1, sizeof *audio), *video = calloc(1, sizeof *video);
+    assert(audio && video);
+    audio->type = MD_TYPE_VORBIS; video->type = MD_TYPE_VP9;
+    for (mdec_t *d = audio; d; d = d == audio ? video : NULL) {
+        pthread_mutex_init(&d->mu, NULL); pthread_mutex_init(&d->dmu, NULL);
+        pthread_mutex_init(&d->pkm, NULL); pthread_cond_init(&d->pkc, NULL);
+        pthread_mutex_init(&d->wmu, NULL); pthread_cond_init(&d->wcv, NULL);
+        assert(!pthread_create(&d->wk, NULL, md_worker, d));
+    }
+    video->pk_on = 1;
+    assert(!pthread_create(&video->pk, NULL, md_pump_thread, video));
+    assert(!g_md_live);
+    g_md_live = audio; audio->next = video;
+    dm_movie_request_drain();
+    assert(dm_movie_release_drained());
+    assert(!g_md_live);
+    puts("movie session drain: joins the codec and packet pump threads of live decoders");
+}
 int main(void) {
     loop_order(1); loop_order(0);
     puts("AVC loops: all 36 pictures ordered through packet parsing and callback refcons, with 3- and 4-byte start codes");
@@ -260,6 +311,8 @@ int main(void) {
     puts("AVC framing: leading zeros before the first start code are skipped; packets and parameter sets without a start code are refused, not read as NAL lengths");
     sequence_boundaries();
     puts("AVC boundaries: short sequences drain, non-IDR timestamps and SEI retain lookahead, Flush discards, zero-depth output stays immediate");
+    native_buffers();
+    puts("native texture buffers: zero and eight capacity accepted; null and invalid objects rejected");
     tex_slots();
     puts("native texture: a rendered slot waits for the client's release, or for its next GetOutputBuffer while it has never released one");
     writer w;
@@ -292,4 +345,5 @@ int main(void) {
     puts("AVC end of stream: every queued picture leaves without the flag, then an output without a picture carries it, also when the client holds the slots");
     terminal_inputs();
     puts("movie inputs: already-held inputs after EOS are returned once without another output; rejected sends keep the stream open, Flush accepts a new stream");
+    drain_live_decoders();
 }

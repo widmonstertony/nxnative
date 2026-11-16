@@ -44,8 +44,11 @@ typedef struct {
     int16_t h1, h2;
     float cur[6];
 } sv_voice;
-typedef struct {
+typedef struct sv_rnd {
     pthread_mutex_t mu;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    struct sv_rnd *shelf_next;
+#endif
     uint8_t param[PARAM];
     int rate, samples, nmixbuf;
     sv_voice *voice; int nvoice;
@@ -60,6 +63,29 @@ typedef struct {
     int16_t frame[FRAME_MAX * 2];
     int16_t pcm[NBUF][FRAME_MAX * 3 * 2]; aout_buf bufs[NBUF];
 } sv_rnd;
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static pthread_mutex_t g_sv_shelf_mu = PTHREAD_MUTEX_INITIALIZER;
+static sv_rnd *g_sv_renderers;
+
+void dm_audren_service_request_drain(void) {
+    pthread_mutex_lock(&g_sv_shelf_mu);
+    for (sv_rnd *r = g_sv_renderers; r; r = r->shelf_next) atomic_store(&r->open, 0);
+    pthread_mutex_unlock(&g_sv_shelf_mu);
+}
+
+int dm_audren_service_release_thread_metadata(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    pthread_mutex_lock(&g_sv_shelf_mu);
+    for (sv_rnd *r = g_sv_renderers; r; r = r->shelf_next) {
+        free(r->thread);
+        r->thread = NULL; // sf close below no longer calls SDK WaitThread
+    }
+    pthread_mutex_unlock(&g_sv_shelf_mu);
+    return 1;
+}
+#endif
 
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint64_t rd64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
@@ -386,6 +412,13 @@ static void sv_close(void *ctx) {
     sv_rnd *r = ctx;
     atomic_store(&r->open, 0);
     if (r->thread) dm_guest_thread_join(r->thread);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    pthread_mutex_lock(&g_sv_shelf_mu);
+    sv_rnd **at = &g_sv_renderers;
+    while (*at && *at != r) at = &(*at)->shelf_next;
+    if (*at) *at = r->shelf_next;
+    pthread_mutex_unlock(&g_sv_shelf_mu);
+#endif
     LOG("audren:u: renderer closed after %llu frames", (unsigned long long)atomic_load(&r->frames));
     free(r->voice); free(r->cr); free(r->fx); free(r->mix); free(r->sink); free(r->mb);
     pthread_mutex_destroy(&r->mu); free(r);
@@ -435,6 +468,12 @@ static Result sf_audren(sf_req *q) {
         rate, samples, r->nmixbuf, (int)rd32(q->in + 0xc), (int)rd32(q->in + 0x10), (int)rd32(q->in + 0x14), (int)rd32(q->in + 0x18), (int)rd32(q->in + 0x24),
         (const char *)q->in + 0x30, (unsigned long long)rd64(q->in + 0x38));
     r->thread = dm_guest_thread_spawn(sv_render_main, r, 9, 0x10000);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    pthread_mutex_lock(&g_sv_shelf_mu);
+    r->shelf_next = g_sv_renderers;
+    g_sv_renderers = r;
+    pthread_mutex_unlock(&g_sv_shelf_mu);
+#endif
     q->out_move = sf_session("audren:r", sv_renderer, r, sv_close);
     return RES_OK;
 }

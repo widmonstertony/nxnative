@@ -1,7 +1,7 @@
 """Compile legacy GL source with real glslang/SPIRV-Cross, without game assets."""
 import hashlib,importlib.util,pathlib,subprocess,tempfile,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[3]
-spec=importlib.util.spec_from_file_location('gl_shaders',ROOT/'dm/gfx/tools/gl_shaders.py')
+spec=importlib.util.spec_from_file_location('gl_shaders_legacy',ROOT/'dm/gfx/tools/gl_shaders_legacy.py')
 assert spec is not None and spec.loader is not None
 gl=importlib.util.module_from_spec(spec);spec.loader.exec_module(gl)
 class LegacyGL(unittest.TestCase):

@@ -13,6 +13,7 @@
 #endif
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <time.h>
 
 @interface DmRumbleChannel : NSObject
@@ -36,7 +37,18 @@
 - (void)stop;
 @end
 
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+#define HAP_KEEP __attribute__((section("__DATA,__dm_keep")))
+static dispatch_queue_t queue HAP_KEEP;
+static dispatch_once_t g_haptic_queue_once HAP_KEEP;
+static _Atomic uint64_t g_haptic_session HAP_KEEP;
+#undef HAP_KEEP
+static NSMutableArray<id> *g_haptic_observers;
+static uint64_t haptic_session(void) { return atomic_load(&g_haptic_session); }
+static BOOL haptic_current(uint64_t session) { return (session & 1) && haptic_session() == session; }
+#else
 static dispatch_queue_t queue;
+#endif
 static NSMutableArray<DmRumbleChannel *> *channels[DM_PLAYERS];
 static GCController *controllers[DM_PLAYERS];
 static GCHapticsLocality controllerLocalities[DM_PLAYERS];
@@ -178,8 +190,14 @@ static void report(NSError *e, NSString *target, const char *stage) {
     }
     __weak DmRumbleChannel *weak = self;
     uint64_t generation = ++self.generation;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t session = haptic_session();
+#endif
     void (^reset)(void) = ^{
         dispatch_async(queue, ^{
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+            if (!haptic_current(session)) return;
+#endif
             DmRumbleChannel *c = weak; if (!c || c.generation != generation) return;
             [c stop];
             dm_haptics_clear(c.player);   // queued effects from before an interruption cannot restart
@@ -355,11 +373,27 @@ static void native_apply(dm_haptic_state s, uint64_t generation) {
     int p=s.player;
     if (!nativeOutputs[p] || generation != outputGeneration[p] || s.epoch != dm_haptics_epoch(p)) return;
     nativeOutputs[p](s,gain);
-    if (s.motor[0].amplitude_low || s.motor[0].amplitude_high || s.motor[1].amplitude_low || s.motor[1].amplitude_high)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 40*NSEC_PER_MSEC),queue,^{ native_apply(s,generation); });
+    if (s.motor[0].amplitude_low || s.motor[0].amplitude_high || s.motor[1].amplitude_low || s.motor[1].amplitude_high) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        uint64_t session = haptic_session();
+#endif
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 40*NSEC_PER_MSEC), queue, ^{
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+            if (!haptic_current(session)) return;
+#endif
+            native_apply(s,generation);
+        });
+    }
 }
 static void apply(dm_haptic_state s) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    uint64_t session = haptic_session();
+    if (!(session & 1)) return;
+#endif
     dispatch_async(queue, ^{ @autoreleasepool {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        if (!haptic_current(session)) return;
+#endif
         if (s.epoch != dm_haptics_epoch(s.player)) return;
         if (sinks[s.player]) { sink_apply(s); return; }   // the player is in range, as channels[] below assumes (hle_haptics.c)
         if (nativeOutputs[s.player]) { native_apply(s,++outputGeneration[s.player]); return; }
@@ -518,11 +552,62 @@ void dm_haptics_apple_focus(int active) { if(queue) suspend(DM_HAPTICS_UNFOCUSED
 void dm_haptics_apple_shutdown(void) {
     if (queue) suspend(DM_HAPTICS_INACTIVE, YES);
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static void haptic_watch(NSNotificationName name, void (^work)(NSNotification *)) {
+    uint64_t session = haptic_session();
+    id token = [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification *n) {
+        // Removal need not cancel an already delivered notification. Check it
+        // on main, where session closure and resource admission are serialized.
+        dispatch_block_t deliver = ^{ if (haptic_current(session)) work(n); };
+        if (NSThread.isMainThread) deliver();
+        else dispatch_async(dispatch_get_main_queue(), deliver);
+    }];
+    [g_haptic_observers addObject:token];
+}
+
+void dm_haptics_apple_classic_close(void) {
+    if (!(haptic_session() & 1)) return;
+    atomic_fetch_add(&g_haptic_session, 1);
+    for (id token in g_haptic_observers) [NSNotificationCenter.defaultCenter removeObserver:token];
+    g_haptic_observers = nil;
+}
+
+// After input producers and guest threads are fenced. Any delayed stop owns
+// only its old CHHapticEngine; it cannot use a new game's route or C state.
+void dm_haptics_apple_classic_fence(void) {
+    if (!queue) return;
+    dm_haptics_init(NULL, 0);
+    dispatch_sync(queue, ^{
+        for (int p = 0; p < DM_PLAYERS; p++) {
+            native_stop(p);
+            for (DmRumbleChannel *c in channels[p]) [c stop];
+            channels[p] = nil;
+            sink_silence(p); sinks[p] = NULL;
+            nativeOutputs[p] = nil;
+            outputOwners[p] = nil;
+            controllerLocalities[p] = nil;
+            controllers[p] = nil;
+        }
+    });
+}
+#endif
+
 void dm_haptics_apple_init(void) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    if (haptic_session() & 1) return;
+    dispatch_once(&g_haptic_queue_once, ^{
+#else
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+#endif
         queue = dispatch_queue_create("dm.rumble", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(queue, &queue, &queue, NULL);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        atexit(dm_haptics_apple_shutdown);
+    });
+    atomic_fetch_add(&g_haptic_session, 1);
+    g_haptic_observers = [NSMutableArray new];
+#endif
         const char *e = getenv("DM_RUMBLE_GAIN");
         if (e) { float v = strtof(e, NULL); if (isfinite(v)) gain = fmaxf(0, fminf(3, v)); }
         e = getenv("DM_RUMBLE_MIN");
@@ -533,6 +618,15 @@ void dm_haptics_apple_init(void) {
         phoneSupported = CHHapticEngine.capabilitiesForHardware.supportsHaptics;
 #endif
         dispatch_sync(queue, ^{ configure(0, nil, nil); });
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+        haptic_watch(UIApplicationWillResignActiveNotification, ^(NSNotification *n) { (void)n; suspend(DM_HAPTICS_INACTIVE, YES); });
+        haptic_watch(UIApplicationDidBecomeActiveNotification, ^(NSNotification *n) { (void)n; suspend(DM_HAPTICS_INACTIVE, NO); });
+        haptic_watch(UIApplicationWillTerminateNotification, ^(NSNotification *n) { (void)n; dm_haptics_apple_shutdown(); });
+        haptic_watch(AVAudioSessionInterruptionNotification, ^(NSNotification *n) {
+            suspend(DM_HAPTICS_INTERRUPTED, [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan);
+        });
+        haptic_watch(AVAudioSessionRouteChangeNotification, ^(NSNotification *n) { (void)n; dm_haptics_clear(0); });
+#else
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
 #if TARGET_OS_IPHONE
         [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; suspend(DM_HAPTICS_INACTIVE, YES); }];
@@ -551,4 +645,5 @@ void dm_haptics_apple_init(void) {
 #endif
         atexit(dm_haptics_apple_shutdown);
     });
+#endif
 }

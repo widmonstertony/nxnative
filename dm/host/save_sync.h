@@ -59,6 +59,7 @@ const char *dm_save_title(void);          // the title ID the cloud file is name
 int save_sync_mount(const char *save, const char *title);
 void save_sync_committed(void);           // a Commit went through (hle_fs.c, under its locks: it only wakes the sender)
 int save_sync_flush(int timeout_ms);      // sends now what was committed and not sent (the iPhone app going to the background): 1 = in step with the cloud, 0 = not (yet)
+int save_sync_stop_for_shell(int timeout_ms); // Join the sender and wait out timed-out fetches after the guest has stopped.
 int save_sync_after_exit(const char *save, const char *title);   // the Mac launcher once the host has exited (a crash included): 1 = in step, 0 = not
 
 // ---- what the platform provides (weak defaults in save_sync.c: plain file copies, which the Mac's iCloud Drive takes) ----

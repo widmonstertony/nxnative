@@ -47,3 +47,123 @@ void dm_term_install(void) {
     dispatch_source_set_event_handler(src, ^{ dm_host_shutdown("SIGTERM"); });
     dispatch_resume(src);
 }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+#include "save_sync.h"
+unsigned dm_guest_pthreads_alive(void);
+int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns);
+int dm_gfx_classic_can_stop_for_shell(void);
+int dm_cheats_stop_for_shell(void);
+void dm_gamepad_classic_fence(void);
+void dm_haptics_apple_classic_fence(void);
+int dm_codec_video_release_drained(void);
+int dm_movie_release_drained(void);
+int dm_audio_classic_release_outputs(void);
+int dm_audren_classic_release(void);
+int dm_guest_classic_retire(unsigned budget_ms);
+int dm_audren_service_release_thread_metadata(void);
+int dm_sf_classic_close_all(void);
+int dm_crash_classic_restore(void);
+int dm_thread_classic_restore_signals(void);
+void dm_audren_request_drain(void);
+void dm_audren_service_request_drain(void);
+void dm_movie_request_drain(void);
+void dm_vsync_stop_all(void);
+int dm_guest_gate_release_drained(void);
+int dm_loader_classic_release_drained(void);
+void dm_host_classic_release_preload(void);
+void dm_ue_malloc_classic_release(void);
+void dm_fs_teardown(void);
+void dm_guest_memory_release(int unmap_as);
+int dm_guest_classic_release_handles(void);
+void dm_guest_classic_drop_tls_keys(void);
+void dm_crash_classic_drop_tls_key(void);
+
+static int g_classic_embedded, g_classic_diagnostic;
+void dm_host_classic_set_shelf_owner(void) {
+    static const char *const no_return[] = {
+        "DM_CTL", "DM_KEYS", "DM_REC", "DM_HITCH_DUMP", "DM_FD_LOG",
+        "DM_PROBE_POLL", "DM_PROBE_WATCH", "DM_GUEST_SPAWN_TEST",
+        "DM_MEMSTAT", "DM_THRCPU", "DM_TEST_KEYRACE",
+    };
+    g_classic_embedded = 1;
+    for (unsigned i = 0; i < sizeof no_return / sizeof no_return[0]; i++)
+        if (getenv(no_return[i])) g_classic_diagnostic = 1;
+}
+int dm_host_classic_embedded(void) { return g_classic_embedded; }
+int dm_host_classic_can_return(void) {
+    return g_classic_embedded && !g_classic_diagnostic && dm_gfx_classic_can_stop_for_shell();
+}
+
+// Audio and video may be the very services that let a guest reach its
+// parking boundary. First attempt reversible parking of the game threads;
+// stop the host-owned guest workers only after the retirement has committed.
+// 0 means the game recovered, -1 means committed but not yet safe to detach.
+int dm_host_classic_retire_guest(int budget_ms) {
+    if (budget_ms <= 0 || !dm_host_classic_can_return()) return 0;
+    uint64_t t0 = now_ns();
+    if (!dm_guest_classic_retire((unsigned)budget_ms / 2)) return 0;
+    dm_audren_request_drain();
+    dm_audren_service_request_drain();
+    dm_movie_request_drain();
+    while (dm_guest_pthreads_alive()) {
+        if (!ms_left(t0, budget_ms)) {
+            LOG("[RED] shelf: a committed session still has guest pthreads");
+            return -1;
+        }
+        usleep(1000);
+    }
+    dm_vsync_stop_all();
+    return 1;
+}
+
+// The shell must already have closed front-end admissions and retired its
+// guest. A successful worker fence is necessary but does not release renderer,
+// UIKit or guest memory ownership and does not by itself authorize a return.
+int dm_host_classic_fence_for_shell(int budget_ms) {
+    if (budget_ms <= 0 || dm_guest_pthreads_alive()) return 0;
+    uint64_t t0 = now_ns();
+    dm_gamepad_classic_fence();
+    dm_haptics_apple_classic_fence();
+    if (!dm_gfx_classic_stop_for_shell((uint64_t)ms_left(t0, budget_ms) * NSEC_PER_MSEC)) {
+        LOG("[RED] shelf: the classic renderer did not quiesce");
+        return 0;
+    }
+    if (!dm_cheats_stop_for_shell()) return 0;
+    if (!save_sync_stop_for_shell(ms_left(t0, budget_ms))) {
+        LOG("[RED] shelf: a save sync worker still owns this session");
+        return 0;
+    }
+    // Decoders may still own native images after the guest stops; the GPU
+    // fence comes first. Movie teardown may close a PCM producer, so leave
+    // audio output ownership intact until both media services have finished.
+    if (!dm_codec_video_release_drained() || !dm_movie_release_drained()) {
+        LOG("[RED] shelf: a decoder still owns this session");
+        return 0;
+    }
+    if (!dm_audio_classic_release_outputs() || !dm_audren_classic_release() ||
+        !dm_audren_service_release_thread_metadata() || !dm_sf_classic_close_all()) {
+        LOG("[RED] shelf: audio still owns this session");
+        return 0;
+    }
+    if (!dm_thread_classic_restore_signals() || !dm_crash_classic_restore()) {
+        LOG("[RED] shelf: process signal ownership could not be restored");
+        return 0;
+    }
+    return 1;
+}
+
+// Called after the frontend has acknowledged its background saves, the
+// bootstrap pthread has joined and every service has dropped its pointers.
+int dm_host_classic_release_for_shell(void) {
+    if (dm_guest_pthreads_alive() || !dm_guest_gate_release_drained() ||
+        !dm_guest_classic_release_handles()) return 0;
+    dm_guest_classic_drop_tls_keys();
+    dm_crash_classic_drop_tls_key();
+    dm_guest_memory_release(1);
+    dm_fs_teardown();
+    dm_ue_malloc_classic_release();
+    dm_host_classic_release_preload();
+    return dm_loader_classic_release_drained();
+}
+#endif

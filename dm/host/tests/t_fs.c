@@ -517,6 +517,34 @@ int main(void) {
         g_nmnt = 0;
     }
 
+    printf("⑩ release the session and mount a second game\n");
+    {
+        char first[1200], second[1200], committed[1300], buf[32];
+        snprintf(first, sizeof first, "%s/exit-first", root); mkdir(first, 0755);
+        snprintf(second, sizeof second, "%s/exit-second", root); mkdir(second, 0755);
+        snprintf(committed, sizeof committed, "%s/slot", first); put(committed, "committed");
+        snprintf(p, sizeof p, "%s/slot", second); put(p, "next game");
+        int shell = open(committed, O_RDONLY);
+        uint64_t file = 0, directory = 0, closed = 0;
+        setenv("DM_SAVE", first, 1);
+        CHECK(h_fs_MountSave("save", NULL) == RES_OK && write_save("save:/slot", "pending") == RES_OK, "first game stages an uncommitted write");
+        CHECK(h_fs_OpenFile(&file, "save:/slot", MODE_READ) == RES_OK &&
+              h_fs_OpenDirectory(&directory, "save:/", DIRMODE_FILE) == RES_OK &&
+              h_fs_OpenDirectory(&closed, "save:/", DIRMODE_FILE) == RES_OK, "first game leaves file and directory handles open");
+        if (!file || !directory || !closed || shell < 0) return 1;
+        int file_fd = (int)FH_IN(file), dir_fd = dirfd(((dirh_t *)directory)->d);
+        h_fs_CloseDirectory(closed);
+        dm_fs_teardown();
+        CHECK(fcntl(file_fd, F_GETFD) == -1 && errno == EBADF && fcntl(dir_fd, F_GETFD) == -1 && errno == EBADF,
+              "exit closes abandoned guest descriptors");
+        CHECK(fcntl(shell, F_GETFD) != -1 && same(committed, "committed"), "exit retains the shell descriptor and prior committed save");
+        setenv("DM_SAVE", second, 1);
+        CHECK(h_fs_MountSave("save", NULL) == RES_OK && read_fs("save:/slot", buf, sizeof buf) && !strcmp(buf, "next game"),
+              "the next game can reuse the guest mount name with its own save");
+        dm_fs_teardown();
+        close(shell);
+    }
+
     char cmd[1200]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", root); system(cmd);
     printf("== %d checks, %d failed ==\n", checks, fails);
     return fails != 0;

@@ -81,7 +81,8 @@ typedef struct {
     uint32_t step_max;         // the largest step the frame step stubs give the game (the fixups table's STEP_MAX, patch_nso.py ctx.step_max); 0 = FSTEP_MAX
     uint32_t render_scale_max; // a render-scale stub's largest scale (the fixups table's RENDER_SCALE, patch_nso.py): DM_RENDER_SCALE is held to it; 0 = no such stub
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
-    uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
+    uint64_t image_size, file_image_len;   // front patches only: whole image (with bss and key page), length of the image part of the file
+    uint64_t patch_len;        // mapped executable patch extent, for either layout
     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none
     char build_id[33];         // First 16 bytes of the NSO build ID (hex); empty for older build outputs
     unsigned key_idx[4];       // key page index of each thread slot (K18, KTLS, KTLR, KGATE)
@@ -245,3 +246,12 @@ void dm_gfx_shot_at(long k, const char *path);   // graphics side: screenshot of
 void dm_shot_written(const char *path, int ok);   // The graphics side finished writing a screenshot to disk (diag.c: DM_TICK_HOLD=E:SHOT unfreezes on this)
 void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg);   // The same, then(arg) in place of the last _exit(0) (oe::ExecuteProgram: execve of the next program)
 void dm_host_shutdown(const char *why);   // Graceful exit (hle_lifecycle.c): stop background threads and audio, stop the pipeline prewarm, drain graphics, write the pipeline archive, then _exit(0); used by SIGTERM and oe::ExecuteProgram
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int dm_host_classic_fence_for_shell(int budget_ms);
+int dm_guest_classic_is_gathering(void);
+uintptr_t dm_bigstack_guest_frame(const void *return_address);
+void dm_guest_classic_at_notification_wait(uintptr_t frame);
+void dm_oe_wake_teardown(void);
+#endif
+int dm_teardown_is_parking(void);
+void dm_teardown_check_current_thread(void);

@@ -572,13 +572,13 @@ static void test_native_motion_integration(void) {
         [c.extendedGamepad.buttonB setValue:1]; gc_event(d);
         int player = merged ? 0 : 1;
         assert(d->slot == player && m.sensorsActive && m.valueChangedHandler);
-        assert(g_pro_controllers == 1 && g_pro_slot == player);
+        assert(g_pro_pair[PRO_MODEL_PRO].controllers == 1 && g_pro_pair[PRO_MODEL_PRO].slot == player);
         m.valueChangedHandler((id)m); assert(native_motion_player == player && native_motion_samples);
         front_controllers_focus(0); assert(!m.sensorsActive && !m.valueChangedHandler && native_motion_cleared == player && !g_pro_active);
         front_controllers_focus(1); assert(m.sensorsActive && m.valueChangedHandler && g_pro_active);
         m.valueChangedHandler((id)m); assert(native_motion_player == player);
-        controller_disconnect(d); assert(!m.valueChangedHandler && !m.sensorsActive && g_pro_slot == -1);
-        [g_devices removeObject:d]; controller_pro_changed(); assert(g_pro_controllers == 0);
+        controller_disconnect(d); assert(!m.valueChangedHandler && !m.sensorsActive && g_pro_pair[PRO_MODEL_PRO].slot == -1);
+        [g_devices removeObject:d]; controller_pro_changed(); assert(g_pro_pair[PRO_MODEL_PRO].controllers == 0);
     }
     g_slots = (pad_slots){0}; g_merge = 0;
 }

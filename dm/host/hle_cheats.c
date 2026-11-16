@@ -1025,9 +1025,9 @@ static void note_settle(cheat_t *c) {
 // operation or another pass runs is simply skipped (the next frame / tick applies again). The master switch stops
 // everything; safe mode holds the masters back too; a "set" cheat turns itself off after its pass
 static void cheats_pass(void) {
-    if (!atomic_load(&g_active) || !atomic_load(&g_master)) return;
+    if (atomic_load(&g_exiting) || !atomic_load(&g_active) || !atomic_load(&g_master)) return;
     if (pthread_mutex_trylock(&g_lock)) return;
-    if (!atomic_load(&g_master)) { pthread_mutex_unlock(&g_lock); return; }   // switched off while this pass waited for the lock
+    if (atomic_load(&g_exiting) || !atomic_load(&g_master)) { pthread_mutex_unlock(&g_lock); return; }   // switched off while this pass waited for the lock
     int fired = 0, ran = 0;
     g_held = dm_cheats_keys();
     memset(g_reg, 0, sizeof g_reg); memset(g_saved, 0, sizeof g_saved);   // the reference's once-per-pass ResetState (the loop tops: per cheat, in vm_run)
@@ -1055,7 +1055,7 @@ void dm_cheats_present(void) {
 // present): a stopped game still changes under its cheats, as on hardware where the cheat process keeps running
 static void *cheat_tick_thread(void *arg) {
     (void)arg;
-    for (;;) {
+    while (!atomic_load(&g_exiting)) {
         usleep(16667);   // ~60 Hz
         if (now_ns() - atomic_load(&g_present_ns) < 250000000ull) continue;   // presenting again: the hook applies
         cheats_pass();
@@ -1067,12 +1067,24 @@ static void *cheat_tick_thread(void *arg) {
 // one: a run without cheats keeps no thread waking 60 times a second. It runs from then on, standing down while the game
 // presents; a reload that loses the file leaves g_active off and the passes return at once
 static int g_tick_started;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static pthread_t g_tick_thread;
+#endif
 static void tick_start(void) {
-    if (g_tick_started) return;
+    if (g_tick_started || atomic_load(&g_exiting)) return;
     g_tick_started = 1;
+    int error;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    error = pthread_create(&g_tick_thread, NULL, cheat_tick_thread, NULL);
+#else
     pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&th, &a, cheat_tick_thread, NULL)) LOG("[RED] cheats: cannot start the ~60 Hz apply thread (errno %d), only presents apply", errno);
+    error = pthread_create(&th, &a, cheat_tick_thread, NULL);
     pthread_attr_destroy(&a);
+#endif
+    if (error) {
+        g_tick_started = 0;
+        LOG("[RED] cheats: cannot start the ~60 Hz apply thread (error %d), only presents apply", error);
+    }
 }
 
 // ---------- the cheat states: <build>.enabled, DM_CHEATS_ON, the folder's flag files ----------
@@ -1875,7 +1887,9 @@ void dm_cheats_init(void) {
         for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && !g_mod[i].nro) { g_main_mod = &g_mod[i]; break; }
         folder_flags();
         if (g_main_mod) { pthread_mutex_lock(&g_lock); load_all(); pthread_mutex_unlock(&g_lock); }   // load_all maps the writable alias once a file is picked
+#if !defined(DM_CLASSIC_SHELF_LIFECYCLE)
         atexit(dm_cheats_exit);   // exit() paths (⌘Q, closing the window); dm_host_exit's _exit calls it itself
+#endif
     }
 }
 
@@ -1887,6 +1901,20 @@ void dm_cheats_exit(void) {
     char p[1100]; flag_file(p, sizeof p, "running");
     unlink(p);
 }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// Called after guest and presenter quiescence. Join the periodic producer
+// before placing the file-queue barrier, so it cannot enqueue behind it.
+int dm_cheats_stop_for_shell(void) {
+    pthread_mutex_lock(&g_lock);
+    atomic_store(&g_exiting, 1);
+    int started = g_tick_started;
+    pthread_mutex_unlock(&g_lock);
+    if (started && pthread_join(g_tick_thread, NULL)) return 0;
+    dm_cheats_exit();
+    return 1;
+}
+#endif
 
 // ---------- the Mac cheats menu and panel (callers: front_mac.m; nothing else uses these) ----------
 // Cheap accessors read straight from the shared state: the list itself is rebuilt only from the main thread (this

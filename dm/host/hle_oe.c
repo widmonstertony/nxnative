@@ -442,17 +442,38 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "system notification queue;
 }
 // The blocking form (Link's Awakening pops on a thread of its own, main+0xfa1ff8): the SDK's version waits on the system event oe::Initialize would have created,
 // and the host's oe::Initialize is a no-op, so it aborted on an uninitialized event. Wait for the host queue instead, then take the message the Try path's way
+void dm_oe_wake_teardown(void) {
+    pthread_mutex_lock(&g_mq_lock);
+    pthread_cond_broadcast(&g_mq_cond);
+    pthread_mutex_unlock(&g_mq_lock);
+}
 HLE_FORCE("_ZN2nn2oe22PopNotificationMessageEv", "system notification queue (blocking); waits on the host queue", uint32_t, h_oe_PopMsg, void) {
     pthread_once(&g_oe_once, oe_script_start);   // DM_OE_SCRIPT also for games that only pop this way (Mario Kart 8 Deluxe): the wait below reaches the Try path only once a notification is queued
     uint32_t m = 0;
     for (;;) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+        int attempted = 0;
+#endif
+        if (dm_teardown_is_parking()) dm_teardown_check_current_thread();
         pthread_mutex_lock(&g_mq_lock);
-        while (!g_mqn) {
+        while (!g_mqn && !dm_teardown_is_parking()) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE) && TARGET_OS_IOS
+            if (!attempted && dm_guest_classic_is_gathering()) {
+                pthread_mutex_unlock(&g_mq_lock);
+                uintptr_t saved = dm_bigstack_guest_frame(__builtin_return_address(0));
+                dm_guest_classic_at_notification_wait(saved ? saved : (uintptr_t)__builtin_frame_address(0));
+                pthread_mutex_lock(&g_mq_lock);
+                attempted = 1;
+                continue;
+            }
+            attempted = 0;
+#endif
             dm_thread_native_wait(1);
             pthread_cond_wait(&g_mq_cond, &g_mq_lock);
             dm_thread_native_wait(0);
         }
         pthread_mutex_unlock(&g_mq_lock);
+        if (dm_teardown_is_parking()) dm_teardown_check_current_thread();
         if (h_oe_TryPopMsg(&m)) return m;   // another thread may have taken it in between: wait again
     }
 }

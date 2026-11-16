@@ -307,9 +307,11 @@ static void fetch_cases(const char *folder) {
     if (mkfifo(fifo, 0644)) abort();
     CHECK(fetch_timed(fifo, dst, 100) == -1 && holds_fetch_reservation(dir), "a fetch that does not come in time: -1");
     CHECK(fetch_timed(src, dst, 2000) == 1 && file_is(dst, "newer"), "the next attempt's fetch");
+    CHECK(!save_sync_stop_for_shell(30), "a timed-out fetch still owns resources, so the shelf must wait");
+    CHECK(fetch_timed(src, dst, 50) == -1 && file_is(dst, "newer"), "fetch admission closes during teardown");
     int w = open(fifo, O_WRONLY); if (w < 0 || write(w, "older", 5) != 5) abort();
     close(w);   // the first fetch goes on now: it copies "older", finds itself dropped and removes its file
-    usleep(300 * 1000);
+    CHECK(save_sync_stop_for_shell(1000), "shelf shutdown can finish after the late fetch cleans up");
     CHECK(file_is(dst, "newer") && holds_only(dir, "cloud.dmsync"), "the late fetch leaves the later attempt's file as it was and removes only its own");
     test_unlink(dst); test_unlink(src); test_unlink(fifo); rmdir(dir);
 }

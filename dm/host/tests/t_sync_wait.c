@@ -1,8 +1,16 @@
 // WaitSynchronization through real SVCs. Hold G across notification and clear
 // to make the lost-notification window deterministic, without scheduler sleeps.
+#define DM_TEST_GUEST_EXIT_WATCH 1
 #include "../hle_thread.c"
 #include <assert.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+enum { TEST_GUEST_BASE = 0x0eed000, TEST_GUEST_PC = TEST_GUEST_BASE + 4, TEST_PATCH = 0x4000, TEST_RETURN = 0x0bbe000 };
+module_t *module_of(const void *p) {
+    static module_t m = {.base = (void *)TEST_GUEST_BASE, .text_end = 0x1000, .patch_off = TEST_PATCH, .patch_len = 0x1000, .size = TEST_PATCH + 0x1000};
+    return (uintptr_t)p - TEST_GUEST_BASE < m.size ? &m : NULL;
+}
 
 typedef struct { uint32_t write, read; } ends_t;
 typedef struct {
@@ -239,10 +247,149 @@ static void closed_unstarted(void) {
         assert(now_ns() < deadline); usleep(1000);
     }
 }
+
+static pthread_key_t exiting_key;
+static _Atomic int exiting_armed, exiting_registered, exiting_destructor, exiting_release;
+static void exit_destructor(void *ignored) {
+    (void)ignored;
+    atomic_store(&exiting_destructor, 1);
+    while (!atomic_load(&exiting_release)) sched_yield();
+}
+static void *exit_watch_body(void *arg) {
+    while (!atomic_load(&exiting_armed)) sched_yield();
+    exit_watch_current(1);
+    assert(!pthread_setspecific(exiting_key, arg));
+    atomic_store(&exiting_registered, 1);
+    return NULL;
+}
+static void exit_watch_covers_destructors(void) {
+    uint64_t deadline = now_ns() + 2000000000;
+    // Let the detached workers from the closed-unstarted test finish exiting.
+    while (dm_guest_pthreads_alive() > 1) { assert(now_ns() < deadline); sched_yield(); }
+    assert(dm_guest_pthreads_alive() == 1);
+    assert(!pthread_key_create(&exiting_key, exit_destructor));
+    exit_watch_pending();
+    pthread_t worker;
+    assert(!pthread_create(&worker, NULL, exit_watch_body, &worker));
+    // A child still on its way to thread_main must also block reset.
+    assert(dm_guest_pthreads_alive() == 2);
+    atomic_store(&exiting_armed, 1);
+    while (!atomic_load(&exiting_registered) || !atomic_load(&exiting_destructor)) {
+        assert(now_ns() < deadline); sched_yield();
+    }
+    assert(dm_guest_pthreads_alive() == 2);
+    atomic_store(&exiting_release, 1);
+    assert(!pthread_join(worker, NULL));
+    while (dm_guest_pthreads_alive() != 1) { assert(now_ns() < deadline); sched_yield(); }
+    assert(!pthread_key_delete(exiting_key));
+}
+
+typedef struct {
+    thr_t *t;
+    int native_frame;
+    atomic_int ready, stop, resumed;
+} retire_test;
+
+static void *retire_worker(void *arg) {
+    retire_test *test = arg;
+    thr_t *t = test->t;
+    exit_watch_current(1);
+    pthread_setspecific(g_keythr, t);
+    _Alignas(16) uint64_t frames[4] = {0, TEST_GUEST_PC, 0, TEST_RETURN};
+    uint64_t regs[100] = {0};
+    frames[0] = (uintptr_t)&frames[2];
+    regs[99] = (uintptr_t)frames;
+    t->entered = 1;
+    t->svc_pc = 4; // original gate location is module-relative
+    t->retirement_root = TEST_RETURN;
+    t->retirement_stack_top = (uintptr_t)(frames + 4);
+    atomic_store(&t->svc_regs, regs);
+    regs[30] = TEST_GUEST_PC;
+    assert(!retire_stack_root(t)); // a plain guest PC isn't a registered gate return
+    regs[30] = TEST_GUEST_BASE + TEST_PATCH + 8;
+    assert(retire_stack_root(t));
+    frames[0] = (uintptr_t)frames; // cycle
+    assert(!retire_stack_root(t));
+    frames[0] = (uintptr_t)(frames + 4); // past stack
+    assert(!retire_stack_root(t));
+    frames[0] = (uintptr_t)&frames[2];
+    frames[3] = 0x1234; // native callback in the chain
+    assert(!retire_stack_root(t));
+    if (!test->native_frame) frames[3] = TEST_RETURN;
+    atomic_store(&test->ready, 1);
+    while (!atomic_load(&test->stop)) {
+        g_lock();
+        if (atomic_load(&g_retire_phase) == RETIRE_GATHER) {
+            retire_checkpoint_locked(t);
+            atomic_store(&test->resumed, 1);
+        }
+        g_unlock();
+        sched_yield();
+    }
+    thread_exit(t);
+    return NULL;
+}
+
+static void retirement_boundaries(int managed) {
+    // The coordinator is a shell thread, excluded from the guest registry.
+    assert(!pthread_key_create(&g_keythr, NULL));
+    retire_test clean = {.t = new_thread()}, native = {.t = new_thread(), .native_frame = 1};
+    pthread_t a, b;
+    exit_watch_pending(); assert(!pthread_create(&a, NULL, retire_worker, &clean));
+    exit_watch_pending(); assert(!pthread_create(&b, NULL, retire_worker, &native));
+    while (!atomic_load(&clean.ready) || !atomic_load(&native.ready)) sched_yield();
+    assert(!dm_guest_retire_at_boundaries(100)); // native callback blocks retirement
+    assert(dm_guest_pthreads_alive() == 2);
+    while (!atomic_load(&clean.resumed)) sched_yield(); // pre-commit timeout released the parked guest
+    if (managed) {
+        // A coordinator with a real stop hook can commit the guest boundary
+        // without pretending that the managed native callback has exited.
+        g_lock(); native.t->host_owned = 1; g_unlock();
+        assert(dm_guest_classic_retire(1000));
+        assert(!pthread_join(a, NULL));
+        uint64_t deadline = now_ns() + 2000000000;
+        while (dm_guest_pthreads_alive() > 1) { assert(now_ns() < deadline); sched_yield(); }
+        assert(dm_guest_pthreads_alive() == 1);
+        uint64_t regs[104] = {0};
+        assert(svc_thread(0x08, regs) && regs[0] == R_BAD_STATE && !regs[1]);
+    }
+    atomic_store(&native.stop, 1);
+    assert(!pthread_join(b, NULL));
+    if (!managed) {
+        assert(dm_guest_retire_at_boundaries(1000));
+        assert(!pthread_join(a, NULL));
+    }
+    uint64_t deadline = now_ns() + 2000000000;
+    while (dm_guest_pthreads_alive()) { assert(now_ns() < deadline); sched_yield(); }
+    g_lock();
+    assert(clean.t->exited && native.t->exited);
+    thr_free(clean.t); thr_free(native.t);
+    g_unlock();
+    assert(!pthread_key_delete(g_keythr));
+}
+
 int main(int argc, char **argv) {
-    alarm(10); svc_thread_main_init();
-    const char *names[] = {"framing", "endpoints", "signal-clear", "close-reuse", "snapshot", "cancel-release", "thread-close", "query-close", "core-mask", "closed-unstarted"};
-    void (*tests[])(void) = {framing, endpoints, signal_then_clear, close_and_reuse, handle_array_snapshot, cancellation_and_release, closed_thread_wait, query_close, core_mask, closed_unstarted};
+    alarm(10);
+    if (argc == 1 || !strcmp(argv[1], "retirement") || !strcmp(argv[1], "managed-retirement")) {
+        // Keep committed shutdown in a separate process from unrelated SVC cases.
+        if (argc == 1) {
+            const char *modes[] = {"retirement", "managed-retirement"};
+            for (unsigned i = 0; i < sizeof modes / sizeof *modes; i++) {
+                pid_t p = fork();
+                assert(p >= 0);
+                if (!p) { execl(argv[0], argv[0], modes[i], NULL); _exit(127); }
+                int status;
+                assert(waitpid(p, &status, 0) == p && WIFEXITED(status) && !WEXITSTATUS(status));
+            }
+        } else {
+            retirement_boundaries(!strcmp(argv[1], "managed-retirement"));
+            printf("PASS: %s\n", argv[1]);
+            return 0;
+        }
+    }
+    svc_thread_main_init();
+    const char *names[] = {"framing", "endpoints", "signal-clear", "close-reuse", "snapshot", "cancel-release", "thread-close", "query-close", "core-mask", "closed-unstarted", "exit-watch"};
+    void (*tests[])(void) = {framing, endpoints, signal_then_clear, close_and_reuse, handle_array_snapshot, cancellation_and_release, closed_thread_wait, query_close, core_mask, closed_unstarted, exit_watch_covers_destructors};
     for (unsigned i = 0; i < sizeof tests / sizeof *tests; i++) {
         if (argc > 1 && strcmp(argv[1], names[i])) continue;
         tests[i](); printf("PASS: %s\n", names[i]);

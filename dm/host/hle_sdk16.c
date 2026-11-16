@@ -291,14 +291,24 @@ HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_
 void dm_host_helper_qos(qos_class_t q);   // hle_thread.c
 typedef struct vsync_event { void *ev; uint64_t binding; struct vsync_event *next; } vsync_event_t;
 static pthread_mutex_t g_vs_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_vs_cv = PTHREAD_COND_INITIALIZER;
 static vsync_event_t *g_vs_events;
+static _Atomic int g_vs_stop;
+static unsigned g_vs_workers;
+void dm_vsync_stop_all(void) {
+    pthread_mutex_lock(&g_vs_mu);
+    atomic_store(&g_vs_stop, 1);
+    pthread_cond_broadcast(&g_vs_cv);
+    while (g_vs_workers) pthread_cond_wait(&g_vs_cv, &g_vs_mu);
+    pthread_mutex_unlock(&g_vs_mu);
+}
 static int vsync_tick(vsync_event_t *v) {   // 0: the event is gone and this thread has left the table
-    if (hle_signal_system_event_binding(v->binding)) return 1;
+    if (!atomic_load(&g_vs_stop) && hle_signal_system_event_binding(v->binding)) return 1;
     pthread_mutex_lock(&g_vs_mu);
     vsync_event_t **p = &g_vs_events; while (*p && *p != v) p = &(*p)->next;
     if (*p) *p = v->next;
     pthread_mutex_unlock(&g_vs_mu);
-    LOG("vi: vsync event %p destroyed by the game, its thread ends", v->ev);
+    if (!atomic_load(&g_vs_stop)) LOG("vi: vsync event %p destroyed by the game, its thread ends", v->ev);
     return 0;
 }
 __attribute__((weak)) int mtl_link_wait_vsync(uint64_t *seen, uint64_t timeout_ns) { (void)seen; (void)timeout_ns; return 0; }   // nvn_mtl.m
@@ -311,11 +321,21 @@ static void *vsync_thread(void *arg) {
     for (;;) {
         if (!e) period = nvn_vsync_hz() == 120 ? 1000000000ull / 120 : 1000000000ull / 60;   // follows 120 fps (a game that waits for each vblank is held to its rate)
         if (!e && mtl_link_wait_vsync(&seen, 2 * period)) { if (!vsync_tick(v)) break; next = now_ns() + period; continue; }
-        uint64_t t = now_ns(); if (next > t) { struct timespec ts = {(time_t)((next - t) / 1000000000ull), (long)((next - t) % 1000000000ull)}; nanosleep(&ts, NULL); }
+        pthread_mutex_lock(&g_vs_mu);
+        uint64_t t;
+        while (!atomic_load(&g_vs_stop) && next > (t = now_ns())) {
+            struct timespec ts = {(time_t)((next - t) / 1000000000ull), (long)((next - t) % 1000000000ull)};
+            pthread_cond_timedwait_relative_np(&g_vs_cv, &g_vs_mu, &ts);
+        }
+        pthread_mutex_unlock(&g_vs_mu);
         if (!vsync_tick(v)) break;
         next += period; if (now_ns() > next + 4 * period) next = now_ns() + period;   // do not try to catch up when far behind
     }
-    free(v); return NULL;
+    free(v);
+    pthread_mutex_lock(&g_vs_mu);
+    if (!--g_vs_workers) pthread_cond_broadcast(&g_vs_cv);
+    pthread_mutex_unlock(&g_vs_mu);
+    return NULL;
 }
 // Image memory needed for an indirect layer (an applet's picture handed to the game to draw, such as the inline keyboard): on hardware it asks the vi service. Computed as linear RGBA8, 4 KB aligned (Super Mario 3D World + Bowser's Fury's inline keyboard asks for 1280x720)
 HLE_FORCE("_ZN2nn2vi33GetIndirectImageMemoryRequirementEPmS1_ii", "indirect layer image memory: RGBA8 linear, 4 KB aligned", Result, h_vi_IndirectReq, size_t *size, size_t *align, int w, int h) {
@@ -326,9 +346,10 @@ HLE_FORCE("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7Displa
     uint64_t binding = hle_system_event_binding(ev);
     pthread_mutex_lock(&g_vs_mu);
     int running = 0; for (vsync_event_t *v = g_vs_events; v; v = v->next) running |= v->binding == binding;
-    if (!running) {
+    if (!running && !atomic_load(&g_vs_stop)) {
         vsync_event_t *v = calloc(1, sizeof *v); if (!v) die("cannot allocate a vsync event");
         v->ev = ev; v->binding = binding; v->next = g_vs_events; g_vs_events = v;
+        ++g_vs_workers;
         pthread_t th; if (pthread_create(&th, NULL, vsync_thread, v)) die("cannot start the vsync thread"); pthread_detach(th);
     }
     pthread_mutex_unlock(&g_vs_mu);

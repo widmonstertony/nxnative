@@ -116,9 +116,24 @@ typedef struct {
 } ar_t;
 static ar_t g_ar[AR_MAX];
 static pthread_mutex_t g_ar_mu = PTHREAD_MUTEX_INITIALIZER;   // the slots' handle and sys fields
+static int g_ar_draining;  // g_ar_mu: no renderer can acquire an output after the drain starts
 static __thread ar_t *t_ar;                  // the renderer this render thread drives
 static int ar_index(const ar_t *a) { return (int)(a - g_ar); }
 static void cq_popped(ar_t *a) { pthread_mutex_lock(&a->cq_mu); pthread_cond_broadcast(&a->cq_cv); pthread_mutex_unlock(&a->cq_mu); }
+
+// Only ask the renderer to stop here. Its own guest thread must close the
+// output, finish any SDK callback and actually exit before guest memory goes.
+void dm_audren_request_drain(void) {
+    pthread_mutex_lock(&g_ar_mu);
+    g_ar_draining = 1;
+    for (int i = 0; i < AR_MAX; i++) {
+        ar_t *a = &g_ar[i];
+        if (!a->handle[0]) continue;
+        atomic_store(&a->open, 0);
+        cq_popped(a);
+    }
+    pthread_mutex_unlock(&g_ar_mu);
+}
 // The renderer an AudioRenderSystem belongs to, for the SDK's calls that name only that. A system not seen yet belongs to the one open renderer whose system is not known: the render thread
 // names its system at its first render, right after the open, and a game's first updates can come before that (two updates 0.04 ms apart at start-up, below)
 static ar_t *ar_of_sys(uint8_t *sys) {
@@ -135,6 +150,7 @@ static ar_t *ar_of_sys(uint8_t *sys) {
 
 static void render_main(void *arg) {
     ar_t *a = arg; t_ar = a;
+    if (!atomic_load(&a->open)) return;   // Open registered this slot just before the drain
     void (*exec)(void *, void *) = gsym("_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE");
     void *out = dm_pcmout_open(2);
     aout_buf *free_list[NBUF]; int nfree = NBUF;
@@ -148,7 +164,7 @@ static void render_main(void *arg) {
             dm_pcmout_wait(out, 10);
             if (!atomic_load(&a->open)) break;
         }
-        if (!nfree) break;
+        if (!nfree || !atomic_load(&a->open)) break;
         const int16_t *src; int got;
         uint32_t h = atomic_load(&a->cq_head);
         if (h != atomic_load(&a->cq_tail)) { src = a->cq[h % CQ]; got = a->cq_n[h % CQ]; atomic_store(&a->cq_head, h + 1); cq_popped(a); }   // play queued catch-up output first
@@ -241,7 +257,8 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     module_t *m = module_of(ra);
     pthread_mutex_lock(&g_ar_mu);
     ar_t *a = NULL;
-    for (int i = 0; i < AR_MAX && !a; i++) if (!g_ar[i].handle[0]) a = &g_ar[i];
+    int draining = g_ar_draining;
+    for (int i = 0; !draining && i < AR_MAX && !a; i++) if (!g_ar[i].handle[0]) a = &g_ar[i];
     if (a) {   // the slot's old contents are of a closed renderer, whose thread has ended; memset leaves no lock held
         memset(a, 0, sizeof *a);
         pthread_mutex_init(&a->cq_mu, NULL); pthread_cond_init(&a->cq_cv, NULL);
@@ -249,7 +266,10 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     }
     pthread_mutex_unlock(&g_ar_mu);
     LOG("audren: renderer %d opened from %s+%#llx", a ? ar_index(a) : -1, m ? m->name : "host", m ? (unsigned long long)((uint8_t *)ra - m->base) : 0ULL);
-    if (!a) { LOG("[RED] audren: more than %d renderers: this one is not rendered", AR_MAX); return r; }
+    if (!a) {
+        if (!draining) LOG("[RED] audren: more than %d renderers: this one is not rendered", AR_MAX);
+        return r;
+    }
     a->render_tt = dm_guest_thread_spawn(render_main, a, 9, 0x10000);
     return r;
 }
@@ -274,6 +294,28 @@ HLE_FORCE("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", "close 
         destroy(sev); rev_set(sev, NULL);
     }
 }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// All guest pthreads and their host AudioOut consumers are gone. The SDK's
+// thread metadata was allocated by the host; its stack and events belong to
+// the guest address space and kernel handle table, not to Apple free().
+int dm_audren_classic_release(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    pthread_mutex_lock(&g_ar_mu);
+    if (!g_ar_draining) { pthread_mutex_unlock(&g_ar_mu); return 0; }
+    for (int i = 0; i < AR_MAX; i++) {
+        ar_t *a = &g_ar[i];
+        if (!a->handle[0]) continue;
+        pthread_cond_destroy(&a->cq_cv); pthread_mutex_destroy(&a->cq_mu);
+        free(objmap_del(a->handle[0]));
+        free(a->render_tt);
+        memset(a, 0, sizeof *a);
+    }
+    pthread_mutex_unlock(&g_ar_mu);
+    return 1;
+}
+#endif
 
 // DeviceSink input mix buffers → int16 stereo. The command ID is 0x13 in SDK 16; SDK 20 inserted a command before it, making it 0x14 (written at sdk+0x233f44); SDK 8 (Link's Awakening)
 //   has four fewer commands before it, making it 0x10. The layout is the same in all three: 0x148 bytes, +0x20 device name ("MainAudioOut"), +0x128 upsample buffer, +0x130 input count,

@@ -8,18 +8,47 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <malloc/malloc.h>
+#include <mach/mach.h>
+#include <assert.h>
 static _Atomic long g_live_blocks, g_live_bytes, g_total_bytes;
 static void *t_calloc(size_t n, size_t sz) { void *p = calloc(n, sz); atomic_fetch_add(&g_live_blocks, 1); atomic_fetch_add(&g_live_bytes, (long)(n * sz)); atomic_fetch_add(&g_total_bytes, (long)(n * sz)); return p; }
 static _Atomic long g_freed_req;   // number of frees
 static void t_free(void *p) { if (!p) return; atomic_fetch_sub(&g_live_blocks, 1); atomic_fetch_add(&g_freed_req, 1); free(p); }
+static void *t_malloc(size_t sz) { return t_calloc(1, sz); }
 #define calloc t_calloc
+#define malloc t_malloc
 #define free t_free
+#define DM_TEST_GATE_RETIRE 1
 #include "../thread.c"
 #undef calloc
+#undef malloc
 #undef free
 
 pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
-uint64_t dm_gate_top[1024]; const uint8_t dm_gate_stubs[16 * 1024];   // entry.S's gate tables (guest_gate_stack, which this test does not call)
+_Alignas(4096) uint64_t dm_gate_top[1024]; const uint8_t dm_gate_stubs[16 * 1024];
+static unsigned guest_alive;
+unsigned dm_guest_pthreads_alive(void) { return guest_alive; }
+
+static void *map_gate(void *arg) {
+    guest_gate_stack(0);
+    unsigned k = (unsigned)(uintptr_t)pthread_getspecific(g_keygslot) - 1;
+    *(void **)arg = (void *)(uintptr_t)(dm_gate_top[k] - 16384);
+    return NULL;
+}
+static void gate_lifetime(void) {
+    void *tail;
+    pthread_t t;
+    guest_alive = 1;
+    assert(!pthread_create(&t, NULL, map_gate, &tail));
+    assert(!pthread_join(t, NULL));
+    assert(g_gate_retired && !dm_guest_gate_release_drained());
+    uint64_t probe;
+    vm_size_t got;
+    assert(!vm_read_overwrite(mach_task_self(), (vm_address_t)tail, sizeof probe, (vm_address_t)&probe, &got) && got == sizeof probe);
+    guest_alive = 0;
+    assert(dm_guest_gate_release_drained() && !g_gate_retired);
+    assert(vm_read_overwrite(mach_task_self(), (vm_address_t)tail, sizeof probe, (vm_address_t)&probe, &got) != KERN_SUCCESS);
+}
 
 static int fails, checks;
 #define EXPECT(name, want, got) do { long w_ = (long)(want), g_ = (long)(got); checks++; printf("%-46s expected %-8ld → got %-8ld %s\n", name, w_, g_, w_ == g_ ? "✓" : "✗"); if (w_ != g_) fails++; } while (0)
@@ -32,5 +61,7 @@ int main(void) {
     EXPECT("bytes requested by 200 threads (200 × 9744)", 1948800, atomic_load(&g_total_bytes));
     EXPECT("blocks still not freed after all exited", 0, atomic_load(&g_live_blocks));
     EXPECT("free calls (3 blocks per thread)", 600, atomic_load(&g_freed_req));
+    gate_lifetime();
+    EXPECT("all retired stack tracking records freed", 0, atomic_load(&g_live_blocks));
     printf("t_thread_leak: %d checks, %d failed\n", checks, fails); return fails != 0;
 }

@@ -4,6 +4,7 @@
 #include "../hle_thread.c"
 #include <assert.h>
 #include <mach-o/getsect.h>
+#include <dispatch/dispatch.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -12,6 +13,7 @@ static void *(*jobs[32])(void *);
 static void *args[32];
 static int njobs, sleeps, observed_signal;
 static uint64_t clock_ns;
+static dispatch_semaphore_t real_wait;
 typedef struct { uint32_t wh, rh; } test_event;
 static test_event *observe;
 static void destroy_event(test_event *ev);
@@ -32,15 +34,23 @@ static int test_sleep(const struct timespec *ts, struct timespec *left) {
     clock_ns += (uint64_t)ts->tv_sec * 1000000000ull + ts->tv_nsec;
     return 0;
 }
+static int test_wait_relative(pthread_cond_t *cv, pthread_mutex_t *mu, const struct timespec *ts) {
+    if (real_wait) {
+        dispatch_semaphore_signal(real_wait);
+        return pthread_cond_timedwait_relative_np(cv, mu, ts);
+    }
+    return test_sleep(ts, NULL);
+}
 #define pthread_create test_create
 #define pthread_detach test_detach
-#define nanosleep test_sleep
+#define pthread_cond_timedwait_relative_np test_wait_relative
 #include "../hle_sdk16.c"
 #undef pthread_create
 #undef pthread_detach
-#undef nanosleep
+#undef pthread_cond_timedwait_relative_np
 void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop stand-ins hold the game out of focus
 void dm_applet_leave(void) {}
+void dm_oe_wake_teardown(void) {}
 
 struct dm_flags g_flag;
 module_t *g_mod;
@@ -118,6 +128,21 @@ static void rebind(void) {
     for (int i = 0; i < njobs; i++) run_job(i);
     assert(observed_signal);
 }
+static void stop_vsync_worker(void) {
+    test_event ev = {0};
+    setenv("DM_VSYNC_HZ", "0.025", 1);  // A long fallback period must not slow teardown.
+    real_wait = dispatch_semaphore_create(0);
+    assert(!h_vi_VsyncEvent(&ev, NULL) && njobs == 1);
+    pthread_t thread;
+    assert(!pthread_create(&thread, NULL, jobs[0], args[0]));
+    assert(!dispatch_semaphore_wait(real_wait, dispatch_time(DISPATCH_TIME_NOW, 1000000000)));
+    dm_vsync_stop_all();
+    assert(!g_vs_workers && !g_vs_events);
+    assert(!pthread_join(thread, NULL));
+    assert(!h_vi_VsyncEvent(&ev, NULL) && njobs == 1);
+    destroy_event(&ev);
+    dispatch_release(real_wait);
+}
 static void host_signal(void) {
     test_event ev = {0}; hle_bind_system_event(&ev, 0);
     void *guest = pthread_getspecific(g_keythr); pthread_setspecific(g_keythr, NULL);
@@ -182,8 +207,8 @@ static void purchased_event(void) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     struct rlimit lim = {0, 0}; setrlimit(RLIMIT_CORE, &lim);
-    void (*tests[])(void) = {duplicate, capacity, reuse, rebind, host_signal, copied_read_end, purchased_event};
-    const char *names[] = {"duplicate vi registration", "rapid vi event replacement", "storage and handle reuse by another service", "vi rebind at reused storage", "host skip and guest lazy binding", "copied read end of a bound event", "offline purchased-item watcher"};
+    void (*tests[])(void) = {duplicate, capacity, reuse, rebind, stop_vsync_worker, host_signal, copied_read_end, purchased_event};
+    const char *names[] = {"duplicate vi registration", "rapid vi event replacement", "storage and handle reuse by another service", "vi rebind at reused storage", "wake and drain sleeping vi worker", "host skip and guest lazy binding", "copied read end of a bound event", "offline purchased-item watcher"};
     int failed = 0;
     for (unsigned i = 0; i < sizeof tests / sizeof *tests; i++) {
         pid_t pid = fork(); assert(pid >= 0);

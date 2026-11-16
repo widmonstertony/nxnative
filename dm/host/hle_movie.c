@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#include <TargetConditionals.h>
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
 #include "hle_movie_avc.h"   // H.264 on VideoToolbox
@@ -67,7 +68,8 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "movie demuxer: the host doe
 #define MD_FMT_PCM16 1
 #define MD_PCM_CAP (8192 * 8 * 2)   // bytes per audio output: a Vorbis packet gives at most 4096 samples per channel (blocksize 8192), 8 channels at most
 
-typedef struct {
+typedef struct mdec {
+    struct mdec *next;
     pthread_mutex_t mu;                          // guards the queues and slots below
     int type, fmt, mode, nout;                   // nout: output slots, MD_NOUT_VIDEO for video, MD_NOUT_AAC for AAC, MD_NOUT for Vorbis (see the constructor)
     int out_align;                               // SDK 3's GetOutputBufferSize puts an alignment in its second output where later SDKs put the mode; 0 = the mode (h_movie_Decoder3)
@@ -214,11 +216,17 @@ static void md_event(mdec_t *d, int i) {   // 0 input 1 output 2 format 3 error
 void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size);
 void dm_host_lock(pthread_mutex_t *m);   // hle_thread.c
 static pthread_mutex_t g_dfmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_dfcv = PTHREAD_COND_INITIALIZER;
-static struct { void *d; int ev; uint64_t due; } g_dfq[64]; static int g_ndfq, g_dfthr;
+static struct { void *d; int ev; uint64_t due; } g_dfq[64]; static int g_ndfq, g_df_started, g_df_stop;
+static void *g_df_thread;
+static mdec_t *g_md_live;  // g_dfmu
 static void md_defer_body(void *arg);
 static void md_defer_at(void *d, int ev, uint64_t due) {
     dm_host_lock(&g_dfmu);
-    if (!g_dfthr) { g_dfthr = 1; dm_guest_thread_spawn(md_defer_body, NULL, 16, 64 << 10); }
+    if (g_df_stop) { pthread_mutex_unlock(&g_dfmu); return; }
+    if (!g_df_started) {
+        g_df_started = 1;
+        g_df_thread = dm_guest_thread_spawn(md_defer_body, NULL, 16, 64 << 10);
+    }
     for (int i = 0; i < g_ndfq; i++) if (g_dfq[i].d == d && g_dfq[i].ev == ev && g_dfq[i].due <= due) { pthread_mutex_unlock(&g_dfmu); return; }   // already due by then
     if (g_ndfq < 64) g_dfq[g_ndfq++] = (__typeof__(g_dfq[0])){d, ev, due};
     else LOG("[RED] movie: deferred event queue full, dropping one");
@@ -234,7 +242,7 @@ static void md_defer_drop(void *d) {
 static void md_defer_body(void *arg) {
     (void)arg;
     dm_host_lock(&g_dfmu);
-    for (;;) {
+    while (!g_df_stop) {
         uint64_t now = now_ns(), next = 0; int k = -1;
         for (int i = 0; i < g_ndfq && k < 0; i++) { if (g_dfq[i].due <= now) k = i; else if (!next || g_dfq[i].due < next) next = g_dfq[i].due; }
         if (k >= 0) {
@@ -246,6 +254,17 @@ static void md_defer_body(void *arg) {
         if (!next) pthread_cond_wait(&g_dfcv, &g_dfmu);
         else { uint64_t w = next - now; struct timespec ts = { (time_t)(w / 1000000000u), (long)(w % 1000000000u) }; pthread_cond_timedwait_relative_np(&g_dfcv, &g_dfmu, &ts); }
     }
+    pthread_mutex_unlock(&g_dfmu);
+}
+
+// Stop delivering guest events before the shell starts its pthread drain.
+// A handler already delivering an event owns g_dfmu and finishes first.
+void dm_movie_request_drain(void) {
+    pthread_mutex_lock(&g_dfmu);
+    g_df_stop = 1;
+    g_ndfq = 0;
+    pthread_cond_broadcast(&g_dfcv);
+    pthread_mutex_unlock(&g_dfmu);
 }
 // log the first 12 calls one by one, then every 2^k-th (DM_MOVIE_TRACE=1: every call, with the calling thread and the decoder: Unity drives a movie's audio and video decoders from one thread)
 static int md_trace_all(void) { static int on = -1; if (on < 0) on = getenv("DM_MOVIE_TRACE") != NULL; return on; }
@@ -625,6 +644,9 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
     if (pthread_create(&d->wk, &a, md_worker, d)) die("movie: failed to create the decoder thread");
     pthread_attr_destroy(&a);
+    dm_host_lock(&g_dfmu);
+    d->next = g_md_live; g_md_live = d;
+    pthread_mutex_unlock(&g_dfmu);
     self[1] = d;
     LOG("[movie] decoder %p: type %d output %d mode %d priority %d", (void *)self, type, fmt, mode, prio);
 }
@@ -648,23 +670,50 @@ HLE_FORCE("_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
           void **self, int type, int fmt, int mode) { h_movie_Decoder4(self, type, fmt, mode); }
 HLE_FORCE("_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatE", "movie decoder (SDK 3, base-object constructor): host implementation", void, h_movie_Decoder3_C2,
           void **self, int type, int fmt) { h_movie_Decoder3(self, type, fmt); }
-static void md_free(void **self) {
-    mdec_t *d = md_of(self); if (!d) return;
+static void md_destroy(mdec_t *d, void **owner) {
     // The pump thread first, before its pending signals are dropped, the decoder thread is told to quit and any buffer is freed: a pump still running queues signals for
     // this decoder (md_defer_at), and one queued after the drop would reach the deferred thread after free(d)
     if (d->pk_on) { pthread_mutex_lock(&d->pkm); d->pk_quit = 1; pthread_cond_signal(&d->pkc); pthread_mutex_unlock(&d->pkm); pthread_join(d->pk, NULL); }
     md_defer_drop(d);
     if (!MD_AUDIO(d)) dm_movie_stopped(d);
-    self[1] = NULL;
-    LOG("[movie] decoder %p destroyed: %lu packets in, %lu frames out; decoded %llu packets, average %.2f ms per packet, longest %.2f ms", (void *)self, d->ncall[7], d->ncall[8],
-        (unsigned long long)d->dec_n, d->dec_n ? d->dec_ns / 1e6 / d->dec_n : 0.0, d->dec_max / 1e6);
+    dm_host_lock(&g_dfmu);
+    for (mdec_t **p = &g_md_live; *p; p = &(*p)->next) if (*p == d) { *p = d->next; break; }
+    pthread_mutex_unlock(&g_dfmu);
     dm_host_lock(&d->dmu); md_job(d, MDJ_QUIT); pthread_mutex_unlock(&d->dmu);
     pthread_join(d->wk, NULL);
+    if (owner) {
+        owner[1] = NULL;
+        LOG("[movie] decoder %p destroyed: %lu packets in, %lu frames out; decoded %llu packets, average %.2f ms per packet, longest %.2f ms", (void *)owner, d->ncall[7], d->ncall[8],
+            (unsigned long long)d->dec_n, d->dec_n ? d->dec_ns / 1e6 / d->dec_n : 0.0, d->dec_max / 1e6);
+    }
     for (int i = 0; i < MD_NIN; i++) free(d->in[i]);
     for (int k = 0; k < MD_NOUT; k++) free(d->out[k].frm);
     free(d->bgra); free(d->vhdr[0]); free(d->vhdr[1]); free(d->hold);
     pthread_mutex_destroy(&d->pkm); pthread_cond_destroy(&d->pkc);
     pthread_mutex_destroy(&d->mu); pthread_mutex_destroy(&d->dmu); pthread_mutex_destroy(&d->wmu); pthread_cond_destroy(&d->wcv); free(d);
+}
+static void md_free(void **self) {
+    mdec_t *d = md_of(self); if (!d) return;
+    md_destroy(d, self);
+}
+
+// Caller owns session teardown and has closed guest entry points before this
+// zero-thread check. Native pump/codec threads may still be running: join
+// both before freeing frame buffers. The guest stack is released later with
+// the session's address space, not by free().
+int dm_movie_release_drained(void) {
+    pthread_mutex_lock(&g_dfmu);
+    int requested = g_df_stop;
+    pthread_mutex_unlock(&g_dfmu);
+    if (!requested) return 0;
+#if TARGET_OS_IOS || defined(DM_TEST_MOVIE_EXIT_WATCH)
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+#endif
+    while (g_md_live) md_destroy(g_md_live, NULL);
+    free(g_df_thread);  // host metadata, not the guest stack
+    g_df_thread = NULL;
+    return 1;
 }
 HLE_FORCE("_ZN5movie7DecoderD2Ev", "movie decoder destructor: frees the host object", void, h_movie_DecD2, void **self) { md_free(self); }
 // complete-object destructor (D1): Metroid Dread calls it directly (main+0x225a08); without the take-over the SDK destroys the host object as a DecoderImpl and crashes
@@ -717,6 +766,21 @@ HLE_FORCE("_ZN5movie7Decoder5StartEv", "movie decoder start: all inputs empty, n
 static void md_reset(mdec_t *d, int close) {
     dm_host_lock(&d->dmu);   // wait for the packet being decoded
     if (close) md_job(d, MDJ_CLOSE);
+    else {
+        // Flush is a source discontinuity, not just an empty output queue.
+        // Do this while dmu excludes decoding the first packet after the seek.
+        if (d->aac) {
+            OSStatus st = AudioConverterReset(d->aac);
+            if (st) {
+                LOG("[RED] movie: AAC flush failed (AudioToolbox %d), reopening the converter", (int)st);
+                AudioConverterDispose(d->aac); d->aac = NULL;
+            }
+            d->aac_pkt = NULL; d->aac_pkt_n = 0;
+        }
+        // stb_vorbis_flush_pushdata enters page-search mode; our demuxer feeds
+        // one newly constructed page per packet, so reopen from csd instead.
+        if (d->vb) { stb_vorbis_close(d->vb); d->vb = NULL; }
+    }
     if (d->avc) mavc_drop(d->avc);   // H.264 pictures waiting for their turn belong to the old position
     dm_host_mutex_lock(&d->mu);
     // Every input goes back to the free list, as with MediaCodec, but one the client holds may still be sent: Big Brain Academy: Brain vs. Brain's event thread acquires inputs while its
@@ -746,9 +810,6 @@ HLE_FORCE("_ZN5movie7Decoder5ResetEv", "movie decoder reset", int, h_movie_Reset
 HLE_FORCE("_ZN5movie7Decoder5FlushEv", "movie decoder flush: all inputs and outputs returned", int, h_movie_Flush, void **self) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     MD_TRACE(d, 5, "Flush"); md_defer_drop(d); md_reset(d, 0);
-    // A seek: start the overlap afresh. The decoder is closed and the next packet opens it again from the headers (md_vorbis_open). stb_vorbis_flush_pushdata is not used: it puts the decoder into its page search mode,
-    // and the packets md_vorbis hands it after that (one whole page per call) never gave a sample again (Smash: the opening movie lost its sound for good after the first Flush; t_movie_vpx)
-    if (d->vb) { dm_host_lock(&d->dmu); stb_vorbis_close(d->vb); d->vb = NULL; pthread_mutex_unlock(&d->dmu); }
     return 0;
 }
 HLE_FORCE("_ZN5movie7Decoder23AcquireInputBufferIndexEPiS1_", "movie decoder: acquire a free input index", int, h_movie_AcqIn, void **self, int *idx, int *left) {
@@ -889,7 +950,7 @@ HLE_FORCE("_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_", "movie decoder: output
     return 0;
 }
 // Write one frame into the client buffer: the decoded picture, or a black frame (video range Y 16, UV 128) when there is none (an end-of-stream packet); a client texture keeps its last frame then
-// Native texture mode: the client Buffer's data pointer is the NVNtexture object itself (capacity given as 8; Metroid Dread main+0x226c98: the texture object embedded at +0x18 of a texture pool entry), plus the NVN device and a sync object (SetNvnDev / SetNvnSync).
+// Native texture mode: the client Buffer's data pointer is the NVNtexture object itself (capacity is not a byte extent; Metroid Dread gives 8, MK11 gives 0; Metroid Dread main+0x226c98: the texture object embedded at +0x18 of a texture pool entry), plus the NVN device and a sync object (SetNvnDev / SetNvnSync).
 // In the SDK, NnCodecConsumer draws the decoded frame into that texture on the GPU and signals the sync when done; the host writes the texture storage on the CPU (as WriteTexels; the replay layer re-uploads dirty pages), and the sync counts as done once written
 int nvn_host_write_texture(const void *nvntex, const void *src, int w, int h, size_t row, int *tw, int *th);
 int nvn_host_signal_sync(void *nvnsync);
@@ -909,8 +970,11 @@ static int md_rendered(mdec_t *d, int i) {
 static int md_out_tex(mdec_t *d, int i, void *buf) {
     // SDK 4's Buffer has no sync object (Dark Souls Remastered's subsdk0 exports no GetNvnSync): the game reads the texture once GetOutputBuffer returns, which the CPU write already satisfies
     static int sync_looked; if (!sync_looked) { G.nvn_sync = guest_sym("_ZNK5movie6Buffer10GetNvnSyncEv"); sync_looked = 1; }
-    uint8_t *p = G.data(buf); size_t cap = G.cap(buf);
-    if (!p || cap < 8) { LOG("[RED] movie: client buffer in native-texture mode is %zu bytes, needs 8 (a texture object)", cap); return 0x100b; }
+    // Native output is an opaque texture object, not a byte buffer. MK11's
+    // NX64Render_AsyncTexture::Internal_CreateRHI passes its texture and capacity
+    // zero to SetDataAndCapacity; the SDK consumer uses the pointer, not Capacity.
+    uint8_t *p = G.data(buf);
+    if (!p) { LOG("[RED] movie: client buffer in native-texture mode has no texture object"); return 0x100b; }
     void *tex = p; int tw = 0, th = 0, f = nvn_host_write_texture(tex, NULL, 0, 0, 0, &tw, &th);
     if (f < 0) { LOG("[RED] movie: buffer data %p in native-texture mode is not a texture object", tex); return 0x100b; }
     int bgr = f >= 0x99 && f <= 0x9C;   // BGRX8, BGRA8 and their sRGB forms (TRIANGLE STRATEGY): the SDK's consumer draws into the texture on the GPU, so the bytes follow its format

@@ -12,6 +12,7 @@ typedef struct {
 static TonTonFrameworkSnapshot tonton_snapshots[64];
 static unsigned tonton_snapshot_count;
 static TonTonFrameworkSnapshot *tonton_active_snapshot;
+static uintptr_t tonton_launch_serial, tonton_active_serial;
 static UIWindow *__weak tonton_return_window;
 static UIViewController *tonton_return_library;
 static dispatch_block_t tonton_did_return;
@@ -57,10 +58,14 @@ static TonTonFrameworkSnapshot *TonTonCaptureFramework(const void *image) {
 // The engine calls this only after save flush and complete teardown, on main.
 // Never suspend/restore a running guest or unload its Objective-C classes.
 static void TonTonIndependentReturned(void *context) {
-    (void)context;
+    uintptr_t serial = (uintptr_t)context;
     dispatch_block_t finished = ^{
+        // An old engine can post another completion while its menu is being
+        // dismissed. Never let that callback restore the next game's image.
+        if (!serial || serial != tonton_active_serial) return;
         TonTonFrameworkSnapshot *snapshot = tonton_active_snapshot;
         if (!snapshot) return;
+        tonton_active_serial = 0;
         tonton_active_snapshot = NULL;
         for (unsigned i = 0; i < 2; i++) dm_seg_snap_restore(&snapshot->segments[i]);
         UIWindow *window = tonton_return_window;
@@ -93,15 +98,18 @@ static BOOL TonTonPrepareIndependentReturn(TonTonGameHost host, const void *imag
     if (tonton_active_snapshot || !window.rootViewController) return NO;
     TonTonFrameworkSnapshot *snapshot = TonTonCaptureFramework(image);
     if (!snapshot) return NO;
+    if (!++tonton_launch_serial) ++tonton_launch_serial;
+    tonton_active_serial = tonton_launch_serial;
     tonton_active_snapshot = snapshot;
     tonton_return_window = window;
     tonton_return_library = window.rootViewController;
     tonton_did_return = [returned copy];
-    host.setReturn(TonTonIndependentReturned, NULL);
+    host.setReturn(TonTonIndependentReturned, (void *)tonton_active_serial);
     return YES;
 }
 
 static void TonTonAbandonIndependentReturn(void) {
+    tonton_active_serial = 0;
     tonton_active_snapshot = NULL;
     tonton_return_window = nil;
     tonton_return_library = nil;

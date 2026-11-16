@@ -10,7 +10,7 @@
 // then {"SFCI", version, command, token} and the arguments. The response is the same with {u32 objects, 3 × u32} and {"SFCO", version, result, token}
 #include "hle.h"
 #include <mach-o/getsect.h>
-#include <mach-o/ldsyms.h>
+#include "host_image.h"
 #include <pthread.h>
 
 #define SF_H0 0xd0000u   // session handles: outside the kernel handle table (0x1000 + slot, 4096 slots, hle_thread.c)
@@ -23,7 +23,7 @@ static pthread_mutex_t g_sf_mu = PTHREAD_MUTEX_INITIALIZER;
 // The host schedules no alarms, so zeroed output is its answer: no alarms listed, a registration that never fires (ID 0), a parameter of 0 bytes
 // The services other files serve (SF_SERVICE, hle.h): audren:u (hle_audren_sv.c)
 static const sf_service_ent *sf_registered(unsigned long *n) {
-    unsigned long sz = 0; const sf_service_ent *e = (const sf_service_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swsf", &sz);
+    unsigned long sz = 0; const sf_service_ent *e = (const sf_service_ent *)getsectiondata(DM_HOST_IMAGE, "__DATA", "swsf", &sz);
     *n = e ? sz / sizeof *e : 0; return e;
 }
 
@@ -41,6 +41,24 @@ static uint32_t sf_new(const char *name, int domain, sf_answer answer, void *ctx
     return SF_H0 + i;
 }
 uint32_t sf_session(const char *name, sf_answer answer, void *ctx, void (*close)(void *)) { return sf_new(name, 0, answer, ctx, close); }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+// Call only after the owner's service-specific worker fences. An on-close
+// callback may hold g_sf_mu indirectly, so detach it before calling.
+int dm_sf_classic_close_all(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    for (unsigned i = 0; i < SF_MAX; i++) {
+        pthread_mutex_lock(&g_sf_mu);
+        void (*close)(void *) = g_sf[i].used ? g_sf[i].close : NULL;
+        void *ctx = g_sf[i].ctx;
+        memset(&g_sf[i], 0, sizeof g_sf[i]);
+        pthread_mutex_unlock(&g_sf_mu);
+        if (close) close(ctx);
+    }
+    return 1;
+}
+#endif
 
 // The Switch 2's camera (a USB camera, for GameChat's video). nn::camera::sdk::CreateCameraContext asks the graphics system's user session (gsv) for a session to the camera service and
 // gives it to the caller as a UniqueNativeHandle (a 32-bit handle; SDK 22.2.0 sdk+0x2c42c0 writes it), with 0x3af3 when the SDK has no gsv session, which the host never opens. The game then

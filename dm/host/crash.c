@@ -258,6 +258,28 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     if (g_dump_hook) g_dump_hook();
     _exit(128 + sig);
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static const int shelf_signals[] = {SIGALRM, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT};
+static struct sigaction g_shelf_prior[sizeof shelf_signals / sizeof shelf_signals[0]];
+static unsigned g_shelf_owned_signals;
+int dm_host_classic_embedded(void);
+
+int dm_crash_classic_restore(void) {
+    int ok = 1;
+    for (unsigned i = 0; i < sizeof shelf_signals / sizeof shelf_signals[0]; i++) {
+        unsigned bit = 1u << i;
+        if (!(g_shelf_owned_signals & bit)) continue;
+        struct sigaction live;
+        if (sigaction(shelf_signals[i], NULL, &live)) { ok = 0; continue; }
+        // Respect a handler that the containing app has changed since boot.
+        if ((live.sa_flags & SA_SIGINFO) && live.sa_sigaction == on_crash &&
+            sigaction(shelf_signals[i], &g_shelf_prior[i], NULL)) { ok = 0; continue; }
+        g_shelf_owned_signals &= ~bit;
+    }
+    if (ok) { g_dump_hook = NULL; g_wait_dump = NULL; }
+    return ok;
+}
+#endif
 // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)
 // The alternate stack is released when the thread exits: the pthread key destructor is called at thread exit (disable the alternate stack first, then free). The game frequently starts short-lived threads, and without releasing each one leaks 64 KiB.
 #if TARGET_OS_TV
@@ -268,7 +290,18 @@ void crash_thread_init(void) {}
 static pthread_key_t g_altstack_key;
 static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
 static void altstack_free(void *p) { stack_t off = {.ss_flags = SS_DISABLE}; sigaltstack(&off, 0); free(p); }
-static void altstack_key_init(void) { if (pthread_key_create(&g_altstack_key, altstack_free)) die("altstack key"); }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static int g_altstack_key_ready;
+void dm_crash_classic_drop_tls_key(void) {
+    if (g_altstack_key_ready) { pthread_key_delete(g_altstack_key); g_altstack_key_ready = 0; }
+}
+#endif
+static void altstack_key_init(void) {
+    if (pthread_key_create(&g_altstack_key, altstack_free)) die("altstack key");
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    g_altstack_key_ready = 1;
+#endif
+}
 void crash_thread_init(void) {
     pthread_once(&g_altstack_once, altstack_key_init);
     if (pthread_getspecific(g_altstack_key)) return;                 // Repeated calls on the same thread do not allocate again
@@ -279,6 +312,15 @@ void crash_thread_init(void) {
 void crash_install(void) {
     crash_thread_init();
     struct sigaction sa = {.sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_ONSTACK};
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    // The app owns process timers. Never create an independent alarm or
+    // fatal watchdog in an engine that will later hand control back to it.
+    if (dm_host_classic_embedded()) {
+        for (unsigned i = 1; i < sizeof shelf_signals / sizeof shelf_signals[0]; i++)
+            if (!sigaction(shelf_signals[i], &sa, &g_shelf_prior[i])) g_shelf_owned_signals |= 1u << i;
+        return;
+    }
+#endif
     sigaction(SIGALRM, &sa, 0);
     // Both watchdogs are turned on only when a test explicitly sets DM_WATCH / DM_WATCH_STALL: the product (the player launches from the desktop, no environment variables) turns on neither.
     // Found by reading the code: iOS main.m did setenv DM_WATCH=30 by default → the player's launch was killed by SIGALRM at 30 s; the no-progress watchdog defaulted to 15 s → the pause menu (ticks stopped) was killed at 15 s

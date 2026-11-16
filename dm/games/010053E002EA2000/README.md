@@ -18,7 +18,14 @@ preserves their guards and locks. The Metal 4 and iPadOS 16.1 frameworks reuse
 the rewritten modules and their existing shader chains.
 
 The player confirmed that Air 60.90 reaches the title or game after the
-correction. The independent iPadOS 16.1 framework was relinked against its
-original shader chain and the Chinese game image was verified and staged on
-the M2. Registration in the existing iPad Gamebox and gameplay validation are
-pending.
+correction. On the M2, 60.109 registered the verified game image in the
+existing Gamebox and read its 619-entry shader archive, but crashed as the
+classic Metal backend queried `minimumLinearTextureAlignmentForPixelFormat:`
+for a depth/stencil target. The iPadOS 16.1 framework in 60.110 keeps these
+formats out of both linear texture paths and reuses the same shader chain.
+
+On November 16, the M2 running iPadOS 16.1 launched 60.110 from the existing
+Gamebox and displayed the title menu. The update checks found the same game
+file identities and save digests before and after installation. This check
+ended at the title menu; gameplay, language selection and return to the
+shelf were not verified.

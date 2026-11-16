@@ -73,7 +73,15 @@ static void guest_main(void) {
     { void dm_guest_spawn_selftest(void); dm_guest_spawn_selftest(); }   // DM_GUEST_SPAWN_TEST self-test of host-created guest threads (hle_guestthread.c)
     { void dm_oodle_serve_maybe(int); dm_oodle_serve_maybe(1); }   // DM_OODLE_SERVE with a decoder that needs the game's malloc (LZ5, hle_oodle.c)
     { void dm_oodle_job_maybe(void); dm_oodle_job_maybe(); }   // DM_OODLE_JOB: decode a job file with the game's own Oodle and exit (hle_oodle.c, for the offline shader tools)
-    LOG(">>> nnMain"); ((fn0)req("nnMain"))();
+    LOG(">>> nnMain");
+#if TARGET_OS_IOS
+    void dm_guest_main_entered(void), dm_guest_call_main(fn0 entry);
+    fn0 entry = (fn0)req("nnMain");
+    dm_guest_main_entered();
+    dm_guest_call_main(entry);
+#else
+    ((fn0)req("nnMain"))();
+#endif
     LOG("nnMain returned");
 }
 
@@ -140,9 +148,9 @@ static void host_preload(int argc, char **argv) {
     flags_init();
     { void dm_diag_samplers_start(void); dm_diag_samplers_start(); }   // DM_MEMSTAT / DM_THRCPU (memstat.m): after the iOS front end has set the env files' switches
     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- game arguments...]");
-    // Time zone: the game converts absolute time to local time along two paths, both ending in the host libc -- nn::time::ToCalendarTime (hle_time.c, localtime_r) and the guest libc's
-    // localtime_r / mktime (hle_table.c wires them straight to the host). So only when the host follows the system time zone do the original game's screens (chronicle discovery time etc.) show this machine's time.
-    // Only deterministic comparison (DM_FIXED_TIME) pins it to UTC: the same replay must convert to the same calendar time on this machine (UTC+8) and on the second Mac (UTC+9)
+    // Time zone: a game gets local time from nn::time (ToCalendarTime / ToPosixTime, hle_time.c), which converts with the host's zone, so its screens show this machine's time.
+    // The guest C library's localtime / mktime stay UTC, as on a Switch. Only deterministic comparison (DM_FIXED_TIME) pins the host to UTC: the same replay must convert to the same
+    // calendar time on this machine (UTC+8) and on the second Mac (UTC+9)
     if (getenv("DM_FIXED_TIME")) setenv("TZ", "UTC", 1);
     // Open file limit: the soft limit starts at 256 on iOS (and in a default macOS shell), while the game's file handles, the RomFS archives, save transactions and Metal caches share it. Raise it to 4096 (as far as the hard limit allows)
     struct rlimit rl; if (!getrlimit(RLIMIT_NOFILE, &rl) && rl.rlim_cur < 4096) {
@@ -164,7 +172,11 @@ static void host_preload(int argc, char **argv) {
         if (pthread_create(&th, NULL, keyrace_thread, NULL)) die("DM_TEST_KEYRACE cannot start its thread");
         pthread_detach(th);
     }
-    { void dm_term_install(void); dm_term_install(); }   // SIGTERM graceful exit (hle_lifecycle.c)
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    int dm_host_classic_embedded(void);
+    if (!dm_host_classic_embedded())
+#endif
+    { void dm_term_install(void); dm_term_install(); }   // Standalone SIGTERM graceful exit; the shelf app owns its process.
     { void crash_set_dump_hook(void (*)(void)); void svc_thread_dump(void); crash_set_dump_hook(svc_thread_dump); }   // Dump guest thread state on a crash
     const struct dm_profile *prof = dm_profile();   // the game this process runs: the DM_PROFILE file, else the compiled profile
     const char *names[argc + DM_PROF_MAX_MOD]; int n = 0;
@@ -193,6 +205,15 @@ static void host_preload(int argc, char **argv) {
     { void dm_ue_malloc_install(void); dm_ue_malloc_install(); }   // Unreal's allocator on a host malloc zone, for the builds whose constructor call is cut (hle_uemalloc.c)
 }
 static struct { int argc; char **argv; pthread_t th; _Atomic int started; } g_pre;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+void dm_host_classic_release_preload(void) {
+    // The game pthread has joined its loader and all guest users are gone.
+    for (int i = 0; i < g_pre.argc; i++) free(g_pre.argv[i]);
+    free(g_pre.argv);
+    g_pre.argv = NULL;
+    g_pre.argc = 0;
+}
+#endif
 static void *preload_thread(void *a) { (void)a; host_preload(g_pre.argc, g_pre.argv); return NULL; }
 static void *keyrace_thread(void *unused) {
     (void)unused;
@@ -208,6 +229,7 @@ void dm_host_preload_start(int argc, char **argv) {
     for (int i = 0; i < argc; i++) g_pre.argv[i] = strdup(argv[i]);
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8 << 20);
     if (pthread_create(&g_pre.th, &a, preload_thread, NULL)) die("dm_host_preload_start: cannot start the thread");
+    pthread_attr_destroy(&a);
 }
 int main(int argc, char **argv) {
 #if TARGET_OS_OSX

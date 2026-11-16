@@ -1,0 +1,54 @@
+--- a/dm/ios/Sources/main.m
++++ b/dm/ios/Sources/main.m
+@@ -21,6 +21,7 @@
+ #ifdef DM_LIBRARY_HOST
+ #import "../LibraryApp/Sources/LibraryRoot.h"
+ #import "../LibraryApp/Sources/LibraryFramework.h"
++#import "IndependentGameLifecycle.h"
+ #ifdef DM_WEB_RUNTIME
+ #import "../Engines/TonTonWebRuntime.h"
+ #endif
+@@ -423,14 +424,33 @@
+             return;
+         }
+ #endif
++        NSDictionary *libraryEnv = TonTonGameEnvironment();
++        NSString *libraryDirectory = NSFileManager.defaultManager.currentDirectoryPath;
++        const dm_game_profile *profile = dm_profile_find(titleID.UTF8String);
++        void (^releaseSelection)(void) = ^{
++            if (profile) dm_profile_release_selection(profile);
++            g_boot_ok = 0;
++            g_independent_host = (TonTonGameHost){0};
++            g_independent_image = NULL;
++            for (int i = 0; i < g_argc; i++) { free(g_argv[i]); g_argv[i] = NULL; }
++            g_argc = 0;
++            if (libraryDirectory) [NSFileManager.defaultManager changeCurrentDirectoryPath:libraryDirectory];
++            TonTonRestoreGameEnvironment(libraryEnv);
++        };
+         setenv("DM_LIBRARY_GAME_ID",titleID.UTF8String,1);
+         if(!boot_env()){
++            releaseSelection();
+             UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"卡带暂时无法启动" message:@"请检查该游戏的资源是否已完整移入游戏匣。" preferredStyle:UIAlertControllerStyleAlert];
+             [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+             [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];return;
+         }
+         TonTonApplyGlobalSettings(titleID);
+         if (g_independent_host.start) {
++            if (!TonTonPrepareIndependentReturn(g_independent_host, g_independent_image, owner.window, releaseSelection)) {
++                fprintf(stderr, "[RED] boot: cannot capture independent engine restart state\n");
++                releaseSelection();
++                return;
++            }
+             g_independent_host.setCatalog(independent_catalog);
+             const char *error = g_independent_host.start((const char *const *)g_argv, g_argc, g_independent_image);
+             if (error) {
+@@ -439,7 +459,8 @@
+                     message:@"游戏自带引擎未能启动。" preferredStyle:UIAlertControllerStyleAlert];
+                 [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+                 [owner.window.rootViewController presentViewController:alert animated:YES completion:nil];
+-                g_independent_host = (TonTonGameHost){0};
++                TonTonAbandonIndependentReturn();
++                releaseSelection();
+                 return;
+             }
+             g_boot_ok=1;

@@ -1329,7 +1329,15 @@ static int g_susp, g_inflight_api;
 __thread _Atomic int dm_host_work;   // see dm.h (defined here: the graphics unit tests compile this file but not hle_thread.c)
 static void gfx_enter(void) { pthread_mutex_lock(&g_susp_mu); while (g_susp) pthread_cond_wait(&g_susp_cv, &g_susp_mu); g_inflight_api++; pthread_mutex_unlock(&g_susp_mu); dm_host_work++; }
 static void gfx_leave(void) { dm_host_work--; pthread_mutex_lock(&g_susp_mu); g_inflight_api--; pthread_cond_broadcast(&g_susp_cv); pthread_mutex_unlock(&g_susp_mu); }
-void dm_gfx_enter(void) { gfx_enter(); }   // the same gate for the Vulkan layer's submits and presents (dm/gfx/vk)
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static _Atomic int g_non_nvn_backend;
+#endif
+void dm_gfx_enter(void) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    atomic_store(&g_non_nvn_backend, 1);
+#endif
+    gfx_enter();
+}   // the same gate for the Vulkan layer's submits and presents (dm/gfx/vk)
 void dm_gfx_leave(void) { gfx_leave(); }
 __attribute__((weak)) void dm_vk_drain(void) {}   // dm/gfx/vk/hle_vk.m: wait for the Vulkan layer's queue (the graphics unit tests do not link it)
 __attribute__((weak)) void dm_gl_drain(void) {}   // dm/gfx/gl/hle_gl.m: the same for the GL layer
@@ -1341,6 +1349,26 @@ void dm_gfx_suspend(int on) {
     pthread_mutex_unlock(&g_susp_mu);
     if (on) { dm_vk_drain(); dm_gl_drain(); mtl_drain(); LOG("[nvn] graphics suspended: in-flight GPU work drained"); } else LOG("[nvn] graphics resumed");   // the Vulkan and GL queues first: presents on the NVN queue wait for their frames
 }
+// This renderer has no asynchronous pipeline archive write. Its process
+// exit may still allow the in-flight warmup a bounded period to complete.
+void dm_gfx_quit_begin(void) {}
+void dm_gfx_quit(int wait_ms) { if (wait_ms > 0) mtl_warm_wait(wait_ms); }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int dm_gfx_classic_can_stop_for_shell(void) {
+    return !atomic_load(&g_non_nvn_backend);
+}
+int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns) {
+    // A different backend may have submitted work to a different queue.
+    if (!dm_gfx_classic_can_stop_for_shell()) return 0;
+    pthread_mutex_lock(&g_susp_mu);
+    int idle = !g_inflight_api;
+    if (idle) g_susp = 1;
+    pthread_mutex_unlock(&g_susp_mu);
+    if (!idle) return 0;
+    return mtl_classic_gpu_stop(timeout_ns);
+}
+#endif
+
 // One submission at a time: the Metal replay keeps one command buffer and one upload batch for the submission in progress (nvn_mtl.m g_cb). Fire Emblem: Three Houses initializes two queues and
 // submits on both from two threads; the second submission arrived while the first was replaying and the host stopped with "submit re-entered" at the ninth frame. NVN orders work on different queues only
 // through syncs, so replaying the two queues' submissions in lock order is one valid order.
@@ -1998,13 +2026,15 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         int lag = 0; for (int i = 0; i < lag_k; i++) if (o->presents % (uint64_t)lag_n[i] < (uint64_t)lag_run[i]) lag += lag_ms[i];
         if (lag) usleep((useconds_t)lag * 1000);
     }
+    dm_host_mutex_lock(&g_sub_mu);
     gfx_enter();
     uint64_t t0 = now_ns();
-    if (idx >= 0 && idx < o->ntex && idx < 4) {   // enqueue only, return immediately
+    if (idx >= 0 && idx < o->ntex && idx < 4) {
         const tex_t *t = CTX(o->tex[idx]); int lc[4]; const int *crop = present_crop(o->crop, (int)t->d.width, (int)t->d.height, lc);
         nvn_cap_present(t, crop);   // DM_NVN_CAPTURE (nvn_capture.inc)
         o->ticket[idx] = mtl_present(t, present_period(o) / 1e9, crop);
     }
+    pthread_mutex_unlock(&g_sub_mu);
     gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);

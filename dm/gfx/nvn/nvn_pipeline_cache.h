@@ -8,6 +8,9 @@ typedef struct {
 void nvn_cache_snapshot(nvn_cache_status *out);
 void nvn_cache_flush(void); // Worker-thread only; atomic replacement preserves the last good file.
 void nvn_cache_flush_async(void);
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int nvn_cache_stop_for_shell(uint64_t timeout_ns);
+#endif
 #ifdef __OBJC__
 #import <Metal/Metal.h>
 id<MTLRenderPipelineState> nvn_cached_render(id<MTLDevice> device, MTLRenderPipelineDescriptor *desc, NSError **error);
