@@ -27,6 +27,13 @@ FW=-framework Metal -framework MetalFX -framework Foundation -framework IOKit -f
 # Tests that #include nvn_mtl.m link the rest of the NVN layer beside it (hle_nvn.c: memory pools, sparse pools, serials) and the host's large stack, with weak stubs of what they need of the host (t_host_stubs.c)
 MTL_T_DEP=../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(GFX) $(GFX_H)
 MTL_T_SRC=../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX))
+t_rt_unbind: t_rt_unbind.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_unbind.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_rt_unbind
+check_t_rt_unbind: t_rt_unbind
+	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=0 ./t_rt_unbind
+	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=1 ./t_rt_unbind
+	MTL_DEBUG_LAYER=1 DM_NVN_UNBIND_DEFER=0 ./t_rt_unbind
 # The run list: every t_*.c and t_*.m but those in NOT_RUN. `make run` builds them all (in parallel with -j), then runs them one after another, each through its check_
 # target: ./t_x by default, with the environment its RUN_ENV gives it (check_t_x: RUN_ENV = MTL_DEBUG_LAYER=1, beside its build rule), or a check_t_x recipe of its own when it
 # runs several ways. A new test needs its source and its build rule; no list to add it to. NOT_RUN: helpers linked into other tests (t_host_stubs, t_present_rescue_focus, t_gpu_lost_front),
@@ -335,6 +342,9 @@ t_ubp_running: t_ubp_running.m $(MTL_T_DEP)
 .PHONY: check_t_ubp_running
 check_t_ubp_running: t_ubp_running
 	./t_ubp_running
+# CPU only (no Metal device), with AddressSanitizer and UBSan: lookups fill g_ubp_idx up to the bound pend_room keeps (CI runs it). Globals are not instrumented: hle_nvn.c walks its entry table across neighbouring globals
+t_pend_index: t_pend_index.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -fsanitize=address,undefined -mllvm -asan-globals=0 -o $@ t_pend_index.m $(MTL_T_SRC) $(FW)
 t_direct_upload: t_direct_upload.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_direct_upload.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_direct_upload
@@ -575,6 +585,14 @@ check_t_rt_recycle: t_rt_recycle
 	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_rt_recycle
 	DM_NVN_RT_RECYCLE=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
+t_storage_pair: t_storage_pair.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_storage_pair.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_storage_pair
+check_t_storage_pair: t_storage_pair
+	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_storage_pair
+	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_storage_pair
+	DM_NVN_RT_RECYCLE=0 MTL_DEBUG_LAYER=1 ./t_storage_pair
+	DM_NVN_STORAGE_ALIAS=0 MTL_DEBUG_LAYER=1 ./t_storage_pair
 # A game's upscaler drawn by MetalFX (any profile; the profile's upscaler shaders, from its shader map, when it has some); with and without the switch, and on the encoding thread
 t_upscaler_mfx: t_upscaler_mfx.m t_mfx_passes.h $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upscaler_mfx.m $(MTL_T_SRC) $(FW)
@@ -629,12 +647,14 @@ t_vk_fan: t_vk_fan.m ../vk/hle_vk.m $(MTL_T_DEP)
 check_t_vk_fan: RUN_ENV = MTL_DEBUG_LAYER=1
 t_vk_desc: t_vk_desc.m ../vk/hle_vk.m $(MTL_T_DEP)
 	clang $(CFLAGS) -I../../third_party/vulkan-headers/include -fobjc-arc -o $@ t_vk_desc.m $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
-t_gl_imports: t_gl_imports.m ../gl/hle_gl.m ../../host/hle.c ../../host/hle.h $(MTL_T_DEP)
+t_gl_imports: t_gl_imports.m ../gl/hle_gl.m ../gl/gl_aliases.h ../../host/hle.c ../../host/hle.h $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_gl_imports.m ../../host/hle.c $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
-.PHONY: check_t_gl_imports gl-imports
+.PHONY: check_t_gl_imports gl-imports gl-arguments
 check_t_gl_imports: t_gl_imports
 	MTL_DEBUG_LAYER=1 ./t_gl_imports
 	MTL_DEBUG_LAYER=1 ./t_gl_imports --stubs
+gl-arguments: t_gl_imports
+	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 ../../tools/tests/test_gl_shaders.py --fixture "$$work"; MTL_DEBUG_LAYER=1 ./t_gl_imports --fixture "$$work"
 gl-imports: check_t_gl_imports
 check_t_vk_desc: RUN_ENV = MTL_DEBUG_LAYER=1
 # An attachment opened with LOAD_OP_DONT_CARE keeps what the image held, colour, depth and stencil (Re:ZERO's post chain)
@@ -673,6 +693,11 @@ t_rop_round: t_rop_round.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rop_round.m $(MTL_T_SRC) $(FW)
 check_t_rop_round: t_rop_round
 	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 test_dmsh_blend_zero.py --fixture-rop "$$work"; MTL_DEBUG_LAYER=1 ./t_rop_round "$$work"; DM_NVN_ROP_ROUND=0 MTL_DEBUG_LAYER=1 ./t_rop_round "$$work"
+# Typed outputs through the pipeline path (t_typed_outputs.m), with its libraries from test_dmsh_typed.py, on the Metal 4 path and the MTLDevice's
+t_typed_outputs: t_typed_outputs.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_typed_outputs.m $(MTL_T_SRC) $(FW)
+check_t_typed_outputs: t_typed_outputs
+	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 test_dmsh_typed.py --fixture "$$work"; for m in 1 0; do DM_PSO_MTL4=$$m MTL_DEBUG_LAYER=1 ./t_typed_outputs "$$work"; done
 # Logic operations through the replay (t_logic.m), with its shaders from test_dmsh_logic.py
 t_logic: t_logic.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_logic.m $(MTL_T_SRC) $(FW)

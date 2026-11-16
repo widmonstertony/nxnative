@@ -34,7 +34,7 @@
 # Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone 5.x, fonttools and zbic (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, zstd. SPIRV-Cross is the in-repo build. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
 # DM_EXPERIMENTAL_BUILDER=1 with NXB_BIN=<path of nxbuild's nxb binary>: the extraction and the shader split run through nxbuild's binaries where it supports the case, with the same outputs and events; anything else runs as always (nxb_tool).
-import ast, collections, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, signal, struct, subprocess, sys, tempfile, threading, time, types
+import ast, collections, contextlib, ctypes, errno, filecmp, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, signal, struct, subprocess, sys, tempfile, threading, time, types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
 import romfs as rfs
@@ -1674,6 +1674,29 @@ def extract_nup(ex, name, k, base, app, n, marker=None):   # one version of a NU
     return dst
 
 
+def build_sources(repo, game, mods):
+    """How an extraction's shaders are got (profile_guess.py build_sources, from its ExeFS and RomFS and the modules the profile loads), kept beside its RomFS image as RomFS.img.sources
+    while the image (its size and time, as check_formats takes it), the code modules, the module list and the readers are the same: it reads the head of every file of the RomFS,
+    several times over, which was 19 s of every build of Ocarina of Time (186,583 files), the builds that reuse every stage included. A RomFS in a folder is read each time"""
+    exefs, img, memo = game / 'ExeFS', game / 'RomFS.img', game / 'RomFS.img.sources'
+    key = None
+    if img.is_file():
+        st = img.stat()
+        key = fingerprint('sources 1', f'{st.st_size} {st.st_mtime_ns}', ('files', sorted(p for p in exefs.iterdir() if p.is_file())), list(mods),
+                          ('files', python_tool_files(repo, 'dm/games/profile_guess.py', ('dm/games', 'dm/tools', 'dm/gfx/tools'))))
+        try:
+            k, _, text = memo.read_text().partition('\n')
+            if k == key: return {name: tuple(v) for name, v in json.loads(text).items()}
+        except (OSError, ValueError, AttributeError, TypeError): pass
+    src = pg.build_sources(exefs, rfs.source(game), mods)
+    try: text = json.dumps(src) if key and json.loads(json.dumps(src)) == {name: list(v) for name, v in src.items()} else None   # only what reads back as it was
+    except (TypeError, ValueError): text = None   # a value JSON cannot hold: found again each time
+    with contextlib.suppress(OSError):
+        if key and text: atomic_text(memo, key + '\n' + text + '\n')
+        elif key: memo.unlink(missing_ok=True)
+    return src
+
+
 def check_formats(dirs):
     """Each extracted image's files whose bytes do not start as their names promise (romfs_image.format_mismatches: a .zs file that is not a zstd stream) stop the build, as a damaged
     NSP does: a NUP or a dump folder carries no NCA hashes, so this is where its damage shows. ALLOW_DAMAGED lists them and goes on. A NUP of Ocarina of Time held three .zs
@@ -2953,7 +2976,7 @@ def shader_regressions(py, repo, lib_dir, chain, logs):
                      'ALLOW_SHADER_REGRESSIONS = True (--allow-shader-regressions) packs the app without those shaders')
 
 
-def layer_shaders(py, repo, api, name, roots, sh, key, logs, env, mac):
+def layer_shaders(py, repo, api, name, roots, sh, key, logs, env, mac, tool=None):
     """What build_vk_shaders and build_gl_shaders share: dm/gfx/tools/<api>_shaders.py on the roots → sh/<api>/ for the Mac and, unless mac (a Mac-only build), sh/ios/<api>/ for the iPhone.
     Returns the folder the host (DM_MSL_DIR) or build_ipa.sh (MSL_IOS) takes the libraries from. key: the inputs' fingerprint (None never reuses). The iOS libraries' key is sh/ios/<api>.key,
     the Mac's sh/<api>.key, which an iOS build writes too (it builds both), so a Mac-only build is reused after either; an iOS build after a Mac-only one translates again.
@@ -2966,7 +2989,7 @@ def layer_shaders(py, repo, api, name, roots, sh, key, logs, env, mac):
     PROG.set(step='translating')
     rmtree(kmac); rmtree(sh / api)
     if not mac: rmtree(kf); rmtree(ios / api)
-    run([py, repo / f'dm/gfx/tools/{api}_shaders.py', *roots, sh] + ([] if mac else ['--ios', ios]), log, env=dict(env, TMPDIR=env['WORK']))
+    run([py, repo / f'dm/gfx/tools/{tool or api + "_shaders"}.py', *roots, sh] + ([] if mac else ['--ios', ios]), log, env=dict(env, TMPDIR=env['WORK']))
     if not lib.is_file(): raise BuildError(f'no {"Mac" if mac else "iOS"} {name} shader library in {lib.parent}')
     m = re.search(r'macosx: (\d+)' if mac else r'iphoneos: (\d+)', log.read_text(errors='replace'))
     note = f'{int(m.group(1)):,} shaders for the Mac' + ('' if mac else ' and iOS') if m else ''
@@ -2991,7 +3014,13 @@ def build_gl_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, p
     if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (brew install glslang): it compiles an OpenGL game\'s GLSL shaders')
     key = fingerprint(*[('stat' if provisional else 'tree', r) if Path(r).is_dir() else ('files', [r]) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env),
                       ('cmd', ['glslangValidator', '--version']), env=env) if reuse else None
-    return layer_shaders(py, repo, 'gl', 'GL', roots, sh, key, logs, env, mac)
+    classic = not mac and env.get('DM_IOS_RENDERER', 'legacy') == 'legacy'
+    if classic:
+        # Keep old iOS shader tables and keys separate from the new GL ABI.
+        sh = sh / 'legacy-renderer'
+        sh.mkdir(parents=True, exist_ok=True)
+    return layer_shaders(py, repo, 'gl', 'GL', roots, sh, key, logs, env, mac,
+                         tool='gl_shaders_legacy' if classic else None)
 
 
 class IpaWatch:
@@ -3195,8 +3224,13 @@ def mac_pso(py, repo, work, lib, g, gpus, env, logs):
         return None
     if not any(out.glob('*.mtl4a')):   # no pair (a header-only table, #338), or every eligible pair declares function constants (the host specializes them on the device, rest_pairs.tsv)
         PROG.end('no base to bundle'); say('pipeline archive: none (no shader pair, or every eligible one has function constants): the app builds what it needs on its first start'); return None
-    PROG.end(f'{arch}, {amount(tree_size(out)[1], "B")}')
+    PROG.end(f'{arch}, {amount(sum(f.stat().st_size for f in out.iterdir() if f.is_file() and "-prewarm-" not in f.name), "B")}')   # the archives, not the prewarm pipelines an earlier build linked there
     return out
+
+
+def drop_prewarm(pso):   # the prewarm pipelines in an archive folder, with their indexes (.keys) and stamp: an earlier build's, when this one makes none
+    for old in pso.glob('*-prewarm-*'): old.unlink()
+    (pso / 'prewarm.tsv').unlink(missing_ok=True)
 
 
 def mac_prebake(py, repo, work, msl, g, host, pso, env, logs):
@@ -3213,10 +3247,12 @@ def mac_prebake(py, repo, work, msl, g, host, pso, env, logs):
     manifest = g.table('pso_manifest.tsv')
     text = manifest.read_text() if manifest.is_file() else ''
     rows = sum(ln.startswith(('R\t', 'M\t')) for ln in text.splitlines())
-    if not rows: say('prewarm pipelines: none (the profile\'s pso_manifest.tsv has no R or M rows)'); return pso
+    def none(why):   # the app goes without them: none of an earlier build's stay in pso (pso_offline.py leaves an architecture's there)
+        say(why); drop_prewarm(pso); return pso
+    if not rows: return none('prewarm pipelines: none (the profile\'s pso_manifest.tsv has no R or M rows)')
     try: arch = mac_gpu_arch(work, env, logs)
-    except BuildError as e: say(f'[RED] prewarm pipelines: {e}; the app builds them on its first start'); return pso
-    if not (pso / f'{arch}.mtl4a').is_file(): say(f'prewarm pipelines: the pipeline archive is not for this Mac\'s GPU ({arch}): the app builds them on its first start'); return pso
+    except BuildError as e: return none(f'[RED] prewarm pipelines: {e}; the app builds them on its first start')
+    if not (pso / f'{arch}.mtl4a').is_file(): return none(f'prewarm pipelines: the pipeline archive is not for this Mac\'s GPU ({arch}): the app builds them on its first start')
     PROG.add(1); PROG.stage('Prewarm pipelines', step=f'{arch}, {rows:,} rows (host, minutes to hours when its inputs changed)')
     out, stage = work / 'pso/mac-prewarm', work / 'pso/mac-prewarm-work'
     zero = g.get('depth_mode', 'gl') == 'zero'
@@ -3247,19 +3283,23 @@ def mac_prebake(py, repo, work, msl, g, host, pso, env, logs):
                 shutil.rmtree(out, ignore_errors=True)
                 PROG.end('failed, the app is packed without them', warn=True)
                 say(f'[RED] prewarm pipelines: the host\'s prebuild tool failed (see {logs / "pso_prewarm_mac.log"}); the app is packed without them and builds them on its first start (--no-prebake skips this step)')
-                for old in pso.glob('*-prewarm-*'): old.unlink()
-                (pso / 'prewarm.tsv').unlink(missing_ok=True)
+                drop_prewarm(pso)
                 return pso
             (out / 'key').write_text(key + '\n')
             shutil.rmtree(stage, ignore_errors=True)   # the work folder is kept only while a run is unfinished
         if other_gpu_prewarm(repo, out, arch, others, logs, lib if lib.is_dir() else lib.with_name(lib.name + '.img'), env):
             keyf.write_text(f'{key} {",".join(others) or "-"}\n')   # a period left out for a GPU: no key, so the next build tries those GPUs again (this Mac's files are kept)
-    for old in pso.glob('*-prewarm-*'): old.unlink()   # the files and their indexes (.keys)
-    (pso / 'prewarm.tsv').unlink(missing_ok=True)
-    for f in out.iterdir():
-        if f.suffix not in ('.mtl4a', '.keys', '.tsv'): continue   # the pipelines scripts and their libraries stay in the work folder
-        try: os.link(f, pso / f.name)
-        except OSError: shutil.copyfile(f, pso / f.name)
+    # A file pso already holds as this build's (the same file by its link, or on a volume without links a copy of the same bytes) is left as it is: taking a link away and making it
+    # again moves the file's change time, which the app's packer keys the folder's files by, so a build that changed nothing packed the app again and signed its pipeline archive
+    # (5.2 GB for Ocarina of Time: 39 s of a 105 s build)
+    made = {f.name: f for f in out.iterdir() if f.suffix in ('.mtl4a', '.keys', '.tsv')}   # the pipelines scripts and their libraries stay in the work folder
+    for old in [*pso.glob('*-prewarm-*'), pso / 'prewarm.tsv']:   # the files and their indexes (.keys)
+        f = made.get(old.name)
+        if f and old.is_file() and (os.path.samefile(f, old) or (f.stat().st_size == old.stat().st_size and filecmp.cmp(f, old, shallow=False))): del made[old.name]
+        else: old.unlink(missing_ok=True)
+    for name, f in made.items():
+        try: os.link(f, pso / name)
+        except OSError: shutil.copyfile(f, pso / name)
     PROG.end(f'{len(list(out.glob("*.mtl4a")))} files, {amount(sum(f.stat().st_size for f in out.glob("*.mtl4a")), "B")}')
     return pso
 
@@ -3351,9 +3391,7 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
     lib = msl / (f'b-{chain_of(repo)}' if gfx == 'nvn' else 'vk' if gfx == 'vulkan' else 'gl')
     pso = mac_pso(py, repo, work, lib, g, gpus, env, logs) if gfx == 'nvn' and g.table('shader_pairs.tsv').is_file() else None   # a stage of its own, before the app's
     if prebake and pso: pso = mac_prebake(py, repo, work, msl, g, host, pso, env, logs)   # --prebake: a stage of its own, after the archive
-    elif pso:   # what an earlier build with --prebake left (pso_offline.py removes the archives, not their indexes)
-        for old in pso.glob('*-prewarm-*'): old.unlink()
-        (pso / 'prewarm.tsv').unlink(missing_ok=True)
+    elif pso: drop_prewarm(pso)   # what an earlier build with --prebake left
     PROG.stage('Mac app', step='starting')
     # The launcher settings the IPA carries (dm/games/settings.py), without the iPhone's own switches: the app's settings window and Mac front ends show them (docs/frontends.md)
     settings = work / 'app/launcher.json'; settings.parent.mkdir(parents=True, exist_ok=True)
@@ -3714,7 +3752,7 @@ def main(args=None):
     sv = versions if derived else need   # the versions whose files the shaders come from
     game = dirs[pkg_ver]
     # how the shaders are got follows from the packed version's files (profile_guess.py shader_sources): the graphics API, and the shaders made only at run time
-    src = pg.build_sources(game / 'ExeFS', rfs.source(game), g.modules_in(game / 'ExeFS'))
+    src = build_sources(repo, game, g.modules_in(game / 'ExeFS'))
     selected_api = g.get('graphics_api', '')
     if selected_api:
         if selected_api not in ('nvn', 'vulkan', 'gl'): raise BuildError(f'profile graphics_api is invalid: {selected_api}')

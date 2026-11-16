@@ -237,6 +237,12 @@ static GCController *joycon_gc_for_pad(joycon_pad *want, GCController *gone) {
 static void controller_route_haptics(DMController *d, int player) {
     if (d && d->s2) { s2_sink(player,YES); return; }
     s2_sink(player,NO);
+    if (d && d->generic && hidpad_rumbles(d->generic)) {
+        d->generic->sink = player + 1;
+        dm_haptics_apple_set_sink(player,dm_hidpad_rumble);
+        return;
+    }
+    dm_haptics_apple_set_sink(player,NULL);
     if (d && d->device) dm_haptics_apple_output(player,d,^(dm_haptic_state state,float gain) {
         uint8_t bytes[10];
         float left=dm_haptics_apple_controller_intensity(dm_haptics_level(&state.motor[0],1,gain).intensity);
@@ -255,6 +261,7 @@ static void controller_route_haptics(DMController *d, int player) {
 }
 static BOOL controller_has_haptics(DMController *d) {
     if(d->device || d->s2 || d.controller.haptics.supportedLocalities.count) return YES;
+    if(d->generic && hidpad_rumbles(d->generic)) return YES;
     if(d->joycon) return joycon_gc_for_pad(d->joycon,nil).haptics.supportedLocalities.count>0;
     return NO;
 }
@@ -360,11 +367,16 @@ static void controller_publish(DMController *d) {
 }
 // Keep upstream's native and passive Pro motion attached to the same admitted slots as buttons.
 static void controller_pro_changed(void) {
-    int count = 0, player = -1;
-    for (DMController *d in g_devices) if (d.controller && [d.controller.productCategory isEqualToString:@"Switch Pro Controller"]) {
-        count++; player = d->slot < 0 ? -1 : g_merge ? 0 : d->slot;
+    int count[PRO_MODELS] = {0}, players[PRO_MODELS];
+    for (int i = 0; i < PRO_MODELS; i++) players[i] = -1;
+    for (DMController *d in g_devices) if (d.controller) {
+        int model = pro_model_of_category(d.controller.productCategory.UTF8String);
+        if (model >= 0) {
+            count[model]++;
+            players[model] = d->slot < 0 ? -1 : g_merge ? 0 : d->slot;
+        }
     }
-    dm_motion_pro_players(count, player);
+    dm_motion_pro_players(count, players);
 }
 static void controller_attach_motion(DMController *d) {
     if (d.controller && d->slot >= 0 && g_focus && d->gyro_enabled) dm_motion_attach(d.controller, g_merge ? 0 : d->slot);
@@ -536,6 +548,10 @@ static void controller_disconnect(DMController *d) {
     controller_pro_changed();
     d->input = (steam_state){0}; d->quit_buttons=0;
     if (d->s2) s2_sink(g_merge ? 0 : slot, NO);
+    if (d->generic && d->generic->sink) {
+        d->generic->sink = 0;
+        if (!g_merge || g_merge_haptics_source == d) dm_haptics_apple_set_sink(g_merge ? 0 : slot,NULL);
+    }
     if (g_merge) controller_merge_haptics(); else dm_haptics_apple_controller(slot, nil);
     if (d->joycon && !g_merge) {
         dm_joy_set(slot, joycon_side(d->joycon->st.pid), 0, 0, 0);
@@ -551,7 +567,7 @@ static void controller_disconnect(DMController *d) {
 }
 // Generic HID uses the same registry, slot table and shared button map as GC
 // and Triton. Its decoder keeps physical state through focus changes.
-static DMController *controller_for_hid(hid_pad *hid) {
+static DMController *controller_for_hid(const hid_pad *hid) {
     for(DMController *d in g_devices) if(d->generic==hid) return d;
     return nil;
 }
@@ -561,18 +577,29 @@ static int hidpad_first_press(const hid_pad *d) { return !g_merge && (g_press_to
 static void hidpad_read(hid_pad *hid) {
     DMController *d=controller_for_hid(hid); if(!d) return;
     // A twin Pro Controller (pad_hid_mac.h) is read from its report 0x30, any other pad from its HID elements
-    int pro=hid->twin && hidpad_is_pro(hid);
+    int pro=hidpad_full(hid);
     int32_t s[4]; pad_hid_sticks(&hid->st,s);
     if(pro) memcpy(s,hid->pro_s,sizeof s);
     uint32_t buttons=(uint32_t)(pro ? hid->pro_m : pad_hid_buttons(&hid->st));
     d->input=(steam_state){.buttons=buttons,.lx=s[0],.ly=s[1],.rx=s[2],.ry=s[3]};
     if(d->slot<0 && hidpad_first_press(hid) && !buttons) return;
     controller_connect(d); controller_publish(d);
+    int player = hidpad_player(hid);
+    if (player >= 0) {
+        hidpad_lights(hid,player);
+        if (hidpad_rumbles(hid) && !hid->sink) {
+            if (g_merge) controller_merge_haptics(); else controller_route_haptics(d,player);
+        }
+    }
 }
-static void hidpad_motion(hid_pad *hid, const pro_motion_sample *s, int n) {
+static int hidpad_player(const hid_pad *hid) {
+    DMController *d=controller_for_hid(hid);
+    return d && d->slot>=0 ? (g_merge ? 0 : d->slot) : -1;
+}
+static void hidpad_motion(hid_pad *hid, const float acc[3], const float rot[3], uint64_t ns) {
     DMController *d=controller_for_hid(hid);
     if(!d || !g_focus || g_merge || d->slot<0 || !d->gyro_enabled) return;
-    for(int i=0;i<n;i++) dm_motion_set_hid(d->slot,s[i].acc,s[i].rot,s[i].ns);
+    dm_motion_set_hid(d->slot,acc,rot,ns);
 }
 static void hidpad_models_changed(void) { controllers_changed(nil); }
 static void hidpad_attach(hid_pad *hid) {

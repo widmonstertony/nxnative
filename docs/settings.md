@@ -290,7 +290,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 
 | Setting | Variable | Values |
 |---|---|---|
-| Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (Mac, games with `fps_max 120`) |
+| Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (games with `fps_max 120`) |
 | Frame rate (a game shown at every refresh) | `DM_PRESENT_INTERVAL` | `game` 30 fps, `display` 60 fps |
 | Render scale | `DM_RENDER_SCALE` | `0.5` to `1.0` (Hades II: to `3.0`) |
 | Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
