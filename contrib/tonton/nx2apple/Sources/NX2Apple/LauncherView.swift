@@ -59,6 +59,7 @@ struct LauncherView: View {
     @StateObject var padFocus: PadFocus
     @StateObject var row = RowScroller()
     @StateObject var toolsAge: ToolsAge
+    @State private var lastUpdateReportChange: Date?
     @StateObject var verifiedProfiles = VerifiedProfilesTracker()
     @StateObject var signatures = SignatureTracker()
     var signatureExpiry: [UUID: Date] { signatures.expiry }
@@ -298,6 +299,14 @@ struct LauncherView: View {
             refreshArtwork()
             if m.runningTarget != BuildTarget.mac { readSignatures() }
             if performStartupChecks { checkTools() }
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            // The maintenance runner replaces bundles outside BuildRecorder.
+            guard performStartupChecks, let url = TonTonUpdates.reportURL,
+                  let changed = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  changed != lastUpdateReportChange else { return }
+            lastUpdateReportChange = changed
+            checkTools()
         }
         .onChange(of: scenePhase) { phase in
             if phase == .active { library.objectWillChange.send() }

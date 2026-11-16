@@ -169,6 +169,23 @@ final class OlderToolsTests: IsolatedDefaultsTestCase {
         check(age, games: [matching], repo: engine, marks: [matching.id])
     }
 
+    func testRecheckingAfterAnExternalInstallUsesTheReplacementBundle() throws {
+        let (repo, _) = try fixture()
+        try commit(["dm/gfx/nvn/dmsh_chain.h": "#define DMSH_CHAIN \"\(currentChain)\"\n"], in: repo)
+        let game = try macGame("Externally updated", chain: previousChain)
+        let age = ToolsAge()
+        check(age, games: [game], repo: repo, marks: [game.id])
+
+        let plist = URL(fileURLWithPath: game.appPath).appendingPathComponent("Contents/Info.plist")
+        var info = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: plist),
+                                                                       options: [], format: nil) as? [String: String])
+        info["DMChain"] = currentChain
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: plist, options: .atomic)
+
+        check(age, games: [game], repo: repo, marks: [])
+    }
+
     func testShaderChainAndGitMarksAreCombined() throws {
         let (repo, built) = try fixture()
         try commit(["dm/host/hle_fs.c": "two", "dm/gfx/nvn/dmsh_chain.h": "#define DMSH_CHAIN \"\(currentChain)\"\n"], in: repo)

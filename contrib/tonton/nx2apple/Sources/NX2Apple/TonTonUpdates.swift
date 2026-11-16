@@ -7,6 +7,12 @@ import NXModel
 struct TonTonUpdates: View {
     @EnvironmentObject var loc: Localizer
     @State private var cancelError = false
+
+    static var reportURL: URL? {
+        guard let path = Bundle.main.object(forInfoDictionaryKey: "TonTonUpdateReport") as? String else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
     private struct Job: Decodable, Identifiable {
         let title: String
         let name: String
@@ -18,9 +24,9 @@ struct TonTonUpdates: View {
     }
     private struct Report: Decodable { let jobs: [Job] }
 
-    private func cancelRequest(for job: Job, reportPath: String) -> URL? {
+    private func cancelRequest(for job: Job, reportURL: URL) -> URL? {
         guard job.state == "running", let token = job.cancelToken else { return nil }
-        return URL(fileURLWithPath: reportPath).deletingLastPathComponent()
+        return reportURL.deletingLastPathComponent()
             .appendingPathComponent("cancel-\(token.uuidString.lowercased())")
     }
 
@@ -43,8 +49,8 @@ struct TonTonUpdates: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { _ in
-            if let path = Bundle.main.object(forInfoDictionaryKey: "TonTonUpdateReport") as? String,
-               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+            if let reportURL = Self.reportURL,
+               let data = try? Data(contentsOf: reportURL),
                let report = try? JSONDecoder().decode(Report.self, from: data), !report.jobs.isEmpty {
                 DisclosureGroup {
                   VStack(alignment: .leading, spacing: 12) {
@@ -61,7 +67,7 @@ struct TonTonUpdates: View {
                                 }
                             }
                             Spacer()
-                            if let request = cancelRequest(for: job, reportPath: path) {
+                            if let request = cancelRequest(for: job, reportURL: reportURL) {
                                 let pending = FileManager.default.fileExists(atPath: request.path)
                                 Button(loc.t(pending ? "tonton.cancellingBuild" : "tonton.cancelBuild")) {
                                     do { try Data().write(to: request, options: .atomic) }
