@@ -15,6 +15,42 @@ static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("missing symbo
 // Game arguments: argv[0] is fixed to "game", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
 static char *g_argv[64] = {"game"}; static int g_argc = 1;
 
+static uint64_t boot_memory_info(unsigned type) {
+    uint64_t regs[8] = {0, type};
+    uint64_t svc_dispatch(int, uint64_t *, uint64_t);
+    svc_dispatch(0x29, regs, 0);  // Horizon GetInfo
+    return regs[0] ? 0 : regs[1];
+}
+
+static void sdk_0_12_rebase_allocators(void) {
+    // SDK 0.12.17 does not ask GetInfo for these regions. Its nnosInitialize
+    // constructs both allocators at 0x08000000, outside the host's guest block.
+    // Rebase their page bounds after construction, before the game starts any
+    // threads. Keep the initialized locks and the original guard size.
+    static const char build[] = "3b353895d8e688841c45c34b45169228";
+    for (int i = 0; i < g_nmod; ++i) {
+        module_t *sdk = &g_mod[i];
+        if (strcmp(sdk->name, "sdk") || strcasecmp(sdk->build_id, build)) continue;
+        uint64_t *storage = guest_sym("_ZN2nn2os6detail26g_OsResourceManagerStorageE");
+        uintptr_t offset = (uintptr_t)storage - (uintptr_t)sdk->base;
+        if (sdk->size < 0x60 || offset > sdk->size - 0x60 || (offset & 7)) return;
+        uint64_t *alias = storage + 0x18 / 8, *stack = storage + 0x40 / 8;
+        if (alias[1] != 0x8000 || alias[2] != 0x1000004 || alias[3] != 4 ||
+            stack[1] != 0x8000 || stack[2] != 0x80004 || stack[3] != 4) return;
+        enum { AliasAddress = 2, AliasSize = 3, StackAddress = 14, StackSize = 15 };
+        uint64_t alias_base = boot_memory_info(AliasAddress), alias_size = boot_memory_info(AliasSize);
+        uint64_t stack_base = boot_memory_info(StackAddress), stack_size = boot_memory_info(StackSize);
+        if (!alias_base || !alias_size || !stack_base || !stack_size ||
+            ((alias_base | alias_size | stack_base | stack_size) & 0xfff)) return;
+        alias[1] = alias_base >> 12;
+        alias[2] = ((alias_base + alias_size) >> 12) + alias[3];
+        stack[1] = stack_base >> 12;
+        stack[2] = ((stack_base + stack_size) >> 12) + stack[3];
+        LOG("[mem] SDK 0.12.17: rebased alias and stack allocators to the guest address block");
+        return;
+    }
+}
+
 static void guest_main(void) {
     guest_thread_init();
     guest_gate_stack(0);   // the guest code runs on this thread's own stack: its SVCs get a stack of their own
@@ -24,6 +60,7 @@ static void guest_main(void) {
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
     ((fn0)req("_init_libc0"))();
     LOG(">>> nnosInitialize"); ((fn2)req("nnosInitialize"))(hmain, 0);
+    sdk_0_12_rebase_allocators();
     ((fn0)req("_init_libc1"))();
     LOG(">>> nninitInitializeSdkModule"); ((fn0)req("nninitInitializeSdkModule"))();
     // The game arguments are in place before nninitStartup, as on hardware (nn::os takes them from the process argument area in nnosInitialize): Unreal Engine's nninitStartup

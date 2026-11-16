@@ -68,9 +68,11 @@ from Air. The iOS card now falls back to the cartridge icon when no custom
 artwork or framework banner is available.
 
 The original [Fate/EXTELLA profile](dm/games/010053E002EA2000/README.md)
-now gives the game's guarded thread stacks more virtual address space after
-an Air startup abort. This change reuses the existing game image and
-shaders. On the modern iOS host, Fate/EXTELLA LINK starts in the 3D touch
+reserves room for guarded thread stacks. A second Air startup trace showed
+that its early SDK ignored the larger range because it used hardcoded address
+bounds. The host now gives this SDK the actual alias and stack ranges. This
+reuses the game image and shaders; device boot after the correction remains to
+be verified. On the modern iOS host, Fate/EXTELLA LINK starts in the 3D touch
 layout with a directional pad. Its layout choice is saved separately.
 
 Add each published game fix here with its affected device, what changed, and
