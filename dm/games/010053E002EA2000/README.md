@@ -15,5 +15,10 @@ page queries miss the host's guest block. The host now replaces the two
 allocators' page bounds with the alias and stack regions it reports through
 GetInfo, after confirming the SDK build and original allocator fields. It
 preserves their guards and locks. The Metal 4 and iPadOS 16.1 frameworks reuse
-the rewritten modules and their existing shader chains. Device boot after this
-change still needs verification.
+the rewritten modules and their existing shader chains.
+
+The player confirmed that Air 60.90 reaches the title or game after the
+correction. The independent iPadOS 16.1 framework was relinked against its
+original shader chain and the Chinese game image was verified and staged on
+the M2. Registration in the existing iPad Gamebox and gameplay validation are
+pending.
