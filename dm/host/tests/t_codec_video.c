@@ -6,6 +6,7 @@
 #include "../hle.h"
 #undef HLE_FORCE
 #define HLE_FORCE(mangled, why, ret, cname, ...) static ret cname(__VA_ARGS__)
+#define DM_TEST_CODEC_TEARDOWN 1
 #include "../hle_movie.c"
 #include "../hle_codec_video.c"
 #include "../hle_movie_avc.c"
@@ -14,7 +15,10 @@
 #include <unistd.h>
 
 uint64_t now_ns(void) { return 1; }
+static unsigned guest_threads;
+unsigned dm_guest_pthreads_alive(void) { return guest_threads; }
 __thread _Atomic int dm_host_work;   // hle_thread.c
+void dm_host_lock(pthread_mutex_t *m) { pthread_mutex_lock(m); }
 void dm_host_helper_qos(qos_class_t q) { (void)q; }   // hle_thread.c: the decoder's thread keeps the default class in the unit test
 static struct { void *ev; int bound, set; pthread_t by; } g_ev[16];   // by: the thread that signalled it last
 static pthread_mutex_t g_ev_mu = PTHREAD_MUTEX_INITIALIZER;   // the decoder's thread signals and clears events too
@@ -304,6 +308,24 @@ int main(void) {
         uint32_t k[BLANK_MAX + 1]; for (int i = 0; i < BLANK_MAX; i++) assert((k[i] = dm_native_image_blank(32, 32)));
         assert(!(k[BLANK_MAX] = dm_native_image_blank(32, 32)));   // full
         for (int i = 0; i < BLANK_MAX; i++) dm_native_image_blank_free(k[i]);
+    }
+    {   // Shell teardown with a live decoder and a pool never exposed to Metal.
+        cv_pool *unpublished = NULL;
+        cv_pref pref = h_cv_pref(16, 16, 0, 0);
+        assert(!cv_pool_init(&unpublished, NULL, 0, &pref, 1));
+        assert(g_cv_all_pools == unpublished && !unpublished->slot);
+        _Alignas(16) uint8_t decoder[0x400] = {0};
+        assert(!cv_dec_init(decoder, CV_VP9, 16, 16, 0, 0, NULL, 0));
+        uint32_t image = dm_native_image_blank(16, 16), w, h, stride;
+        uint8_t *mem; uint64_t len;
+        assert(image);
+        guest_threads = 1;
+        assert(!dm_codec_video_release_drained() && cv_of(decoder) && g_cv_all_pools);
+        assert(dm_native_image(image, &mem, &len, &w, &h, &stride));
+        guest_threads = 0;
+        assert(dm_codec_video_release_drained() && !g_cv_all_pools);
+        assert(!dm_native_image(image, &mem, &len, &w, &h, &stride));
+        assert(g_ev[ev_slot(decoder + CV_EVENT_OFF)].bound); // no guest callback
     }
     printf("t_codec_video: all passed\n");
     return 0;

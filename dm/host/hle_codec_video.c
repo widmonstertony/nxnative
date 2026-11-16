@@ -40,7 +40,7 @@
 #define CV_NONE CV_R(3604)          // no buffer to acquire / no picture in the buffer yet
 
 typedef struct { uint16_t w, h; uint32_t fmt, mode, magic; uint32_t pad[2]; } cv_pref;   // VideoDecoderImagePreference as the host fills it (returned in x8)
-typedef struct { uint32_t magic; uint16_t w, h; uint32_t fmt, count; vpx_image_t **img; uint8_t *mem; uint64_t size; int slot; _Atomic int native; } cv_pool;   // mem, size: the game's pool memory; native: a handle was asked for (RGBA kept in mem); slot: its place in g_cv_pools + 1
+typedef struct cv_pool { uint32_t magic; uint16_t w, h; uint32_t fmt, count; vpx_image_t **img; uint8_t *mem; uint64_t size; int slot; _Atomic int native; struct cv_pool *next; } cv_pool;   // mem, size: the game's pool memory; native: a handle was asked for (RGBA kept in mem); slot: its place in g_cv_pools + 1
 typedef struct { uint32_t magic, dec, idx, gen; } cv_sync;   // nn::gs::NativeSyncHandle (16 bytes)
 typedef struct { uint64_t n, ns, max, late; } cv_times;   // packets decoded, their time in all and the longest; late: pictures whose buffer was released before they were decoded
 enum { CV_VP8, CV_VP9, CV_H264, CV_AV1 };
@@ -179,8 +179,16 @@ HLE_FORCE("_ZN2nn5codec31CalculateDecoderImagePoolBufferEPmS1_RKNS0_27VideoDecod
     return 0;
 }
 static cv_pool *g_cv_pools[256];   // what a native image handle names (g_cv_mu): (slot + 1) << 8 | picture
+static cv_pool *g_cv_all_pools;    // HLE also owns pools whose images the guest never exposed to Metal
+static void cv_pool_release(cv_pool *p) {
+    for (uint32_t i = 0; i < p->count; i++) if (p->img[i]) vpx_img_free(p->img[i]);
+    free(p->img); p->magic = 0; free(p);
+}
 static Result cv_pool_init(void *t, void *mem, uint64_t size, const cv_pref *p, uint32_t n) {
     cv_pool *o = calloc(1, sizeof *o); o->magic = CV_MAGIC; o->w = p->w; o->h = p->h; o->fmt = p->fmt; o->count = n ? n : 1; o->img = calloc(o->count, sizeof *o->img); o->mem = mem; o->size = size;
+    dm_host_mutex_lock(&g_cv_mu);
+    o->next = g_cv_all_pools; g_cv_all_pools = o;
+    pthread_mutex_unlock(&g_cv_mu);
     *(cv_pool **)t = o;
     static int once; if (!once++) LOG("[codec] image pool %ux%u format %u, tiling or mode %u, %u picture(s): the host keeps the decoded pictures", p->w, p->h, p->fmt, p->mode, o->count);
     return 0;
@@ -194,9 +202,10 @@ HLE_FORCE("_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTy
     dm_host_mutex_lock(&g_cv_mu);   // a decoder still holding a buffer of this pool keeps it, with no pool to write its picture into
     for (int k = 0; k < 16; k++) if (g_cv[k]) { dm_host_mutex_lock(&g_cv[k]->mu); for (int i = 0; i < CV_BUFS; i++) if (g_cv[k]->buf[i].pool == p) g_cv[k]->buf[i].pool = NULL; pthread_mutex_unlock(&g_cv[k]->mu); }
     if (p->slot) g_cv_pools[p->slot - 1] = NULL;
+    for (cv_pool **it = &g_cv_all_pools; *it; it = &(*it)->next)
+        if (*it == p) { *it = p->next; break; }
     pthread_mutex_unlock(&g_cv_mu);
-    for (uint32_t i = 0; i < p->count; i++) if (p->img[i]) vpx_img_free(p->img[i]);
-    free(p->img); p->magic = 0; free(p); *(cv_pool **)t = NULL;
+    cv_pool_release(p); *(cv_pool **)t = NULL;
 }
 HLE_FORCE("_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj", "a handle the host's nvnNativeImage knows; the pool keeps its pictures as RGBA from now on",
           uint32_t, h_cv_native, const void *t, uint32_t i) {
@@ -308,10 +317,11 @@ static Result cv_dec_init(void *t, int codec, uint16_t w, uint16_t h, uint32_t i
         d->csd_n ? ", with parameter sets" : "", codec == CV_AV1 ? mav1_backend(d->av1) : codec == CV_H264 ? "VideoToolbox" : "libvpx");
     return 0;
 }
-static Result cv_dec_fin(void *t) {
-    cv_dec *d = cv_of(t); if (!d) return 0;
-    dm_host_mutex_lock(&g_cv_mu); g_cv[d->id - 1] = NULL; dm_host_mutex_lock(&d->mu); d->quit = 1; pthread_cond_signal(&d->work); pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&g_cv_mu);   // no sync handle lookup is still inside
-    dm_host_thread_join(d->th, NULL);   // a packet it decodes ends first (a codec cannot be stopped inside one); its pictures are dropped
+static void cv_dec_stop(cv_dec *d) {
+    dm_host_mutex_lock(&d->mu); d->quit = 1; pthread_cond_signal(&d->work); pthread_mutex_unlock(&d->mu);
+}
+static void cv_dec_release(cv_dec *d, bool destroy_guest_event) {
+    dm_host_thread_join(d->th, NULL);   // a packet it decodes ends first (a codec cannot be stopped inside one)
     dm_movie_stopped(d);
     cv_stat_sum(d);
     if (d->all.n) cv_stat_line(d, &d->all, "");
@@ -321,13 +331,54 @@ static Result cv_dec_fin(void *t) {
     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
     for (uint32_t k = 0; k < d->qcount; k++) free(d->q[(d->qhead + k) % CV_HOLD].data);
     free(d->csd); d->magic = 0;
-    // The submission-ready event goes with the decoder, as in the SDK. Kept, it stayed in the host's bound-event table, so the next decoder initialised in the same memory found its
-    // event "bound" and was not given one: the game had cleared that memory, and nn::os aborted on the uninitialised event (Donkey Kong Bananza, its second movie)
-    static void (*destroy)(void *); if (!destroy && !(destroy = guest_sym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE"))) die("nn::os::DestroySystemEvent missing");
-    destroy(d->event);
-    pthread_cond_destroy(&d->work); pthread_mutex_destroy(&d->mu); free(d); *(cv_dec **)t = NULL;
+    if (destroy_guest_event) {
+        // Normal Finalize closes the event so reuse of this address gets a fresh binding.
+        static void (*destroy)(void *);
+        if (!destroy && !(destroy = guest_sym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE")))
+            die("nn::os::DestroySystemEvent missing");
+        destroy(d->event);
+    }
+    pthread_cond_destroy(&d->work); pthread_mutex_destroy(&d->mu); free(d);
+}
+static Result cv_dec_fin(void *t) {
+    cv_dec *d = cv_of(t); if (!d) return 0;
+    dm_host_mutex_lock(&g_cv_mu);
+    g_cv[d->id - 1] = NULL;
+    cv_dec_stop(d);
+    pthread_mutex_unlock(&g_cv_mu);   // no sync handle lookup is still inside
+    cv_dec_release(d, true);
+    *(cv_dec **)t = NULL;
     return 0;
 }
+
+#if TARGET_OS_IOS || defined(DM_TEST_CODEC_TEARDOWN)
+// Called on the shell's owner thread with guest entry and graphics stopped
+// (including outstanding GPU work referencing native images). The last guest
+// mapping and service-layer event table must stay live until the joins finish.
+int dm_codec_video_release_drained(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    cv_dec *detached[16];
+    pthread_mutex_lock(&g_cv_mu);
+    memcpy(detached, g_cv, sizeof detached);
+    memset(g_cv, 0, sizeof g_cv);
+    for (unsigned i = 0; i < sizeof detached / sizeof *detached; i++)
+        if (detached[i]) cv_dec_stop(detached[i]);
+    pthread_mutex_unlock(&g_cv_mu);
+    for (unsigned i = 0; i < sizeof detached / sizeof *detached; i++)
+        if (detached[i]) cv_dec_release(detached[i], false);
+    // All writers of pools have joined. No guest finalizer may be invoked
+    // here; the owner reclaims the kernel event table with the guest.
+    while (g_cv_all_pools) {
+        cv_pool *p = g_cv_all_pools;
+        g_cv_all_pools = p->next;
+        cv_pool_release(p);
+    }
+    memset(g_cv_pools, 0, sizeof g_cv_pools);
+    for (unsigned i = 0; i < BLANK_MAX; i++) dm_native_image_blank_free(0x80000000u | (i + 1));
+    return 1;
+}
+#endif
 static Result cv_dec_reg(void *t, uint32_t i, void *pool, uint32_t pidx) {
     cv_dec *d = cv_of(t); if (!d || i >= CV_BUFS) { LOG("[RED] nn::codec::Register…DecoderBuffer index %u", i); return CV_R(2004); }
     dm_host_mutex_lock(&d->mu);

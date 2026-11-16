@@ -33,8 +33,8 @@ void guest_thread_set_id(uint64_t id) { *(uint32_t *)((uint8_t *)pthread_getspec
 // Gate stacks (entry.S dm_gate): the SVC gate's register frame and the host's SVC handlers run on a stack of the thread's own, never below the guest's sp, as on Horizon, whose kernel leaves a
 // thread's stack untouched during an SVC. Each thread holds a gate slot k: its KGATE slot points to entry.S stub k, which loads dm_gate_top[k]. A guest thread (hle_thread.c thread_main) runs
 // its guest code on the guest stack the SDK gave it, so its gate stack is the rest of its own pthread stack (1 MB), below thread_main's frame: it lives exactly as long as the thread, which
-// exits from inside an SVC (ExitThread → pthread_exit on the gate stack). The guest main thread runs its guest code on this pthread's stack, so it gets a mapped stack, never freed
-// (the process ends with it). The slot is released when the thread exits, after which another thread may take it with its own stack.
+// exits from inside an SVC (ExitThread → pthread_exit on the gate stack). The guest main thread runs its guest code on its pthread's stack, so it gets a separate mapped gate stack.
+// iOS retains that mapping until the shell can prove the pthread has really exited: the TSD destructor can still be running on the mapping it retires.
 #define GATE_SLOTS 1024                 // = entry.S .rept count and dm_gate_top size
 #define GATE_STACK_SIZE (1 << 20)       // = entry.S nesting check
 extern uint64_t dm_gate_top[GATE_SLOTS];
@@ -42,8 +42,37 @@ extern const uint8_t dm_gate_stubs[];
 static pthread_mutex_t g_gate_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint16_t g_gate_free[GATE_SLOTS]; static int g_gate_nfree = -1;
 static pthread_key_t g_keygslot; static pthread_once_t g_gslot_once = PTHREAD_ONCE_INIT;
+#if TARGET_OS_IOS || defined(DM_TEST_GATE_RETIRE)
+struct gate_mapping { struct gate_mapping *next; void *base; };
+static struct gate_mapping *g_gate_mapping[GATE_SLOTS], *g_gate_retired;
+int dm_guest_gate_release_drained(void) {
+    unsigned dm_guest_pthreads_alive(void);
+    if (dm_guest_pthreads_alive()) return 0;
+    pthread_mutex_lock(&g_gate_lock);
+    struct gate_mapping *retired = g_gate_retired;
+    g_gate_retired = NULL;
+    pthread_mutex_unlock(&g_gate_lock);
+    while (retired) {
+        struct gate_mapping *next = retired->next;
+        munmap(retired->base, GATE_STACK_SIZE + 16384);
+        free(retired);
+        retired = next;
+    }
+    return 1;
+}
+#endif
 static void gslot_release(void *p) {   // key destructor (pthread_exit): slot + 1
-    pthread_mutex_lock(&g_gate_lock); g_gate_free[g_gate_nfree++] = (uint16_t)((uintptr_t)p - 1); pthread_mutex_unlock(&g_gate_lock);
+    unsigned k = (unsigned)((uintptr_t)p - 1);
+    pthread_mutex_lock(&g_gate_lock);
+#if TARGET_OS_IOS || defined(DM_TEST_GATE_RETIRE)
+    while (g_gate_mapping[k]) {
+        struct gate_mapping *m = g_gate_mapping[k];
+        g_gate_mapping[k] = m->next;
+        m->next = g_gate_retired; g_gate_retired = m;
+    }
+#endif
+    g_gate_free[g_gate_nfree++] = (uint16_t)k;
+    pthread_mutex_unlock(&g_gate_lock);
 }
 static void gslot_key_init(void) {
     if (pthread_key_create(&g_keygslot, gslot_release)) die("cannot create the gate slot key");
@@ -53,11 +82,19 @@ void dm_gate_nested(uint64_t sp) { die("SVC gate entered on its own gate stack (
 __attribute__((noinline)) void guest_gate_stack(int own_stack) {
     pthread_once(&g_gslot_once, gslot_key_init);
     uint8_t *top;
+#if TARGET_OS_IOS || defined(DM_TEST_GATE_RETIRE)
+    struct gate_mapping *mapping = NULL;
+#endif
     if (own_stack) top = (uint8_t *)__builtin_frame_address(0);   // this function's frame record: everything above it is the caller's frame, everything below is free once the guest runs elsewhere
     else {
         uint8_t *m = mmap(NULL, GATE_STACK_SIZE + 16384, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (m == MAP_FAILED || mprotect(m, 16384, PROT_NONE)) die("cannot map a gate stack (errno %d)", errno);   // guard page at the bottom
         top = m + 16384 + GATE_STACK_SIZE;
+#if TARGET_OS_IOS || defined(DM_TEST_GATE_RETIRE)
+        mapping = malloc(sizeof *mapping);
+        if (!mapping) die("cannot track the mapped gate stack");
+        mapping->base = m;
+#endif
     }
     uintptr_t prev = (uintptr_t)pthread_getspecific(g_keygslot);
     int k;
@@ -70,6 +107,13 @@ __attribute__((noinline)) void guest_gate_stack(int own_stack) {
         pthread_mutex_unlock(&g_gate_lock);
         pthread_setspecific(g_keygslot, (void *)(uintptr_t)(k + 1));
     }
+#if TARGET_OS_IOS || defined(DM_TEST_GATE_RETIRE)
+    if (mapping) {
+        pthread_mutex_lock(&g_gate_lock);
+        mapping->next = g_gate_mapping[k]; g_gate_mapping[k] = mapping;
+        pthread_mutex_unlock(&g_gate_lock);
+    }
+#endif
     dm_gate_top[k] = (uint64_t)(uintptr_t)top & ~15ull;
     pthread_setspecific(g_keygate, (void *)(dm_gate_stubs + 16 * k));
 }

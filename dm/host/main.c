@@ -73,7 +73,15 @@ static void guest_main(void) {
     { void dm_guest_spawn_selftest(void); dm_guest_spawn_selftest(); }   // DM_GUEST_SPAWN_TEST self-test of host-created guest threads (hle_guestthread.c)
     { void dm_oodle_serve_maybe(int); dm_oodle_serve_maybe(1); }   // DM_OODLE_SERVE with a decoder that needs the game's malloc (LZ5, hle_oodle.c)
     { void dm_oodle_job_maybe(void); dm_oodle_job_maybe(); }   // DM_OODLE_JOB: decode a job file with the game's own Oodle and exit (hle_oodle.c, for the offline shader tools)
-    LOG(">>> nnMain"); ((fn0)req("nnMain"))();
+    LOG(">>> nnMain");
+#if TARGET_OS_IOS
+    void dm_guest_main_entered(void), dm_guest_call_main(fn0 entry);
+    fn0 entry = (fn0)req("nnMain");
+    dm_guest_main_entered();
+    dm_guest_call_main(entry);
+#else
+    ((fn0)req("nnMain"))();
+#endif
     LOG("nnMain returned");
 }
 

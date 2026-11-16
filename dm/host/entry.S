@@ -167,7 +167,25 @@ _dm_thread_enter:
     mov x29, #0
     mov x16, x0
     mov x0, x1
-    adr x30, 1f
+    adr x30, _dm_guest_worker_end
     br x16
-1:  bl _dm_thread_returned
+    .globl _dm_guest_worker_end
+    .private_extern _dm_guest_worker_end
+_dm_guest_worker_end:
+    bl _dm_thread_returned
     brk #0
+
+// Start nnMain with an explicit guest-frame root on the boot pthread.
+// Preserve its host call frame for a game that returns normally.
+    .globl _dm_guest_call_main
+    .private_extern _dm_guest_call_main
+    .p2align 2
+_dm_guest_call_main:
+    stp x29, x30, [sp, #-16]!
+    mov x29, #0
+    blr x0
+    .globl _dm_guest_main_end
+    .private_extern _dm_guest_main_end
+_dm_guest_main_end:
+    ldp x29, x30, [sp], #16
+    ret

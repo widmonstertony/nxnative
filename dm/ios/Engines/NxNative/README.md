@@ -154,6 +154,17 @@ The Air 60.78 installation preserves all existing frameworks and 27 game
 directories; the new Fate card is ready. The new quit/relaunch path has not
 been player-tested. M2 60.102 separately installs the classic Fate host with all matched resources and 58 DLC; its card is ready. Classic M2 hosts do not advertise this lifecycle capability yet.
 
+The classic iPad host's retirement path first parks threads at checked guest
+boundaries. A native callback or a thread that cannot reach a boundary makes
+that attempt time out and releases the parked threads. After commitment the
+owner must still wait for the kernel to observe actual pthread exit, including
+thread destructors, before reclaiming the mapped gate stacks. Switch 2 video
+decoders keep their guest pools mapped until the native workers join and the
+GPU is done with their images. This host work does not enable the shell
+capability: the owner still has to shut down the remaining host producers and
+bind the return callback. Require two successful game launches in one M2
+iPadOS 16.1 process before enabling it on the older iPad.
+
 Air Fate's pinned engine also needs `fate-extella-ios-touch-preferences.patch`
 on top of its teardown queue (`553db40` in the prepared engine checkout). It
 reads version 2 layout coordinates while retaining version 1 presets and
