@@ -188,3 +188,28 @@ reported 27 games ready. The in-game quit and relaunch have not been
 play-tested on this build. The iOS 27.2 bookshelf preview uses the real UIKit glass
 button styles; the iOS 16.1 bookshelf build uses its availability-checked
 fallback.
+
+## Classic iPad: safe return worker fence (November 16)
+
+The iPadOS 16.1 NVN host has an opt-in fence for library return. After the
+guest has retired and the front end has stopped submitting display work, it
+waits for pipeline preparation, the classic presenter, explicitly registered
+Metal callbacks, and the last archive write. It closes the cheat worker and
+the save sender, and refuses to hand back the session while an abandoned
+cloud fetch is still running. A test exercises an abandoned fetch blocked on
+a FIFO, followed by a successful teardown once the fetch releases it.
+
+This is a worker fence, not the entire return path. The classic frameworks
+do not advertise shelf return until UIKit ownership and renderer allocations
+can be released and M2 can launch two titles under the same process ID.
+Neither iPad received this candidate. No game shader chain changes with
+this fence.
+
+For M2's shader recovery, 8,442 of 8,443 archived Samurai Remnant base
+shader pairs matched the current inputs after reconstructing the original
+Metal compiler identity. Its version output included the Mac's Darwin
+version, which changed without changing the compiler build or iOS SDK.
+The last pair has no archive index. Tears of the Kingdom gained 48 more
+same-chain iPadOS 16.1 pairs, bringing the verified local sample to 66.
+Neither game has passed a real scene on the paired framework, so manual
+resume remains disabled.

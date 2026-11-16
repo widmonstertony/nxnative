@@ -409,11 +409,21 @@ static int cloud_file(const char *title, char *out, size_t n) { return cloud_pat
 // The platform's fetch, given at most `ms`: a download iCloud never finishes must not hold the game at its first save mount. One that comes too late is dropped.
 // Each fetch writes a file of its own (part: <local>.<pid>-<n>.part), renamed to `local` only by the caller that still waits for it: a fetch that came too late
 // removes its own file and nothing else, so it never writes over or removes what a later attempt fetched to the same `local` (the sender's out/cloud.dmsync)
+static pthread_mutex_t g_fetch_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_fetch_cv = PTHREAD_COND_INITIALIZER;
+static unsigned g_fetch_running;
+static int g_fetch_closed;
+static void fetch_finished(void) {
+    pthread_mutex_lock(&g_fetch_mu);
+    if (!--g_fetch_running) pthread_cond_broadcast(&g_fetch_cv);
+    pthread_mutex_unlock(&g_fetch_mu);
+}
 typedef struct { pthread_mutex_t mu; pthread_cond_t cv; int done, abandoned, result; char cloud[PATH_MAX], part[PATH_MAX + 32]; } fetch_job;
 static void *fetch_thread(void *p) {
     fetch_job *j = p; int r = is_ck(j->cloud) ? front_cloudkit_fetch(j->cloud, j->part) : front_save_sync_fetch(j->cloud, j->part);
     pthread_mutex_lock(&j->mu); j->done = 1; j->result = r; int late = j->abandoned; pthread_cond_signal(&j->cv); pthread_mutex_unlock(&j->mu);
     if (late) { unlink(j->part); pthread_mutex_destroy(&j->mu); pthread_cond_destroy(&j->cv); free(j); }
+    fetch_finished();
     return NULL;
 }
 static void deadline(int ms, struct timespec *ts) {
@@ -433,7 +443,10 @@ static int fetch_timed(const char *cloud, const char *local, int ms) {   // fron
     int fd = mkstemp(j->part);
     if (fd < 0) { pthread_mutex_destroy(&j->mu); pthread_cond_destroy(&j->cv); free(j); return -1; }
     close(fd);
-    int e = pthread_create(&t, NULL, fetch_thread, j);
+    pthread_mutex_lock(&g_fetch_mu);
+    int e = g_fetch_closed ? ECANCELED : pthread_create(&t, NULL, fetch_thread, j);
+    if (!e) g_fetch_running++;
+    pthread_mutex_unlock(&g_fetch_mu);
     if (e) { unlink(j->part); pthread_mutex_destroy(&j->mu); pthread_cond_destroy(&j->cv); free(j); SRED("no thread to fetch the cloud's save (error %d)", e); return -1; }   // not fetched on this thread: a download that never finishes would hold the game
     pthread_detach(t);
     struct timespec ts; deadline(ms, &ts);
@@ -618,6 +631,8 @@ done:
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER, g_mount_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic int g_on;
+static pthread_t g_sender;
+static int g_sender_started, g_sender_stopping, g_sender_done;
 static int g_mounted, g_want, g_busy, g_failed;   // the mount ran; a send asked for without a Commit (the mount found this save newer, a flush); a send running; the last one failed
 static uint64_t g_commits, g_sent;                // Commits seen; the Commits the last send covered
 static char g_save[PATH_MAX], g_title[24], g_cloud[PATH_MAX];
@@ -626,11 +641,12 @@ static void *sender(void *arg) {
     (void)arg;
     pthread_mutex_lock(&g_mu);
     for (;;) {
-        while (g_commits == g_sent && !g_want) pthread_cond_wait(&g_cv, &g_mu);
-        for (uint64_t seen = g_commits; !g_want; ) {   // quiet for QUIET_MS since the last Commit (a flush does not wait)
+        while (g_commits == g_sent && !g_want && !g_sender_stopping) pthread_cond_wait(&g_cv, &g_mu);
+        if (g_sender_stopping && g_commits == g_sent && !g_want) break;
+        for (uint64_t seen = g_commits; !g_want && !g_sender_stopping; ) {   // quiet for QUIET_MS since the last Commit (a flush does not wait)
             struct timespec ts; deadline(QUIET_MS, &ts);
             int r = 0;
-            while (!g_want && g_commits == seen && r != ETIMEDOUT) r = pthread_cond_timedwait(&g_cv, &g_mu, &ts);
+            while (!g_want && !g_sender_stopping && g_commits == seen && r != ETIMEDOUT) r = pthread_cond_timedwait(&g_cv, &g_mu, &ts);
             if (g_commits == seen) break;
             seen = g_commits;
         }
@@ -643,6 +659,9 @@ static void *sender(void *arg) {
         g_busy = 0; g_sent = upto; g_failed = !ok;
         pthread_cond_broadcast(&g_cv);
     }
+    g_sender_done = 1;
+    pthread_cond_broadcast(&g_cv);
+    pthread_mutex_unlock(&g_mu);
     return NULL;
 }
 
@@ -728,9 +747,8 @@ static int mount_once(const char *save, const char *title) {
 start_sender:
     snprintf(g_save, sizeof g_save, "%s", save); upper_title(title, g_title, sizeof g_title); snprintf(g_cloud, sizeof g_cloud, "%s", cloud);
     g_failed = failed;
-    pthread_t th;
-    if (pthread_create(&th, NULL, sender, NULL)) { SRED("cannot start the sender: saves are not sent this session"); return 0; }
-    pthread_detach(th);
+    if (pthread_create(&g_sender, NULL, sender, NULL)) { SRED("cannot start the sender: saves are not sent this session"); return 0; }
+    g_sender_started = 1;
     atomic_store(&g_on, 1);
     return 0;
 }
@@ -771,26 +789,56 @@ int save_sync_report(const char *save, const char *title, const char *folder, in
 int save_sync_mount(const char *save, const char *title) {   // the first mount does it; a second one (the device save) waits for it and gets its answer
     static int unsafe;
     pthread_mutex_lock(&g_mount_mu);
-    if (!g_mounted) { g_mounted = 1; unsafe = mount_once(save, title) != 0; }
-    int r = unsafe ? -1 : 0;
+    if (!g_mounted && !g_sender_stopping) { g_mounted = 1; unsafe = mount_once(save, title) != 0; }
+    int r = (unsafe || g_sender_stopping) ? -1 : 0;
     pthread_mutex_unlock(&g_mount_mu);
     return r;
 }
 
 void save_sync_committed(void) {
     if (!atomic_load(&g_on)) return;
-    pthread_mutex_lock(&g_mu); g_commits++; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_mu);
+    if (!g_sender_stopping) { g_commits++; pthread_cond_broadcast(&g_cv); }
+    pthread_mutex_unlock(&g_mu);
 }
 
 int save_sync_flush(int timeout_ms) {
     if (!atomic_load(&g_on)) return 1;
     struct timespec ts; deadline(timeout_ms, &ts);
     pthread_mutex_lock(&g_mu);
-    if (g_commits != g_sent || g_failed || g_busy) { g_want = 1; pthread_cond_broadcast(&g_cv); }
+    if (!g_sender_stopping && (g_commits != g_sent || g_failed || g_busy)) { g_want = 1; pthread_cond_broadcast(&g_cv); }
     while ((g_want || g_busy || g_commits != g_sent) && pthread_cond_timedwait(&g_cv, &g_mu, &ts) != ETIMEDOUT) {}
     int ok = !g_want && !g_busy && g_commits == g_sent && !g_failed;
     pthread_mutex_unlock(&g_mu);
     return ok;
+}
+
+// One session owner calls this after closing the guest and its front-end
+// admissions. Finish any existing send, then wait for abandoned timed fetches
+// before the shell changes the title's environment. Never pull or delete saves.
+int save_sync_stop_for_shell(int timeout_ms) {
+    struct timespec ts; deadline(timeout_ms > 0 ? timeout_ms : 0, &ts);
+    pthread_mutex_lock(&g_mount_mu);
+    pthread_mutex_lock(&g_mu);
+    g_sender_stopping = 1;
+    atomic_store(&g_on, 0);
+    pthread_cond_broadcast(&g_cv);
+    while (g_sender_started && !g_sender_done && pthread_cond_timedwait(&g_cv, &g_mu, &ts) == 0) {}
+    int started = g_sender_started, done = !started || g_sender_done;
+    pthread_mutex_unlock(&g_mu);
+    if (done && started) {
+        done = !pthread_join(g_sender, NULL);
+        if (done) g_sender_started = 0;
+    }
+    pthread_mutex_unlock(&g_mount_mu);
+    if (!done) return 0;
+
+    pthread_mutex_lock(&g_fetch_mu);
+    g_fetch_closed = 1;
+    while (g_fetch_running && pthread_cond_timedwait(&g_fetch_cv, &g_fetch_mu, &ts) == 0) {}
+    done = !g_fetch_running;
+    pthread_mutex_unlock(&g_fetch_mu);
+    return done;
 }
 
 int save_sync_after_exit(const char *save, const char *title) {   // save: DM_SAVE, its trailing slashes stripped as h_fs_MountSave strips them (the same <save>.sync and <save>-backups)

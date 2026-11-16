@@ -92,13 +92,54 @@ static BOOL can_archive(id<MTLFunction> function) {
     if (@available(iOS 18.0, macOS 15.0, *)) return YES;
     return function.functionConstantsDictionary.count == 0;
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static pthread_mutex_t cache_work_mu = PTHREAD_MUTEX_INITIALIZER;
+static int cache_stopping;
+static dispatch_queue_t cache_work_queue;
+static dispatch_group_t cache_work_group;
+static dispatch_source_t cache_timer;
+
+// Use a private serial queue so cancellation, queued flushes and the last
+// flush all have an explicit owner during shell teardown.
+static void cache_work_init_locked(void) {
+    if (cache_work_queue) return;
+    cache_work_queue = dispatch_queue_create("nxnative.pipeline.archive", DISPATCH_QUEUE_SERIAL);
+    cache_work_group = dispatch_group_create();
+}
+#endif
+
 static void schedule_save_locked(void) {
     if (save_scheduled || !archive || stats.write_failed) return;
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    pthread_mutex_lock(&cache_work_mu);
+    if (!cache_stopping) {
+        cache_work_init_locked();
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, cache_work_queue);
+        cache_timer = timer;
+        save_scheduled = 1;
+        dispatch_group_t pending = cache_work_group;
+        dispatch_group_enter(pending);
+        dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, NSEC_PER_SEC);
+        dispatch_source_set_event_handler(timer, ^{
+            nvn_cache_flush();
+            pthread_mutex_lock(&cache_mu);
+            pthread_mutex_lock(&cache_work_mu);
+            if (cache_timer) { dispatch_source_cancel(cache_timer); cache_timer = nil; }
+            save_scheduled = 0;
+            pthread_mutex_unlock(&cache_work_mu);
+            pthread_mutex_unlock(&cache_mu);
+        });
+        dispatch_source_set_cancel_handler(timer, ^{ dispatch_group_leave(pending); });
+        dispatch_activate(timer);
+    }
+    pthread_mutex_unlock(&cache_work_mu);
+#else
     save_scheduled = 1;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         nvn_cache_flush();
         pthread_mutex_lock(&cache_mu); save_scheduled = 0; pthread_mutex_unlock(&cache_mu);
     });
+#endif
 }
 
 id<MTLRenderPipelineState> nvn_cached_render(id<MTLDevice> device, MTLRenderPipelineDescriptor *desc, NSError **error) {
@@ -198,5 +239,33 @@ void nvn_cache_flush(void) {
     }
 }
 void nvn_cache_flush_async(void) {
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+    pthread_mutex_lock(&cache_work_mu);
+    if (!cache_stopping) {
+        cache_work_init_locked();
+        dispatch_group_async(cache_work_group, cache_work_queue, ^{ nvn_cache_flush(); });
+    }
+    pthread_mutex_unlock(&cache_work_mu);
+#else
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ nvn_cache_flush(); });
+#endif
 }
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+int nvn_cache_stop_for_shell(uint64_t timeout_ns) {
+    pthread_mutex_lock(&cache_work_mu);
+    if (!cache_stopping) {
+        cache_stopping = 1;
+        cache_work_init_locked();
+        if (cache_timer) { dispatch_source_cancel(cache_timer); cache_timer = nil; }
+        dispatch_group_async(cache_work_group, cache_work_queue, ^{
+            nvn_cache_flush();
+            pthread_mutex_lock(&cache_mu);
+            archive = nil; cache_file = nil;
+            pthread_mutex_unlock(&cache_mu);
+        });
+    }
+    dispatch_group_t pending = cache_work_group;
+    pthread_mutex_unlock(&cache_work_mu);
+    return !dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)MIN(timeout_ns, INT64_MAX)));
+}
+#endif

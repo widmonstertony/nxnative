@@ -94,6 +94,40 @@ static pthread_cond_t g_prepare_cv = PTHREAD_COND_INITIALIZER;
 static int g_prepare_active = 1;
 static int g_compile_stopping;
 static dispatch_group_t g_compile_tasks;
+// Metal command completion is not proof that all host callbacks have returned.
+// Track them before submission, including callbacks that consume guest pointers.
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static dispatch_group_t classic_gpu_callbacks(void) {
+    static dispatch_once_t once;
+    static dispatch_group_t group;
+    dispatch_once(&once, ^{ group = dispatch_group_create(); });
+    return group;
+}
+typedef void (^classic_command_callback)(id<MTLCommandBuffer>);
+static classic_command_callback classic_track_command(classic_command_callback work) {
+    dispatch_group_t group = classic_gpu_callbacks();
+    dispatch_group_enter(group);
+    return ^(id<MTLCommandBuffer> buffer) {
+        work(buffer);
+        dispatch_group_leave(group);
+    };
+}
+#if !TARGET_OS_SIMULATOR
+typedef void (^classic_drawable_callback)(id<MTLDrawable>);
+static classic_drawable_callback classic_track_drawable(classic_drawable_callback work) {
+    dispatch_group_t group = classic_gpu_callbacks();
+    dispatch_group_enter(group);
+    return ^(id<MTLDrawable> drawable) {
+        work(drawable);
+        dispatch_group_leave(group);
+    };
+}
+#endif
+#else
+#define classic_track_command(...) (__VA_ARGS__)
+#define classic_track_drawable(...) (__VA_ARGS__)
+#endif
+
 static int classic_compile_async(dispatch_queue_t queue, dispatch_block_t work) {
     pthread_mutex_lock(&g_prepare_mu);
     int accepted = !g_compile_stopping;
@@ -180,7 +214,7 @@ static int g_link_owns_layer, g_classic_pending;
 // 16.1 has no display-link run loop. Keep the late drawable callback's
 // lock and generation outside the state that the shell can restore.
 static pthread_t g_classic_worker;
-static int g_classic_worker_started, g_classic_worker_stop;
+static int g_classic_worker_started, g_classic_worker_stop, g_classic_worker_done;
 #define CLASSIC_KEEP __attribute__((section("__DATA,__dm_keep")))
 static pthread_mutex_t g_classic_callback_mu CLASSIC_KEEP = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_classic_generation CLASSIC_KEEP;
@@ -1401,7 +1435,7 @@ static void gpu_tag_done(uint64_t f, double g0, double g1) {
     }
     atomic_fetch_sub(&g_gpu[k].pending, 1);
 }
-static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); }]; }
+static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); })]; }
 void gpu_tag(id<MTLCommandBuffer> cb) { gpu_tag_f(cb, atomic_load(&g_cur_frame)); }
 double mtl_gpu_ms(uint64_t f) {
     unsigned k = f % GRING;
@@ -1429,12 +1463,12 @@ uint64_t mtl_sub_commit(void) {
     NSArray<dispatch_block_t> *commit_blocks = [g_commit_blocks copy];
     __block NSArray<id<MTLSamplerState>> *sampler_refs = g_sub_samplers.allObjects;
 
-    [g_cb addCompletedHandler:^(id<MTLCommandBuffer> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); sampler_refs = nil; }];
+    [g_cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); sampler_refs = nil; })];
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
     NSString *sample_notes = [g_sub_sample_notes copy];
     NSArray<dispatch_block_t> *argument_checks = [g_sub_argument_checks copy];
-    [g_cb addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    [g_cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> cb) {
         // The diagnostic reads run in this callback before g_done advances,
         // so an arena cannot be legitimately recycled before the comparison.
         for (dispatch_block_t check in argument_checks) check();
@@ -1455,7 +1489,7 @@ uint64_t mtl_sub_commit(void) {
         free(ops);
         pthread_mutex_lock(&g_mu); if (fence > g_done) g_done = fence; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
         defer_drain();
-    }];
+    })];
     void arena_commit(uint64_t fence); arena_commit(fence);
     res_commit();
     [g_cb encodeSignalEvent:g_ev value:fence];
@@ -1964,7 +1998,7 @@ static void up_flush(void) {
     static int lost_at = -2; static uint64_t batch_n; if (lost_at == -2) { const char *e = getenv("DM_TEST_UP_LOST"); lost_at = e ? atoi(e) : -1; } int fake_lost = dsts.count && lost_at > 0 && (int)++batch_n == lost_at;
 
     atomic_fetch_add(&g_up_pending, 1);
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> f) {
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> f) {
         if (f.error) MLOG("【红】上传命令缓冲执行出错：%s", f.error.description.UTF8String);
         if (f.error || fake_lost) {
             os_unfair_lock_lock(&g_up_lost_lk); if (!g_up_lost) g_up_lost = [NSHashTable weakObjectsHashTable]; for (id d in dsts) [g_up_lost addObject:d]; int n = (int)g_up_lost.allObjects.count; atomic_store(&g_up_lost_n, n); os_unfair_lock_unlock(&g_up_lost_lk);
@@ -1985,7 +2019,7 @@ static void up_flush(void) {
         atomic_store(&g_up_alloc_busy[slot], 0);
         atomic_fetch_sub(&g_up_pending, 1);
         up_wake();
-    }];
+    })];
     res_commit();
     [cb commit];
     g_up_cb = nil;
@@ -2969,7 +3003,7 @@ static void pg_commit(id<MTLCommandBuffer> cb) {   // Hand this submission's pas
     if (!g_pg || !g_pg_np) return;
     int n = g_pg_np; pg_pass *ps = malloc(n * sizeof *ps); memcpy(ps, g_pg_pass, n * sizeof *ps);
     id<MTLCounterSampleBuffer> buf = g_pg_buf[g_pg_b]; uint32_t used = g_pg_used;
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) {
         (void)c;
         NSData *d = [buf resolveCounterRange:NSMakeRange(0, used)];
         const MTLCounterResultTimestamp *ts = d.bytes;
@@ -3001,7 +3035,7 @@ static void pg_commit(id<MTLCommandBuffer> cb) {   // Hand this submission's pas
         }
         pthread_mutex_unlock(&g_pg_mu);
         free(ps);
-    }];
+    })];
 }
 void ts_after(void);
 void ms_after(void);
@@ -4235,7 +4269,7 @@ static id<MTLTexture> tex_promote_2d_cube(int tid, id<MTLTexture> t, uint64_t *r
         }
     }
     [b endEncoding];
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { if (done.error) MLOG("【红】2D→Cube 提升拷贝失败（贴图号 %d）：%s", tid, done.error.description.UTF8String); }];
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> done) { if (done.error) MLOG("【红】2D→Cube 提升拷贝失败（贴图号 %d）：%s", tid, done.error.description.UTF8String); })];
     res_commit(); [cb commit];
 
     id<MTLTexture> v = [base newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureTypeCube
@@ -6507,12 +6541,12 @@ static void lp_finish(void) {
         [b copyFromTexture:ref sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:br destinationOffset:0 destinationBytesPerRow:bpp destinationBytesPerImage:bpp];
     enc_b_end(b);
         unsigned long long pass = [e[3] unsignedLongLongValue], ser = [e[5] unsignedLongLongValue]; int idx = [e[4] intValue];
-        [dcb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c;
+        [dcb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c;
             const uint8_t *p = bt.contents, *r = br.contents; uint64_t left = 0; char at[96] = ""; size_t ao = 0;
             for (NSUInteger k = 0; k < W * H; k++) if (!memcmp(p + k * bpp, r, bpp)) { if (left++ < 4) ao += snprintf(at + ao, sizeof at - ao, " (%lu,%lu)", (unsigned long)(k % W), (unsigned long)(k / W)); }
             if (left) MLOG("【红】读入可省探针：通道 %llu c%d ser=%llu lv%lu sl%lu %lux%lu 剩哨兵像素 %llu，前几个位置%s", pass, idx, ser, (unsigned long)lv, (unsigned long)sl, (unsigned long)W, (unsigned long)H, (unsigned long long)left, at);
             else MLOG("读入可省探针：通道 %llu c%d ser=%llu lv%lu sl%lu %lux%lu 全覆盖（哨兵剩 0）", pass, idx, ser, (unsigned long)lv, (unsigned long)sl, (unsigned long)W, (unsigned long)H);
-        }];
+        })];
     }
     [dcb commit];
 }
@@ -9252,13 +9286,13 @@ static void sub_cut(void) {
     uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
     NSArray<NvDeferredRelease *> *cut_retire = defer_take_cut_batch();
 
-    [g_cb addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    [g_cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> cb) {
         log_function_errors(cb, "split", f);
         gpu_tag_done(f, cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int k; if (k++ < 8) MLOG("【红】分段命令缓冲执行出错：%s", cb.error.description.UTF8String); }
         defer_release_batch(cut_retire);
         res_commit();
-    }];
+    })];
     res_commit();
     [g_cb commit];
     atomic_fetch_add_explicit(&g_cut_committed_diag, 1, memory_order_relaxed);
@@ -9605,11 +9639,11 @@ static void grab_present(id<MTLTexture> src, const int crop[4], CGSize sz) {
     id<MTLBlitCommandEncoder> b = [cb2 blitCommandEncoder];
     [b copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1) toBuffer:buf destinationOffset:0 destinationBytesPerRow:row destinationBytesPerImage:row * h];
     [b endEncoding];
-    [cb2 addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c;
+    [cb2 addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c;
         CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGContextRef ctx = CGBitmapContextCreate(buf.contents, w, h, 8, row, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
         CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; cb(img);
-        CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs); }];
+        CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs); })];
     [cb2 commit];
 }
 void dm_gfx_shot_at(long k, const char *path) {
@@ -9975,7 +10009,7 @@ static id<MTLTexture> legacy_present_upscale(id<MTLCommandBuffer> cb, id<MTLText
     scaler.inputContentWidth = size.width; scaler.inputContentHeight = size.height;
     [scaler encodeToCommandBuffer:cb];
     id<MTLFXSpatialScaler> submitted = scaler;
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c; (void)submitted; }];
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c; (void)submitted; })];
     return out;
 }
 
@@ -10064,13 +10098,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x0, y0, 0) sourceSize:MTLSizeMake(w, h, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:w * 4 destinationBytesPerImage:w * h * 4];
         [b endEncoding];
         unsigned long long n = g_present_n, tns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-        [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c; const uint8_t *q = rb.contents; uint64_t sum = 0;
+        [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> c) { (void)c; const uint8_t *q = rb.contents; uint64_t sum = 0;
             uint8_t g[4096]; NSUInteger ng = 0;   // Subsampled grayscale thumbnail (every 4th row / column, at most 4096 points), recorded along with the mean, for per-frame image correlation analysis
             for (NSUInteger y = 0; y < h; y += 4) for (NSUInteger x = 0; x < w && ng < sizeof g; x += 4) { const uint8_t *px = q + 4 * (y * w + x); g[ng++] = (uint8_t)((px[0] + px[1] + px[2]) / 3); }
             for (NSUInteger k = 0; k < w * h; k++) sum += q[4 * k] + q[4 * k + 1] + q[4 * k + 2];
             pthread_mutex_lock(&rlmu); fprintf(rlf, "%llu\t%llu\t%.4f\t", n, tns, sum / (3.0 * w * h));
             for (NSUInteger k = 0; k < ng; k++) fprintf(rlf, "%02x", g[k]);
-            fputc('\n', rlf); fflush(rlf); pthread_mutex_unlock(&rlmu); }];
+            fputc('\n', rlf); fflush(rlf); pthread_mutex_unlock(&rlmu); })];
         [cb commit];
     }
     // DM_NVN_SHOT=frame number[,frame number...]:path (%d in the path is replaced with the frame number)
@@ -10106,14 +10140,14 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 
     NvPresentProbe *probe = ticket % 120 == 0 ? [NvPresentProbe new] : nil;
     if (probe) { probe->lock = (os_unfair_lock)OS_UNFAIR_LOCK_INIT; probe->ticket=ticket;probe->frame=frame;probe->queued=queued_at; }
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> f) {
+    [cb addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> f) {
         if (f.error) MLOG("【红】上屏命令缓冲错误：%s", f.error.description.UTF8String);
 #if TARGET_OS_SIMULATOR
         if (f.status == MTLCommandBufferStatusCompleted) atomic_fetch_add(&g_displayed_n, 1);
 #endif
         present_probe_note(probe,2,f.GPUStartTime,f.GPUEndTime);
         pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
-    }];
+    })];
     pthread_mutex_lock(&g_pq_mu); g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
     g_present_alloc_fence[alloc_i] = ticket;
 #if TARGET_OS_SIMULATOR   // The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
@@ -10123,7 +10157,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if !DM_HAVE_METAL_DISPLAY_LINK
     uint64_t generation = atomic_load(&g_classic_generation);
 #endif
-    [dr addPresentedHandler:^(id<MTLDrawable> d) {
+    [dr addPresentedHandler:classic_track_drawable(^(id<MTLDrawable> d) {
 #if !DM_HAVE_METAL_DISPLAY_LINK
         pthread_mutex_lock(&g_classic_callback_mu);
         if (generation != atomic_load(&g_classic_generation)) { pthread_mutex_unlock(&g_classic_callback_mu); return; }
@@ -10135,13 +10169,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if !DM_HAVE_METAL_DISPLAY_LINK
         pthread_mutex_unlock(&g_classic_callback_mu);
 #endif
-    }];
+    })];
 #endif
     // Scheduling stays asynchronous on both paths. A classic frame keeps its
     // layer handoff claim until the drawable's present call returns, not merely
     // until commit returns: attaching a link earlier forbids minimum duration.
     // GPU completion independently gates swapchain/UV-buffer reuse.
-    [cb addScheduledHandler:^(id<MTLCommandBuffer> scheduled) {
+    [cb addScheduledHandler:classic_track_command(^(id<MTLCommandBuffer> scheduled) {
         (void)scheduled;
         double scheduled_at = probe ? CACurrentMediaTime() : 0;
 #if TARGET_OS_SIMULATOR
@@ -10151,7 +10185,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #endif
         present_probe_note(probe,1,scheduled_at,0);
         if (!supplied) classic_present_done();
-    }];
+    })];
     if (probe) probe->commit = CACurrentMediaTime();
     [cb commit];
     if (target_ts > 0) {
@@ -10329,7 +10363,12 @@ static void *present_main(void *arg) {
         pthread_mutex_lock(&g_pq_mu);
 #if !DM_HAVE_METAL_DISPLAY_LINK
         while (g_pq_read == g_pq_in && !g_classic_worker_stop) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
-        if (g_classic_worker_stop) { pthread_mutex_unlock(&g_pq_mu); break; }
+        if (g_classic_worker_stop) {
+            g_classic_worker_done = 1;
+            pthread_cond_broadcast(&g_pq_cv);
+            pthread_mutex_unlock(&g_pq_mu);
+            break;
+        }
 #else
         while (g_pq_read == g_pq_in || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
 #endif
@@ -10353,27 +10392,57 @@ uint32_t mtl_present_qos(void) { return atomic_load(&g_present_qos); }
 static void present_start(void) { pthread_t th; if (pthread_create(&th, NULL, present_main, NULL)) MDIE("出图线程起不来"); pthread_detach(th); }
 #endif
 static _Atomic int g_present_discard;
-#if !DM_HAVE_METAL_DISPLAY_LINK
-// Call after the guest renderer has been quiesced. This stops the presenter
-// only; workers that build shaders and the rest of the GPU state are separate.
-void mtl_classic_present_stop(void) {
+#if !DM_HAVE_METAL_DISPLAY_LINK && defined(DM_CLASSIC_SHELF_LIFECYCLE)
+static uint64_t classic_gpu_time_left(uint64_t deadline) {
+    uint64_t now = now_ns();
+    return deadline > now ? deadline - now : 0;
+}
+static void classic_present_wait(uint64_t left) {
+    struct timespec remaining = { (time_t)(left / NSEC_PER_SEC), (long)(left % NSEC_PER_SEC) };
+    pthread_cond_timedwait_relative_np(&g_pq_cv, &g_pq_mu, &remaining);
+}
+// Only one exit coordinator calls this, after the guest renderer stopped.
+static int classic_present_stop(uint64_t deadline) {
     pthread_mutex_lock(&g_pq_mu);
     g_classic_worker_stop = 1;
     atomic_store(&g_present_discard, 1);
     pthread_cond_broadcast(&g_pq_cv);
-    pthread_mutex_unlock(&g_pq_mu);
-    if (g_classic_worker_started) pthread_join(g_classic_worker, NULL);
-    pthread_mutex_lock(&g_pq_mu);
-    g_classic_worker_started = 0;
-    while (g_pq_inflight || g_classic_pending) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+    while ((g_classic_worker_started && !g_classic_worker_done) || g_pq_inflight || g_classic_pending) {
+        uint64_t left = classic_gpu_time_left(deadline);
+        if (!left) { pthread_mutex_unlock(&g_pq_mu); return 0; }
+        classic_present_wait(left);
+    }
+    int started = g_classic_worker_started;
     g_pq_read = g_pq_done = g_pq_in;
-    pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
+    if (started && pthread_join(g_classic_worker, NULL)) return 0;
+    g_classic_worker_started = 0;
     pthread_mutex_lock(&g_classic_callback_mu);
     atomic_fetch_add(&g_classic_generation, 1);
     pthread_mutex_unlock(&g_classic_callback_mu);
+    return 1;
+}
+
+// The caller has stopped guest submits and detached the UIKit display link.
+// Fence the queue even if a submission had no host callback of its own.
+int mtl_classic_gpu_stop(uint64_t timeout_ns) {
+    uint64_t deadline = now_ns() + MIN(timeout_ns, INT64_MAX);
+    if (!mtl_classic_compile_stop(classic_gpu_time_left(deadline))) return 0;
+    if (!classic_present_stop(deadline)) return 0;
+    dispatch_group_t pending = classic_gpu_callbacks();
+    __block MTLCommandBufferStatus fence_status = MTLCommandBufferStatusCompleted;
+    if (g_q) {
+        id<MTLCommandBuffer> fence = [g_q commandBuffer];
+        if (!fence) return 0;
+        [fence addCompletedHandler:classic_track_command(^(id<MTLCommandBuffer> completed) { fence_status = completed.status; })];
+        [fence commit];
+    }
+    if (dispatch_group_wait(pending, dispatch_time(DISPATCH_TIME_NOW, (int64_t)classic_gpu_time_left(deadline)))) return 0;
+    if (fence_status != MTLCommandBufferStatusCompleted) return 0;
+    return nvn_cache_stop_for_shell(classic_gpu_time_left(deadline));
 }
 #endif
+
 void mtl_link_pause(int on);
 // The short period when the front end goes to the background and waits for the game to save: presents are dropped directly (the display link does not call back in the background, enqueueing would block the game thread; nobody sees the picture anyway).
 // When turned on, also clear the frames already queued: the system first stops the display-link callback and only afterwards notifies about going to the background, and in that gap the game has already filled the swapchain and is stuck at "before acquiring the next texture, wait for its previous present to be processed"

@@ -47,3 +47,28 @@ void dm_term_install(void) {
     dispatch_source_set_event_handler(src, ^{ dm_host_shutdown("SIGTERM"); });
     dispatch_resume(src);
 }
+
+#if defined(DM_CLASSIC_SHELF_LIFECYCLE)
+#include "save_sync.h"
+unsigned dm_guest_pthreads_alive(void);
+int dm_gfx_classic_stop_for_shell(uint64_t timeout_ns);
+int dm_cheats_stop_for_shell(void);
+
+// The shell must already have closed front-end admissions and retired its
+// guest. A successful worker fence is necessary but does not release renderer,
+// UIKit or guest memory ownership and does not by itself authorize a return.
+int dm_host_classic_fence_for_shell(int budget_ms) {
+    if (budget_ms <= 0 || dm_guest_pthreads_alive()) return 0;
+    uint64_t t0 = now_ns();
+    if (!dm_gfx_classic_stop_for_shell((uint64_t)ms_left(t0, budget_ms) * NSEC_PER_MSEC)) {
+        LOG("[RED] shelf: the classic renderer did not quiesce");
+        return 0;
+    }
+    if (!dm_cheats_stop_for_shell()) return 0;
+    if (!save_sync_stop_for_shell(ms_left(t0, budget_ms))) {
+        LOG("[RED] shelf: a save sync worker still owns this session");
+        return 0;
+    }
+    return 1;
+}
+#endif
