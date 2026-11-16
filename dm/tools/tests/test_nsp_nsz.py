@@ -69,14 +69,14 @@ class Nsz(unittest.TestCase):
         # update ambiguous; the converter then tried to decompress metadata.
         self.upd.rename(self.upd.with_name('Update [' + f'{APP | 0x800:016X}' + '].nsz'))
         real = self.tmp / ('._Real [' + f'{APP | 0x1001:016X}' + '][v0].nsp')
-        pfs0(real, [f'{APP | 0x1001:016x}0000000000000011.tik'])
+        pfs0(real, [meta(APP | 0x1001)])
         for package in list(self.tmp.glob('*.nsz')):
             (self.tmp / ('._' + package.name)).write_bytes(b'\x00\x05\x16\x07\x00\x02\x00\x00metadata')
-        app, family = nsp.scan_nsps(self.tmp)
+        app, family = nsp.scan_nsps(self.tmp, fake_contents)
         self.assertEqual(app, APP)
         self.assertEqual(len(family['updates']), 1)
         self.assertEqual(family['dlc'][0][2], real)
-        have = nsp.nsp_versions(family, ['v0', 'v65536'])
+        have = nsp.nsp_versions(family)
         self.assertEqual(have['v65536'], family['updates'][0][1])
 
     def test_scan_and_convert(self):

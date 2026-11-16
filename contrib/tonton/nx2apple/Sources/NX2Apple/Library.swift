@@ -19,6 +19,7 @@ struct LibraryGame: Codable, Identifiable, Equatable {
     /// level down (a "nsp本体" folder inside the game's folder) still holds the update and DLC, so the scan climbs to
     /// the folder that does. Empty for a library written before it was recorded; the base package's folder is used then.
     var sourceFolder = ""
+    var preferredBuildSource: String? = nil
     /// The image of an earlier version, a path: migrateArtwork moves it into `artwork` and empties it. Still read, so an old library loads.
     var artworkPath = ""
     var artwork = GameArtwork()
@@ -93,6 +94,7 @@ extension LibraryGame {
         inputs = try c.decodeIfPresent([String: [String]].self, forKey: .inputs) ?? [:]
         outputDirectory = try c.decodeIfPresent(String.self, forKey: .outputDirectory) ?? ""
         sourceFolder = try c.decodeIfPresent(String.self, forKey: .sourceFolder) ?? ""
+        preferredBuildSource = try c.decodeIfPresent(String.self, forKey: .preferredBuildSource)
         artworkPath = try c.decodeIfPresent(String.self, forKey: .artworkPath) ?? ""
         artwork = (try? c.decodeIfPresent(GameArtwork.self, forKey: .artwork)) ?? GameArtwork()
         launchOptions = try c.decodeIfPresent([String: String].self, forKey: .launchOptions) ?? [:]
@@ -462,8 +464,8 @@ final class GameLibrary: ObservableObject {
                     let previousSelection = self.selectedID
                     for source in sources {
                         if var existing = self.games.first(where: { $0.titleID == source.titleID }) {
-                            if existing.inputs["base", default: []].isEmpty { existing.inputs = source.inputs }
-                            else {
+                            if existing.preferredBuildSource == nil && existing.inputs["base", default: []].isEmpty { existing.inputs = source.inputs }
+                            else if existing.preferredBuildSource == nil {
                                 // Slots the library has empty and the scan fills: an update or DLC added since, or a game
                                 // recorded before the scan climbed out of a "nsp本体" folder (nothing was found beside it then).
                                 for slot in ["update", "dlc", "keys"] where existing.inputs[slot, default: []].isEmpty {

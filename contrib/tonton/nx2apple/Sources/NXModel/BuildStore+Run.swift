@@ -159,7 +159,9 @@ extension BuildStore {
         var args = (target != BuildTarget.mac && requiresCompatibilityIPA
                     ? [compatibilityDriver, "--minimum-ios", iosBuildTarget.rawValue, "--legacy-target", iosLegacyGPU, "--engine-cache", buildRoot + "/.tonton-engines", inputDir]
                     : [engine + "/" + RepoLayout.buildScript, inputDir]) + (folder != nil ? [] : ["-k", keysPath]) + ["--progress", "json"]
-        if let selectedTitleID { args += ["--title-id", selectedTitleID] }
+        if let expectedTitle = selectedTitleID ?? (local == nil ? nil : gameTitleID) {
+            args += ["--title-id", expectedTitle]
+        }
         if !compatibilityInstall.isEmpty { args += ["--existing-gamebox", compatibilityInstall] }
         // A small env file the pipeline copies into the app bundle (main.m sets one variable per line at boot). Only for an iPhone or
         // iPad build: the in-game menu's words in the launcher's language (GameMenuText, #1129), and the CPU decode of BC textures when

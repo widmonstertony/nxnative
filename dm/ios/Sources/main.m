@@ -287,6 +287,11 @@ static int boot_env(void) {
     if (!set_data_env(romfs, NO)) { if (!romfs) romfs_identity_report(doc);   // a slim build says why its romfs.img was not used
         fprintf(stderr, "boot: no game data yet (Documents/romfs.img, Documents/romfs or <App>/romfs); the launcher asks for it\n"); }
     setenv("DM_GUEST_FILE_DIR", NSTemporaryDirectory().fileSystemRepresentation, 0);   // DM_GUEST_FILE (hle_svc.c) keeps the guest's memory in files there
+    NSString *program_dir = g_prog ? [res stringByAppendingPathComponent:g_prog] : res;
+    NSString *siblings = [program_dir stringByAppendingPathComponent:@"romfs_programs"];
+    if ([fm fileExistsAtPath:siblings]) setenv("DM_ROMFS_PROGRAMS", siblings.fileSystemRepresentation, 0);
+    NSString *control = [dm stringByAppendingPathComponent:@"control.nacp"];
+    if ([fm fileExistsAtPath:control]) setenv("DM_CONTROL_NACP", control.fileSystemRepresentation, 0);
     setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     // Shader libraries: a game's own <gdir>/msl first (a per-game layout may carry its own), else
     // the app's shared <App>/msl (the program's <App>/msl/p<N> in a game of several programs).

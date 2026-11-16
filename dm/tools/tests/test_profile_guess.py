@@ -84,6 +84,11 @@ class GlslSources(unittest.TestCase):
     def test_language_preamble_is_not_a_shader(self):
         self.assertEqual(pg.glsl_sources(b'#version 450 core\n#define float4 vec4\n\0void main() {}\0'), 0)
 
+    def test_gl_prefixes_are_not_sources(self):   # DOOM 3's main: the prefix its renderer puts before the GLSL it makes at run time, so the game gets a run-time capture
+        image = b'\0#version 150\n#define PC\nfloat saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n\0#version 330\nvoid main() {}\0'
+        self.assertEqual(pg.gl_sources(image), 1)
+        self.assertEqual(pg.gl_sources(image[:image.index(b'#version 330') - 1]), 0)
+
     def test_complete_embedded_sources(self):
         image = b'#version 450\nvoid main() {}\0#version 450\nvoid main (void) {}\0'
         self.assertEqual(pg.glsl_sources(image), 2)
@@ -128,7 +133,9 @@ class UnrealMemory(unittest.TestCase):
         }
         keys = pg.guess(facts, hooks=set())
         reserve, alias, stack = (int(keys[k][0], 0) for k in ('mem_reserve', 'mem_alias', 'mem_stack'))
-        self.assertGreaterEqual(alias, 64 * 1024**3)
+        # An iPhone reserves the profile's block as it is: 5 GB is the total proven on a phone (issue #2278: a 64 GB block stopped Dispatch at launch)
+        self.assertLessEqual(reserve, 5 * 1024**3)
+        self.assertGreaterEqual(alias, 4 * 1024**3)
         # mem_init puts the modules before the alias region, then stacks and the heap.
         heap = reserve - 0x10000000 - alias - stack
         self.assertGreaterEqual(heap, 128 * pg.MiB)

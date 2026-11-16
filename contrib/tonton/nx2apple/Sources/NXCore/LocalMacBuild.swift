@@ -14,12 +14,30 @@ package struct LocalMacBuild: Codable, Equatable, Sendable {
     package let profileDirectories: [String]
     package var nvnCapture: String?
 
+    package static func registered(titleID: String, file: String? = ProcessInfo.processInfo.environment["TONTON_BUILD_CONFIG"]) -> Self? {
+        guard let file, let data = FileManager.default.contents(atPath: file) else { return nil }
+        return (try? JSONDecoder().decode([String: Self].self, from: data))?[titleID]
+    }
+
     package static func load(titleID: String, source: String, file: String? = ProcessInfo.processInfo.environment["TONTON_BUILD_CONFIG"]) -> Self? {
-        guard let file, let data = FileManager.default.contents(atPath: file),
-              let configs = try? JSONDecoder().decode([String: Self].self, from: data), let config = configs[titleID],
+        guard let config = registered(titleID: titleID, file: file),
               URL(fileURLWithPath: source).resolvingSymlinksInPath().standardizedFileURL.path ==
                 URL(fileURLWithPath: config.sourceDirectory).resolvingSymlinksInPath().standardizedFileURL.path else { return nil }
         return config
+    }
+
+    /// Change only the registered location. The version, output, profiles and caches belong to the game.
+    package static func replaceSource(titleID: String, with source: String,
+                                      file: String? = ProcessInfo.processInfo.environment["TONTON_BUILD_CONFIG"]) throws {
+        guard let file, FileManager.default.fileExists(atPath: file) else { return }
+        let url = URL(fileURLWithPath: file)
+        guard var configs = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: [String: Any]] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        guard var config = configs[titleID], config["sourceDirectory"] as? String != source else { return }
+        config["sourceDirectory"] = source
+        configs[titleID] = config
+        try JSONSerialization.data(withJSONObject: configs, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
     }
 
     package var arguments: [String] {

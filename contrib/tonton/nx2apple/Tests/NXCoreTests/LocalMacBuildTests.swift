@@ -20,5 +20,14 @@ final class LocalMacBuildTests: XCTestCase {
         XCTAssertNil(LocalMacBuild.load(titleID: "0100000000010000", source: config.sourceDirectory, file: file.path))
         XCTAssertTrue(config.arguments.contains("v131072"))
         XCTAssertEqual(config.environment["DM_NVN_CAPTURE"], "/tmp/nvn")
+
+        let newSource = root.appendingPathComponent("external/game.nup").path
+        try LocalMacBuild.replaceSource(titleID: "0400486024DEC000", with: newSource, file: file.path)
+        XCTAssertNil(LocalMacBuild.load(titleID: "0400486024DEC000", source: config.sourceDirectory, file: file.path))
+        let moved = try XCTUnwrap(LocalMacBuild.load(titleID: "0400486024DEC000", source: newSource, file: file.path))
+        XCTAssertEqual(moved.workDirectory, config.workDirectory)
+        XCTAssertEqual(moved.outputDirectory, config.outputDirectory)
+        XCTAssertEqual(moved.arguments, config.arguments)
+        XCTAssertEqual(moved.environment, config.environment)
     }
 }

@@ -52,7 +52,7 @@ class RomfsFrom(unittest.TestCase):
         return 0
 
     def extract(self, name='v0', marker='Data/marker'):
-        return nsp.extract(Path('nx_extract'), Path('prod.keys'), self.ex, name, self.base, None, self.logs, {'romfs_marker': marker}, APP, self.repo)
+        return nsp.extract(Path('nx_extract'), Path('prod.keys'), self.ex, name, self.base, None, self.logs, APP, self.repo, marker=marker)
 
     def donor(self, name='v0'):   # what the other platform's build left: the image with its identity file, as the launcher's games/<title ID>/romfs.img
         d = self.extract(name)

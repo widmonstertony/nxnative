@@ -6,15 +6,23 @@ import NXModel
 /// never opens game data or saves and does not disturb the launcher's own queue.
 struct TonTonUpdates: View {
     @EnvironmentObject var loc: Localizer
+    @State private var cancelError = false
     private struct Job: Decodable, Identifiable {
         let title: String
         let name: String
         let state: String
         let detail: String?
         let log: String?
+        let cancelToken: UUID?
         var id: String { title }
     }
     private struct Report: Decodable { let jobs: [Job] }
+
+    private func cancelRequest(for job: Job, reportPath: String) -> URL? {
+        guard job.state == "running", let token = job.cancelToken else { return nil }
+        return URL(fileURLWithPath: reportPath).deletingLastPathComponent()
+            .appendingPathComponent("cancel-\(token.uuidString.lowercased())")
+    }
 
     private func phase(_ job: Job) -> String? {
         guard job.state == "running", let path = job.log,
@@ -53,6 +61,13 @@ struct TonTonUpdates: View {
                                 }
                             }
                             Spacer()
+                            if let request = cancelRequest(for: job, reportPath: path) {
+                                let pending = FileManager.default.fileExists(atPath: request.path)
+                                Button(loc.t(pending ? "tonton.cancellingBuild" : "tonton.cancelBuild")) {
+                                    do { try Data().write(to: request, options: .atomic) }
+                                    catch { cancelError = true }
+                                }.disabled(pending)
+                            }
                             if let log = job.log, FileManager.default.fileExists(atPath: log) {
                                 Button(loc.t("tonton.viewLog")) { NSWorkspace.shared.open(URL(fileURLWithPath: log)) }
                             }
@@ -63,6 +78,9 @@ struct TonTonUpdates: View {
                     Label(loc.t("tonton.updates"), systemImage: "arrow.triangle.2.circlepath").font(.headline)
                 }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
             }
+        }
+        .alert(loc.t("tonton.cancelBuildFailed"), isPresented: $cancelError) {
+            Button(loc.t("library.ok"), role: .cancel) {}
         }
     }
 }

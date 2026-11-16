@@ -633,6 +633,10 @@ struct LauncherView: View {
 
     func configureBuild(_ game: LibraryGame) {
         guard !m.running else { page = .builds; return }
+        if let source = game.preferredBuildSource, !FileManager.default.fileExists(atPath: source) {
+            launchError = String(format: loc.t("library.buildSourceUnavailable"), source)
+            return
+        }
         if let folder = game.inputs[GameLibrary.folderInput]?.first {
             m.scan(folder: folder)   // a game folder is read again: its updates and DLC may have changed since
         } else {
@@ -736,7 +740,7 @@ struct LauncherView: View {
                         hasLog: GameLog.latest(titleID: game.titleID, appPath: game.appPath) != nil,
                         deviceName: devices.deviceName(game.installedDevice), launching: launching,
                         actions: ManageActions(
-                            rebuild: { configureBuild(game) }, openOnDevice: { openOnDevice(game) }, options: { optionsFor = game.id }, saves: { savesFor = game.id }, cheats: { cheatsFor = game.id },
+                            rebuild: { configureBuild(game) }, changeBuildSource: { chooseBuildSource(game) }, openOnDevice: { openOnDevice(game) }, options: { optionsFor = game.id }, saves: { savesFor = game.id }, cheats: { cheatsFor = game.id },
                             changeArtwork: { openArtwork(game) }, rename: { renaming = game },
                             reveal: { if let path = game.revealTarget { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) } },
                             showLog: { if let log = GameLog.latest(titleID: game.titleID, appPath: game.appPath) { GameLog.show(log) } },

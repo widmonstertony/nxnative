@@ -6,6 +6,7 @@ import NXLauncher
 /// reach into the launcher's state.
 struct ManageActions {
     var rebuild: () -> Void = {}
+    var changeBuildSource: (() -> Void)? = nil
     var openOnDevice: () -> Void = {}
     var options: () -> Void = {}
     var saves: () -> Void = {}
@@ -37,6 +38,9 @@ struct ManageItem: Identifiable {
                      actions a: ManageActions) -> [ManageItem] {
         var items = [ManageItem(id: "rebuild", symbol: "arrow.clockwise", title: t(olderTools ? "library.rebuild" : "library.buildAgain"),
                                 enabled: !running && GameBuildSetup.hasInputs(game.inputs), run: a.rebuild)]
+        if let change = a.changeBuildSource {
+            items.append(.init(id: "buildSource", symbol: "externaldrive", title: t("library.changeBuildSource"), enabled: !running, run: change))
+        }
         if game.isReady {
             if game.onDevice {
                 items.append(.init(id: "device", symbol: "iphone", title: String(format: t("dev.open"), deviceName),
