@@ -15,6 +15,42 @@ static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("missing symbo
 // Game arguments: argv[0] is fixed to "game", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
 static char *g_argv[64] = {"game"}; static int g_argc = 1;
 
+static uint64_t boot_memory_info(unsigned type) {
+    uint64_t regs[8] = {0, type};
+    uint64_t svc_dispatch(int, uint64_t *, uint64_t);
+    svc_dispatch(0x29, regs, 0);  // Horizon GetInfo
+    return regs[0] ? 0 : regs[1];
+}
+
+static void sdk_0_12_rebase_allocators(void) {
+    // SDK 0.12.17 does not ask GetInfo for these regions. Its nnosInitialize
+    // constructs both allocators at 0x08000000, outside the host's guest block.
+    // Rebase their page bounds after construction, before the game starts any
+    // threads. Keep the initialized locks and the original guard size.
+    static const char build[] = "3b353895d8e688841c45c34b45169228";
+    for (int i = 0; i < g_nmod; ++i) {
+        module_t *sdk = &g_mod[i];
+        if (strcmp(sdk->name, "sdk") || strcasecmp(sdk->build_id, build)) continue;
+        uint64_t *storage = guest_sym("_ZN2nn2os6detail26g_OsResourceManagerStorageE");
+        uintptr_t offset = (uintptr_t)storage - (uintptr_t)sdk->base;
+        if (sdk->size < 0x60 || offset > sdk->size - 0x60 || (offset & 7)) return;
+        uint64_t *alias = storage + 0x18 / 8, *stack = storage + 0x40 / 8;
+        if (alias[1] != 0x8000 || alias[2] != 0x1000004 || alias[3] != 4 ||
+            stack[1] != 0x8000 || stack[2] != 0x80004 || stack[3] != 4) return;
+        enum { AliasAddress = 2, AliasSize = 3, StackAddress = 14, StackSize = 15 };
+        uint64_t alias_base = boot_memory_info(AliasAddress), alias_size = boot_memory_info(AliasSize);
+        uint64_t stack_base = boot_memory_info(StackAddress), stack_size = boot_memory_info(StackSize);
+        if (!alias_base || !alias_size || !stack_base || !stack_size ||
+            ((alias_base | alias_size | stack_base | stack_size) & 0xfff)) return;
+        alias[1] = alias_base >> 12;
+        alias[2] = ((alias_base + alias_size) >> 12) + alias[3];
+        stack[1] = stack_base >> 12;
+        stack[2] = ((stack_base + stack_size) >> 12) + stack[3];
+        LOG("[mem] SDK 0.12.17: rebased alias and stack allocators to the guest address block");
+        return;
+    }
+}
+
 static void guest_main(void) {
     guest_thread_init();
     guest_gate_stack(0);   // the guest code runs on this thread's own stack: its SVCs get a stack of their own
@@ -24,6 +60,7 @@ static void guest_main(void) {
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
     ((fn0)req("_init_libc0"))();
     LOG(">>> nnosInitialize"); ((fn2)req("nnosInitialize"))(hmain, 0);
+    sdk_0_12_rebase_allocators();
     ((fn0)req("_init_libc1"))();
     LOG(">>> nninitInitializeSdkModule"); ((fn0)req("nninitInitializeSdkModule"))();
     // The game arguments are in place before nninitStartup, as on hardware (nn::os takes them from the process argument area in nnosInitialize): Unreal Engine's nninitStartup
@@ -116,7 +153,8 @@ static void host_preload(int argc, char **argv) {
     {   // Which build this is: the commit the packer stamped into the app (DMCommit; a run outside an app has none), the shader chain the host loads, the profile
         CFBundleRef b = CFBundleGetMainBundle(); CFTypeRef c = b ? CFBundleGetValueForInfoDictionaryKey(b, CFSTR("DMCommit")) : NULL; char cs[64] = "not recorded";
         if (c && CFGetTypeID(c) == CFStringGetTypeID()) CFStringGetCString((CFStringRef)c, cs, sizeof cs, kCFStringEncodingUTF8);
-        LOG("build: commit %s, shader chain %s, profile %s", cs, DMSH_CHAIN, DM_GAME_ID);
+        LOG("build: commit %s, shader chain %s, profile %s", cs, DMSH_CHAIN, dm_profile()->id);
+        if (getenv("DM_PROFILE")) dm_profile_log();   // a runtime profile: say what it holds
     }
     const char *race = getenv("DM_TEST_KEYRACE");
     if (race && *race) {
@@ -128,16 +166,20 @@ static void host_preload(int argc, char **argv) {
     }
     { void dm_term_install(void); dm_term_install(); }   // SIGTERM graceful exit (hle_lifecycle.c)
     { void crash_set_dump_hook(void (*)(void)); void svc_thread_dump(void); crash_set_dump_hook(svc_thread_dump); }   // Dump guest thread state on a crash
-    const char *names[argc + DM_GAME_NMOD]; int n = 0;
+    const struct dm_profile *prof = dm_profile();   // the game this process runs: the DM_PROFILE file, else the compiled profile
+    const char *names[argc + DM_PROF_MAX_MOD]; int n = 0;
     int i = 2;
     for (; i < argc && strcmp(argv[i], "--"); i++) names[n++] = argv[i];
     if (i < argc && !strcmp(argv[i], "--")) for (i++; i < argc && g_argc < 63; i++) g_argv[g_argc++] = argv[i];
-    else if (*DM_GAME_ARGS) {   // no "--" on the command line (the iOS app, the NSP script's Mac runs): the game profile's game_args, split at spaces
-        char *s = strdup(DM_GAME_ARGS);
+    else if (*prof->args) {   // no "--" on the command line (the iOS app, the NSP script's Mac runs): the game profile's game_args, split at spaces
+        char *s = strdup(prof->args);
         for (char *t = strtok(s, " "); t && g_argc < 63; t = strtok(NULL, " ")) g_argv[g_argc++] = t;
-        LOG("game arguments from the game profile: %s", DM_GAME_ARGS);
+        LOG("game arguments from the game profile: %s", prof->args);
     }
-    if (!n) n = profile_modules(argv[1], names);
+    // The modules: the compiled profile's build row for main's build when the runtime profile is the compiled game (profile_modules), else all the runtime profile's modules
+    // (a game served by DM_PROFILE has no build rows in its file yet). Mario: main sdk
+    if (!n && !strcmp(prof->id, DM_GAME_ID)) n = profile_modules(argv[1], names);
+    if (!n) for (int k = 0; k < prof->nmod; k++) names[n++] = prof->modules[k];
     load_modules(argv[1], names, n);
     dm_cheats_init();   // the Atmosphère cheat files for this build (hle_cheats.c): picked by first 16 hex digits of main's build ID, which the loader knows now
     dm_sdk_major();   // logs the SDK version, which SDK-dependent behaviour follows (loader.c)
@@ -168,6 +210,13 @@ void dm_host_preload_start(int argc, char **argv) {
     if (pthread_create(&g_pre.th, &a, preload_thread, NULL)) die("dm_host_preload_start: cannot start the thread");
 }
 int main(int argc, char **argv) {
+#if TARGET_OS_OSX
+    if (argc == 2 && !strcmp(argv[1], "--validate-forced-takeovers")) {
+        void dm_validate_forced_takeovers(void);
+        dm_validate_forced_takeovers();
+        return 0;
+    }
+#endif
     { int mtl_pso_prebuild_tool(void); int r = mtl_pso_prebuild_tool(); if (r) return r == 2; }   // DM_PSO_PREBUILD=tool: what a first start would build, made with no game (nvn_mtl.m)
     if (getenv("DM_PRELOAD")) dm_host_preload_start(argc, argv);   // Exercise the early-start path on Mac (on iOS it is called from the App's main())
     if (atomic_load(&g_pre.started)) {

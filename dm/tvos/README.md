@@ -1,0 +1,246 @@
+# Native tvOS development target
+
+This target reuses the host and locally supplied rewritten modules from a
+prepared iOS project. It has its own UIKit/Metal/GameController front end and
+does not change the iPad touch controls. It accepts a Siri Remote, the system
+Apple TV Remote on an iPhone/iPad, or an extended gamepad.
+
+## Remote controls
+
+With the game visible, swipe/hold the touch surface or use the directional ring
+to move, click to press A, and press Back/Menu to press B. Play/Pause opens the
+full controls panel. Choose Camera stick or D-pad to change the directional
+input; Resume / Move restores the left stick. The current mode is shown along
+the bottom and is remembered between launches.
+
+The panel provides ABXY, L/R/ZL/ZR, +/− and both stick-click buttons. A normal
+button sends one short press. Hold L/R/ZL/ZR switches retain a shoulder button
+while other controls are used; select the switch again or Release held buttons
+to release it. Back or Play/Pause closes the panel. All inputs, including held
+shoulders, release when the app loses focus. The TV/Home button retains its
+system behavior. This Remote scheme covers the full gamepad through modes,
+although a dual-stick gamepad is faster for simultaneous camera/movement.
+
+The iPhone/iPad Control Center Apple TV Remote uses the UIKit directional and
+Select/Back/Play-Pause events. Connect it to the same Apple TV and use the
+same controls panel; no extra controller app or web server is required. Its
+directional input is digital. Physical touch-surface pan gestures also provide
+proportional stick input. The frontend does not claim touch-surface pan support
+from every phone Remote version. The production handler has portable state and
+tvOS simulator UIKit/focus regression tests. Physical phone/Remote input still
+requires verification on the target TV; installation alone does not prove it.
+
+`prepare_project.py` derives the tvOS layered icon and system Top Shelf assets
+from the prepared iOS icon. The in-app shelf uses `--artwork` with the same hero
+image as the Mac, fills the card without stretching, and accepts an optional
+`--display-title` for the localized title. The shelf uses system glass controls
+on tvOS 26 and later and standard focusable controls on earlier versions.
+
+Pass `--gamebox` to open the prepared title in the TonTon game shelf. Add a
+catalogue entry with `--preview-game 01001F5010DFA000 '宝可梦传说：阿尔宙斯' /path/to/banner.jpg`.
+The gamebox then opens a gallery of 16:9 cover cards navigable with the remote.
+Selecting a game opens its settings and Start page. A card is only a preview
+when it has no bundled tvOS runtime. The same app can launch Z-A or a signed
+native Arceus 1.1.1 framework. Arceus has independent game files, shaders,
+controller settings and saves. Z-A retains its bundle identifier, resources,
+and save path. “本游戏设置” stores the controller button
+mapping and controller help preferences for that title. Press Play/Pause on
+the Siri Remote or hold Options on a supported gamepad to open the panel.
+After saving normally in the game, choose
+“存档并返回游戏匣” from the controls panel to pause the session.
+“继续游戏” resumes the same process. One game can own the process at a time:
+to start a different title, first save and reopen the gamebox. A card never
+loads an iOS framework.
+
+## Static signed module layout
+
+The linker places each module in contiguous 16 KiB-aligned RX/RW/RX segments.
+The middle segment includes the original read-only data, writable data, BSS and
+key-page contents. Module-relative addresses and all original bytes are retained.
+The loader only writes already-writable data and reduces the key page to read
+protection. It does not make signed TEXT writable, remap executable code, or use
+JIT. Native host TEXT, unwind information and Objective-C metadata keep their
+normal linker layout. Multiple RX segments are intended for local development;
+this is not an App Store packaging target.
+
+`TARGET_OS_TV` selects this layout in `dm/host/loader.c`. Other platforms keep
+their existing loader. tvOS lacks `sigaltstack`, so crash diagnostics use the
+ordinary signal stack there.
+
+## Build and validate
+
+The existing iOS project must have current `Gen/src`, `Gen/main`, `Gen/dm`, and
+`Gen/embed.S` inputs. The module paths in its assembly must still exist. For
+example, from the repository root:
+
+`prepare_project.py` deliberately removes `Gen/dm/env.txt` from the copied
+inputs. That file comes from an iOS-only profile; tvOS settings belong in the
+app container's writable `env.txt` or in tvOS frontend defaults.
+
+```sh
+python3 dm/tvos/tools/prepare_project.py \
+  --ios-project /path/to/ZA-xcode --output /path/to/ZA-TV-xcode \
+  --team YOUR_TEAM --shader-archive-sha256 YOUR_RESOURCE_ARCHIVE_SHA256
+xcodebuild -project /path/to/ZA-TV-xcode/DmTV.xcodeproj -scheme DmTV \
+  -configuration Release -sdk appletvos -derivedDataPath /path/to/ZA-TV-derived \
+  CODE_SIGNING_ALLOWED=NO build
+python3 dm/tvos/tools/verify_segments.py \
+  /path/to/ZA-TV-derived/Build/Products/Release-appletvos/DmTV.app/DmTV \
+  /path/to/ZA-TV-xcode/Gen
+python3 dm/tvos/tests/test_resources.py
+python3 dm/tvos/tests/test_romfs_patch.py
+clang -std=c11 -I dm/host dm/tvos/tests/test_remote.c -o /tmp/test-tv-remote
+/tmp/test-tv-remote
+python3 dm/tvos/tests/test_remote_ui.py --output /path/to/remote-ui-qa
+```
+
+### Add a native game to the shared library
+
+1. Prepare that title's rewritten modules, fixups and profile for a matching
+   runtime checkout. Use `compile_shaders.py --runtime-source … --package …
+   --source-cache … --output …` with that checkout and the same game profile.
+   Use dedicated tvOS shader and translation caches. The tool preserves the
+   translator's version and generates tvOS libraries, including its variants
+   and matching reflection. Carry over the tables from the completed build.
+2. Package the tvOS output under `msl/` as USTAR/gzip and compute its SHA-256.
+   Build the game framework with `prepare_project.py --runner-title-id …`,
+   `--romfs-identity …` (from `romfs_image.py --identity`) and the archive SHA.
+   Set the same native runtime's title ID in the profile and framework. Run
+   `verify_segments.py` on the framework before signing.
+3. Prepare the main app with its existing configuration and add the built
+   framework with `--runner-framework …` and an artwork entry with
+   `--preview-game TITLE_ID DISPLAY_NAME ARTWORK`. Sign the embedded
+   framework before signing the app. Stage the title's `RomFS.img` and
+   `msl.tar.gz` under `Library/Caches/TonTonGames/<UPPERCASE_TITLE_ID>/`.
+   The runtime checks the image's identity and verifies the shader archive
+   before running the game. Each title uses the title ID in CloudKit and
+   the isolated `save/` directory in its own local root.
+
+To use automatic save sync, pass `--cloud-container` with the existing shared
+private CloudKit container and `--cloud-environment` with the environment used
+by the other platforms. The tvOS App ID and development profile must authorize
+that container. Use the same iCloud account on each device. No folder picker
+is used. Before opening a game, the shelf offers a choice if the local and
+cloud saves disagree, and “离线游玩” keeps that session from changing the cloud
+copy. If the profile is unsigned for CloudKit, or the user switches syncing
+off, local saves remain usable. Changing the automatic sync option after a game
+has started takes effect on the next app launch.
+
+Build 27 was installed in place on all three paired Apple TVs. The living-room
+device opened the shelf with the shared Z-A artwork and connected to CloudKit.
+The simulator exercises library return/resume and conflicting save choices
+with a fixture. A real cross-device save round trip is not yet verified.
+
+Normal Xcode development signing uses the configured team and paired Apple TV.
+Only install when the user has authorized device deployment. The verifier checks
+the native tvOS platform, nonoverlapping segment ranges, RX/RW protections,
+module-relative addresses, alignment, and exact original input bytes.
+
+For a loading-time exit, set `DM_TV_MEMORY_DIAG=1` for that launch to log the
+process footprint and remaining dirty-memory allowance every 250 ms, including
+UIKit memory warnings. It is disabled by default. Metal's allocation total is
+not the process footprint. The existing `DM_MEMSTAT=<absolute TSV path>` tool
+adds a one-second VM-class breakdown; `DM_MEMSTAT_DUMP=<second>` also writes a
+region snapshot. Capture the official termination signal or system report
+before attributing an exit to memory pressure.
+
+`DM_MAP_HEADROOM_MB` is a diagnostic switch that makes a new
+`MapPhysicalMemory` request return `ResultLimitReached` after the process's
+available dirty-memory allowance falls below the selected reserve. Mapping only
+changes protection on reserved virtual pages, so the map's full virtual length
+is not subtracted from the allowance. It defaults to `0` (disabled) on every
+platform: a living-room b18 experiment showed that refusing small runtime maps
+at 640 MiB propagated the error into the game instead of freeing enough cache.
+
+## Progress in the Mac Gamebox
+
+Open **Build → Device builds** to see registered TV jobs in TonTon, including
+shader counts, signing/installation, and whether the device was playtested.
+Register a job in the Mac device-build registry (`schema: 1`, `jobs` array)
+with an ID, title ID (`title`), display `name`, `devices`, `pipeline: true`,
+and absolute `folder`, `log`, and `state_file` paths. Give each job its own
+state file. The registry is local and should not be checked in.
+
+Pass `--progress /absolute/state.json` to `tools/compile_shaders.py`. It reports
+completed base libraries while compiling, then verifies them against the
+translator report. Use `tools/build_progress.py --state-file /absolute/state.json`
+to report later phases. For a running phase pass the PID of the supervisor
+with the absolute state file as a separate argument; this lets the UI
+distinguish an exited job from active work. Installation and playtesting are
+separate states; a successful shader build does not imply either one.
+
+## Resources and saves
+
+The thin app contains code, module tables and font resources. Copy the owned
+RomFS directory into its app-data container at
+`Library/Caches/nxnative/romfs`. Compile shader libraries for tvOS;
+iOS or macOS metallibs are not substitutes. The classic runtime needs
+digest-bound raster companions for affected non-point draws. For Arceus, use
+the pinned runtime's `dm/ios/tools/export_nonpoint_sources.py` with the matching
+translated sources and the tvOS libraries. Put the resulting `nonpoint-v1`
+directory beside those libraries inside the same `b-<chain>` directory.
+Put a USTAR/gzip archive with only
+ordinary `msl/` files/directories at
+`Library/Caches/nxnative/msl.tar.gz`. Its SHA-256 must match the
+build's `DMShaderArchiveSHA256`. The app imports it on a background thread after
+its window appears, verifies SHA-256 and gzip CRC, rejects links and unsafe paths,
+and publishes the complete `msl` directory by rename. The input archive remains
+on failure and is removed only after success. A previous resource directory is
+retained as `.msl-before` during an update.
+
+A complete, independently verified direct directory transfer can publish
+`msl/.archive-sha256` last, containing the build's archive SHA-256. A matching
+marker makes startup use that directory while retaining a pending archive;
+never publish the marker before all resource files have been verified. The
+archive importer also writes this marker after successfully activating files.
+
+The same cache directory holds `env.txt`, `log.txt`, `save`, and `temp`.
+On the tested tvOS 27.2 device, Foundation returned an Application Support path,
+but opening a staged resource there failed with `EPERM`. Caches is readable and
+writable by the app. CoreDevice listing a Support file is not evidence that the
+application sandbox can read it. A resource bundle is also accepted.
+`DM_MSL_DIR` and other explicit
+environment options take precedence. Pipeline cache is disabled initially and
+the original game present interval is retained. Saves still live in the local
+cache, which tvOS can purge while the app is not running or storage is low.
+With authorized CloudKit signing, the shared save engine syncs committed saves
+and requests an upload when returning to the shelf or backgrounding. Without
+working CloudKit, back up local saves separately. See
+[Apple's archived local-storage guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/AppleTV_PG/index.html#//apple_ref/doc/uid/TP40015241-CH12-SW7).
+
+An offline relocated RomFS patch is opt-in. Put its verified schema-4
+`virtual-pack-layout-before-root` bundle in the writable cache and set
+`DM_ROMFS_PATCH` in `env.txt` to that directory (a relative path is resolved
+below `Library/Caches/nxnative`; an absolute path is accepted for development).
+The app prepares it on a background thread before starting guest code. It
+verifies the complete source archive, descriptor, source root tail, compact
+payload, and `redirects.tsv` on first use, then creates an APFS clone overlay
+with the physical layout `source prefix + inserted replacement-pack payload +
+shifted root tail`. The header points to a virtual root, and the shifted root's
+hash-sorted offset vector contains a 16-byte-aligned virtual prefix sum of all
+descriptor sizes. The redirect table maps that complete virtual archive to
+unchanged source packs, inserted replacements, and the shifted physical root.
+
+The materializer updates only the manifest's exact header, shifted-index, and
+descriptor ranges, verifies the inserted payload, shifted root, redirect table,
+and complete outputs, writes and syncs `READY.json` last, then publishes all
+three files with one directory rename. Startup then sets `DM_ROMFS_OVERLAY` and
+`DM_ROMFS_REDIRECTS` together. The file layer validates continuous virtual
+coverage and physical bounds, supports partial and cross-row reads, and reports
+the virtual size for `arc/data.trpfs`; malformed metadata or a short mapped read
+fails closed. Earlier bundle schemas are rejected. The original RomFS stays
+read-only and remains the rollback copy. A failed or interrupted preparation
+never activates either environment variable and never starts the guest; the
+next launch discards an unpublished `.partial` directory. Later launches use a
+bounded READY check (sizes, replacement ranges, inserted-payload SHA-256,
+final-root SHA-256, descriptor SHA-256, and redirect-table SHA-256) rather than
+hashing the unchanged multi-gigabyte archive again. Without the explicit
+environment variable this mechanism does nothing.
+
+An explicit launch environment `DM_TV_VALIDATE_LOADER=1` exercises the real
+module loader, relocations, key pages, and the original guest `memcmp` code
+without requiring game assets. A build/install or linker verification alone
+does not establish this device test, gameplay, performance, or memory stability.
+An `env.txt` setting also enables this diagnostic. Remove the variable and
+terminate the diagnostic app process before a normal launch; an empty value
+still enables it because the entry point checks whether the variable exists.

@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_refl.m.inc"
+#else
 // Shader reflection json (B: produced by translating the original Switch shaders, output of tools/dmsh_build.py) → fixed-length C arrays (nvn_refl.h)
 #import "nvn_refl.h"
 #include "dmsh_abi.h"   // the binding kinds the build writes (DMSH_KIND_*)
@@ -224,3 +228,5 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     }
     #undef FAIL
 }
+
+#endif

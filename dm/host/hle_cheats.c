@@ -129,7 +129,7 @@ static char g_dir[1024];       // cheats folder (DM_CHEATS or <DM_ROOT>/cheats),
 static char g_path[2048];      // the loaded file (logged; "Reload cheats" re-reads exactly this path)
 static char g_build[17];       // the loaded file's build ID: main's build ID cut to 16 hex digits, upper case as the
                                // cheat files name it (dmnt matches the file name case-insensitively on disk)
-static char g_tid[17];         // this game's title ID (the profile's DM_GAME_PROGRAM_ID), for the Atmosphère tree
+static char g_tid[17];         // this game's title ID (the profile's program_id), for the Atmosphère tree
 static char g_others[OTHER_MAX][17]; static int g_nothers;   // builds on disk that are not this game's build
 static char g_other_ver[OTHER_MAX][24];                      // their display versions, from their meta files ("" unknown)
 static char g_version[24];     // this build's display version (the profile's build rows, else the meta file), "" unknown
@@ -1731,11 +1731,9 @@ static void report_build(void) {
 
 // This build's display version from the profile's build rows (by the whole main build ID), as GetDisplayVersion answers it
 static void profile_version(void) {
-#ifdef DM_GAME_DISPLAY_VERSIONS
-    const struct { const char *build, *ver; } k[] = {DM_GAME_DISPLAY_VERSIONS};
+    const struct dm_profile *p = dm_profile();
     const char *bid = dm_main_build();
-    for (unsigned j = 0; j < sizeof k / sizeof *k; j++) if (k[j].build && !strcasecmp(bid, k[j].build)) snprintf(g_version, sizeof g_version, "%s", k[j].ver);
-#endif
+    for (int j = 0; j < p->nver; j++) if (!strcasecmp(bid, p->ver[j].build)) snprintf(g_version, sizeof g_version, "%s", p->ver[j].ver);
 }
 
 // The anchored sources (*.cheats.toml) in the folder, for the panel's "compile them for this build" hint
@@ -1853,7 +1851,7 @@ void dm_cheats_init(void) {
     e = getenv("DM_CHEATS");
     if (e && *e) snprintf(g_dir, sizeof g_dir, "%s", e);
     else { e = getenv("DM_ROOT"); if (e && *e) snprintf(g_dir, sizeof g_dir, "%s/cheats", e); }
-    snprintf(g_tid, sizeof g_tid, "%016llX", (unsigned long long)DM_GAME_PROGRAM_ID);
+    snprintf(g_tid, sizeof g_tid, "%016llX", (unsigned long long)dm_profile()->program_id);
     // g_build: the main NSO's first 16 hex digits, upper case like the menu and the brief state them; the candidate
     // match itself is case-insensitive (name_is_build lower-cases both sides)
     const char *bid = dm_main_build();

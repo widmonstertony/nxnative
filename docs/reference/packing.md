@@ -2,6 +2,27 @@
 
 ## Game packages
 
+### An imported TonTon Mac game selects iPhone when configuring a build
+
+- **Symptom:** configuring an imported Mac game selects the iPhone target and asks for device setup.
+- **Cause:** TonTon's catalog importer wrote `mac`, but `LibraryGame` normalizes only the frontend's `mac-app` token as a Mac target. Other tokens decode as iOS.
+- **Fix:** use `BuildTarget.mac` for imported installed games, catalog placeholders and verified local Mac configurations. The current build form remains the user's choice.
+- **Found on:** [Hyrule Warriors: Age of Imprisonment](../../dm/games/04003F40232DE000/README.md), during setup of an unbuilt Mac game.
+
+### TonTon rejects a complete NUP reached through a symbolic link
+
+- **Symptom:** a managed source link is reported as a partial NUP and its game is absent from the build selection.
+- **Cause:** the frontend opened the target but compared the header's container length with `attributesOfItem` on the link, which reports the link's own size.
+- **Fix:** `GameFolder.readNUP` gets the length from the same open file handle with `seekToEnd`, then seeks to the TOC. The linked input path stays intact; truncated targets still fail the length check. An unavailable target is still rejected.
+- **Found on:** [Hyrule Warriors: Age of Imprisonment](../../dm/games/04003F40232DE000/README.md), a read-only source linked into TonTon's managed input folder. This is an input validation check, not a new gameplay test.
+
+### An iOS build stops when the profile has no prewarm seed list
+
+- **Symptom:** after the shader build, `build_ipa.sh` stops at `copy shader tables` because `pso_manifest.tsv` does not exist. This also stops the shell's game-framework build.
+- **Cause:** a profile may have no recorded pipeline prewarm seeds yet. The host supports that state and still reads the device's own list, but the iOS packager required the optional seed file alongside the required shader tables.
+- **Fix:** copy a recorded seed list when present and report its absence otherwise. Required shader tables and a failed copy of an existing seed list still stop the build. No seed records are invented, and shader cache inputs are unchanged. This does not change shader rebuild or resume decisions.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md), [NX2Apple issue #922](https://github.com/LNPANDY/NX2Apple/issues/922). The separate report of repeated shader compilation remains open.
+
 ### PFS0 file-name table missing its final NUL
 
 - **Symptom:** package identification stops with `ValueError: subsection not found` in `pfs0_names`, or LibHac reports `ResultFsPathNotFound` opening the last file of an NSP.
@@ -92,6 +113,13 @@
 - **Fix:** the translator is rebuilt with Microsoft's .NET SDK. `native_tools.sh` refuses a slice with a weak import before it joins the slices, and `test_native_tools.py` (`test_no_weak_imports`) reads the symbol tables of both committed tools, so a function newer than the minimum macOS cannot be committed again from any Mac. `nx_extract` had none. Measured: over the translator jobs of a full Cuphead shader build, the new arm64 slice wrote the same files as the old one, byte for byte. Not run on macOS 26 here.
 - **Found on:** every game's build on macOS 26 ([GitHub issue #2190](https://github.com/seedds/nxnative/issues/2190), [#2239](https://github.com/seedds/nxnative/issues/2239), [#2227](https://github.com/seedds/nxnative/issues/2227)).
 
+### The Mac host build starts an older Python than the pipeline
+
+- **Symptom:** the Mac host step fails in `host_msl.py` with `TypeError: __init__() got an unexpected keyword argument 'capture_output'`, although the launcher reports a recent bundled Python.
+- **Cause:** the pipeline runs under the selected interpreter, but the host Makefile started `python3` by name. The pipeline's tool folders could put an older installation before the bundled interpreter on `PATH`.
+- **Fix:** `build_mac_host` passes its exact `sys.executable` to both Make invocations as `PYTHON`. The host Makefile quotes that setting for its shader and profile generators, including parse-time profile lookup. Direct Make builds default to `python3` and can set `PYTHON` explicitly. `PATH` is unchanged. Synthetic tests execute the real shader-header target with an unusable `python3` on `PATH` and an explicitly selected versioned interpreter in a path with spaces.
+- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md), version 3.0.0, reported with bundled Python 3.13 and a child Python 3.6 in [NX2Apple issue #711](https://github.com/LNPANDY/NX2Apple/issues/711). The interpreter failure was reproduced synthetically, without game files or a gameplay check.
+
 ### Homebrew .NET is on PATH but apphosts cannot find the runtime
 
 - **Symptom:** the first extraction stops with `nx_extract exit code 131` and `.NET location: Not found`, even though `dotnet` is on `PATH`. The shader translator can fail the same way.
@@ -172,6 +200,20 @@
 - **Found on:** synthetic IPA inputs while reviewing [PR #279](https://github.com/seedds/nxnative/pull/279); no game files required.
 
 ## RomFS images
+
+### Imported Mac games have no rebuild inputs or lose their retained caches
+
+- **Symptom:** a frontend imports installed apps, but Rebuild has empty input rows, rejects complete `romfs.img` dump folders, or creates a second work directory.
+- **Cause:** installed-bundle discovery knows the title and app path, but not the verified source version, custom profile or work directory. The folder scanner accepted unpacked `romfs/` directories only, although `pack_dump.py` accepts images too.
+- **Fix:** the TonTon frontend imports a local build configuration only for the matching title and canonical source directory. It preserves the version and external profile, uses the configured independent work directory and Mac shader cache, and places the result in the chosen Applications subfolder. `GameFolder.scan` accepts the packer's complete image layouts, including a standalone update and image-based DLC. An unrelated source does not inherit that configuration. An already queued/running external update is shown instead of starting a duplicate build. A profile may explicitly declare `graphics_api` (`nvn`, `vulkan`, `gl`) when the imports contain several SDK APIs; this overrides the survey guess without changing other games.
+- **Found on:** the local TonTon library import, including [Ocarina of Time](../../dm/games/0400486024DEC000/README.md), whose complete standalone update has no separate base, and retained Vulkan input for Re:Zero. Synthetic directory, work reuse and output-placement tests pass; these are not gameplay acceptance.
+
+### An unbuilt library entry has a disabled setup button without an explanation
+
+- **Symptom:** Launch options shows an unbuilt game and a disabled Build this game button, even though selecting its source files is the next step.
+- **Cause:** the action required a nonempty `base` slot before opening the setup form and also disabled itself whenever another game was building. Folder/NUP-only inputs were treated as missing by the same base-only checks elsewhere in the UI.
+- **Fix:** use the same input rule for NSP bases and game folders/NUPs. An idle catalog entry with no files opens file setup; an entry with files opens its build configuration. During another build, the action explicitly opens the current progress page and leaves the running task's inputs unchanged. An empty slot or an update alone is not a full input. Untouched imported Mac catalog placeholders use the Mac target.
+- **Found on:** [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md) in the TonTon Mac library. Synthetic tests cover missing files, folders/NUPs, update-only inputs and an active build. This UI change does not repair a damaged original package.
 
 ### RomFS folder transfers fail or leave stale game files
 
@@ -596,3 +638,31 @@
 - **Cause:** the base game's HtmlDocument NCA can be sparse too (16 KB, beside the sparse Program NCA). `--html` reads the update's HtmlDocument NCAs, each over a base one when it is a patch, and then every base HtmlDocument NCA on its own; a sparse one read alone fails the hash check while its tables open.
 - **Fix:** `dm/tools/nx_extract/Program.cs` reads no sparse base HtmlDocument NCA on its own (`a sparse HtmlDocument NCA of the base game (… bytes): read only through the update's patch, not alone`), as Horizon mounts it only through its patch.
 - **Found on:** [Minecraft Dungeons II](../../dm/games/0100A7C01B792000/README.md), base v0 with update v131072: the update's patch (`accessible-urls`) and its full legal information NCA are read, the base's legal information NCA too.
+
+### An exFAT-built IPA restores resource forks and cannot be signed
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** after extracting an IPA with `ditto`, `codesign` rejects the app with `resource fork, Finder information, or similar detritus not allowed`.
+- **Cause:** exFAT keeps macOS extended metadata in AppleDouble `._` sidecars. The packer included these files, and extraction restored their resource forks onto the app's files.
+- **Fix:** `pack_ipa.py` excludes regular `._` files only when their first eight bytes identify an AppleDouble version 2 header, including explicitly mapped files. Ordinary game files with a `._` prefix or an unrelated filename containing those bytes remain packed. For an already extracted disposable app stage, remove its extended attributes before signing; do not modify source game files or device saves. Regression tests cover nested metadata, explicit mappings, retained game content and repeat packs.
+- **Found on:** the provisional Pokémon Legends: Arceus package, which contained 30,304 AppleDouble entries on an exFAT USB SSD; signing and device gameplay remain separate validation steps.
+
+
+### Updating the iOS library shell invalidates a game's shader chain
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** after a shell update, a cartridge that ships its own engine appears incompatible even though the installed game framework and shader library have not changed.
+- **Cause:** a shared-host cartridge (`FR`) uses the shell's engine, so its manifest and shader resources must match that engine. An independent cartridge (`FH`) carries its own engine and can require a different chain.
+- **Fix:** select the resource chain from the signed manifest only for `tonton-independent-host-v1`. The shell validates the title, module tables and minimum OS, then checks the entry points and the engine's declared chain against that same signed image before starting it. Old shared-host cartridges keep their existing path. This avoids rebuilding a compatible independent cartridge when the shell alone is updated. A change to the game's own engine or shader contract still needs a matching build. Code lives in the signed app bundle; game data and saves remain separate.
+- **Check:** the iOS framework tests check both manifest routes, symbol ownership and rejection of a mismatched chain. The library starts one game engine per app process; the tests do not imply that a running game can be unloaded to start another in the same process.
+
+## RomFS images
+
+
+### AppleDouble files are mistaken for game packages
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** package discovery reports duplicate updates or tries to decompress a `._` file from a macOS-managed external drive.
+- **Cause:** AppleDouble metadata preserves the original package extension and can also contain its title/version pattern. Filename-only discovery treats it as a second game package.
+- **Fix:** before package classification, skip a `._` name only when its first eight bytes are the AppleDouble version 2 signature. Real packages whose names start with `._` remain eligible; game packages and saves are not deleted.
+- **Found on:** [NSP/NSZ discovery fixtures](../../dm/tools/tests/test_nsp_nsz.py), including an unversioned update with metadata sidecars and a real `._`-prefixed add-on package.

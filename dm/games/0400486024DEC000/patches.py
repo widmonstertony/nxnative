@@ -13,6 +13,24 @@ def frame_step(ctx):
     site = base + 0xe4
     fs_site(site, '2818201e')   # fdiv s8,s1,s0
     start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    # The uncapped Mac mode supplies elapsed microseconds (+0xa0) and counts
+    # the time actually consumed here (+0xa8), using the game's own base rate.
+    for w in (0xb940a211,   # ldr w17,[x16,#0xa0]
+              0x34000191,   # cbz w17, fixed_step
+              0x1e230220,   # ucvtf s0,w17
+              0xf9405610,   # ldr x16,[x16,#0xa8]
+              0x8b110210):  # add x16,x16,x17
+        emit(w)
+    emit(ADRP(17, here(), FS_STATE_OFF))
+    for w in (0xf9005630,   # str x16,[x17,#0xa8]
+              0x1e210808,   # fmul s8,s0,s1
+              0x52848010,   # mov w16,#0x2400
+              0x72a92e90,   # movk w16,#0x4974,lsl#16 (1000000.0f)
+              0x1e270200,   # fmov s0,w16
+              0x1e201908):  # fdiv s8,s8,s0
+        emit(w)
+    emit(B(here(), site + 4))
+    ctx.capabilities.add('FPS_REALTIME')
     for w in (0xb9400211,   # ldr w17,[x16]          target fps (0 = off)
               0x340001b1,   # cbz w17,orig (+13)
               0xb9402211,   # ldr w17,[x16,#0x20]    step in vsyncs
@@ -30,7 +48,7 @@ def frame_step(ctx):
         emit(w)
     emit(B(here(), site + 4))
     emit(0x1e201828); emit(B(here(), site + 4))   # orig: fdiv s8,s1,s0; back
-    fs_put(site, [B(site, start)], 'frame ratio: the host\'s step × base rate / 60 instead of base rate / the game\'s frame rate (state page target fps; 0 = the game\'s ratio)')
+    fs_put(site, [B(site, start)], 'frame ratio: the host\'s elapsed seconds or whole vsyncs scaled by the base rate (0 = the game\'s ratio)')
     dynamic_resolution(ctx)
 
 # The game's dynamic resolution (game__gfx__DynamicResolutionParam: LoadThreshold, ReduceCounterMax, IncreaseCounterMax and a list of levels, each a ResolutionReduceScale and a

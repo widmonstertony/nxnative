@@ -1,0 +1,12 @@
+# Base title ID, input preference. tap: the game can be operated by touch; mixed: keep the virtual gamepad.
+010023301E41C000	tap
+01003CC0253DE000	mixed
+010057A01E4D4000	tap
+01005E6010114000	mixed
+01006F8002326000	mixed
+010070E022546000	tap
+0100751018DBA000	tap
+01008BC024FDE000	mixed
+0100B8E016F76000	mixed
+0100FFE0241AC000	mixed
+0400C3F00006E000	mixed

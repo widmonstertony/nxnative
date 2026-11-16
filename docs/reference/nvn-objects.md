@@ -211,6 +211,14 @@ A game may tell NVN objects apart by their bytes, without an NVN call. A host re
 - **Fix:** `mtl_pool_del`, `res_add_at` and `res_remove` (`nvn_mtl.m`) each have their own `@autoreleasepool`, as `defer_drain` and the memory line's count already did ([Deferred-release drain without an autorelease pool](memory.md#deferred-release-drain-without-an-autorelease-pool)).
 - **Found on:** [Ghost Trick: Phantom Detective](../../dm/games/010029B018432000/README.md): 0 buffers freed but alive with the fix; GPU allocated 1.7 GB instead of 8.3 GB 300 frames into the boot and 2.9 GB instead of 9.9 to 11.7 GB in Chapter 1, resident memory, frame times and pictures unchanged (zero-copy buffers add no memory of their own). [Pokémon Sword](../../dm/games/0100ABF008968000/README.md): 8 to 0 at the title after 90 s. Earlier Mac logs show the count in most games, growing with play: Animal Crossing: New Horizons 3,113 after 27,900 frames, Pokémon Sword 2,050, Super Smash Bros. Ultimate 1,279, Pokémon Legends: Z-A 932 (small pools there: 100 to 300 MB).
 
+### Single-mip descriptors over an existing mip chain
+
+- **Symptom:** character silhouettes and eyes render black even though geometry and depth are present.
+- **Cause:** the game uploads into a two-level block-linear texture and samples level zero through a one-level texture at the same pool offset. The host keyed Metal storage by the full texture description, so the sampling object got a separate, zero-filled backing.
+- **Fix:** reuse the existing backing for a plain, single-level 2D prefix in a non-virtual, CPU-inaccessible pool; the descriptions must agree apart from the level count. Restrict the sampling view to the guest's single level. CPU-owned storage, special layouts, layered textures and sparse pools keep their own paths.
+- **Found on:** NARUTO SHIPPUDEN: Ultimate Ninja STORM 4 ROAD TO BORUTO 1.1.0. The sampled 512×512 BGR565 texture and the title character both regain color in a matched Mac frame.
+- **Check:** `t_image_usage` reads the GPU-written pixels through the single-level descriptor and confirms another pool offset stays independent.
+
 ### Finalized textures kept by registered descriptor views
 
 - **Symptom:** GPU and resident memory keep growing during texture streaming while pool, residency and serial-object counts stay nearly flat, with no freed pool buffers alive.
@@ -741,6 +749,18 @@ Games read this count as a position in their own command memory and size their h
 - **Also:** Pokémon Pokopia gives nearly every texture `IMAGE` (flags 0x4), its icons BC1 / BC7 in a `CPU_UNCACHED` pool: with `IMAGE` excluding them, a new icon over storage another icon had used got that icon's picture (in the store and the Pokédex, once storage was reused). `IMAGE` now keeps only uncompressed textures out. Found and fixed by xFractals/pokopia-native (issue #1).
 - **Also found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md) (GitHub issue #1011): its particle steering fields are 10x10x10 RGBA8 and RGBA16F 3D textures, flags 0, that the CPU writes before first use. As GPU textures of zeros they steered every send-off particle along (-1, -1, -1), so the particles sank diagonally into the ground instead of rising. `t_initial_uncached.m` also covers a 4x4x4 RGBA8 3D texture (each slice holds the CPU's texels at first use) and a 3D `IMAGE` texture (left alone).
 
+The legacy renderer now applies the same one-time initialization through
+`legacy_initial_content`. Previously it unconditionally zeroed new private
+textures, including published pool content. `t_legacy_initial_content` uses
+production NVN pool/texture entry points and direct GPU readback to cover
+CPU_NO_ACCESS, CPU_UNCACHED, cached storage flushed before or after texture
+creation, and negative controls for unflushed cached storage, COMPRESSIBLE
+textures and zero content. A subsequent lookup keeps the allocation and never
+repeats the upload. The initial regression had 264 failures; the repaired
+seven-case GPU run passes (Mac M4, not an iPad gameplay result). It does not
+enable per-game dirty-page upload flags or establish that every black-screen
+cause is resolved.
+
 ### Mapped-range flushes taken as uploads (`tex_flush_upload`)
 
 - **Symptom:** a movie plays black (Age of Calamity: its intro movie under the "+ Skip" prompt).
@@ -808,6 +828,13 @@ Games read this count as a position in their own command memory and size their h
 - **Fix:** one predicate, `tex_from_storage`, decides for both `tex_mtl_` and `mtl_read_texels` which textures the host takes from their storage, and `mtl_read_texels` reads a sparse pool's texture through a copy gathered from its page table (`nvn_sparse_copy`, unmapped pages as 0), as `pkg_upload_` uploads it. Neither touches the host texture, so the read works on any thread. The `up_owner_check` abort stays: a texture upload on another thread is still a bug to find.
 - **Check:** `t_readback` reads a sparse texture over mapped and over unmapped pages, first on another thread and then on the submit thread. Before the fix, a profile without `tex_dirty_upload` aborted in `up_begin`, and TOTK's profile crashed with SIGBUS on the unmapped texture.
 - **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) on an iPad Pro (M5), GitHub issue #471: an abort a few seconds after the app came back from the background (switching between Stage Manager and full screen triggers it), on thread `bake::ModuleMgr`. The reporter traced it to `mtl_read_texels`.
+### Legacy CPU-owned BC textures return zero blocks
+
+- **Symptom:** legacy iOS reports `a BC texture without known CPU content cannot be read back as original BC blocks from decompressed or ASTC storage; returning zeroes`, even though the CPU-visible NVN pool already contains the original blocks.
+- **Cause:** legacy `mtl_read_texels` recognized packaged layouts, `WriteTexels`, and later dirty-page writes, but not bytes already present when an ordinary texture was initialized over a CPU-visible pool. It then resolved the host texture. On devices without native BC, that texture has `ShaderWrite` usage only because the host decode kernel writes its decompressed representation; capability was incorrectly treated as proof that the guest GPU owned the content. Metal cannot recover the original BC blocks from that representation.
+- **Fix:** track actual guest-visible texture writes separately from Metal usage. Render attachments, writable images, copies, and clears transfer ownership to the GPU; `WriteTexels` or a CPU flush transfers it back. Until such a GPU write, an ordinary non-image texture in a CPU-visible, non-virtual pool is read and de-swizzled from guest storage. Genuine GPU-written textures retain the GPU path; this does not implement BC recompression.
+- **Checks:** the production legacy test reads exact BC blocks from a non-packaged CPU-written mip/layer subregion and from a 256x256 CPU-visible pool texture which never received `WriteTexels`. The latter compares all 32,768 bytes, then checks GPU and later CPU ownership transitions. The CPU-only regression passes without a Metal device, and the complete source compiles for the legacy backend. Device picture validation remains separate.
+- **Found on:** [Need for Speed](../../dm/games/010029B0118E8000/README.md): M2 `.11` recorded 26,396 non-zero bytes in the pool immediately before `ReadTexels` returned 32,768 zero bytes. No guest GPU write preceded that read.
 
 ### `ReadTexels` while another thread reclassifies the texture
 
@@ -950,6 +977,13 @@ Games read this count as a position in their own command memory and size their h
 - **Cause:** the setters stored these values, but the builder getters still reached the generic unimplemented handler. Output parameters were left untouched, and scalar results did not follow the getters' float or enum return signatures.
 - **Fix:** the five getters read the builder's current sampler parameters through their typed NVN entry points, including the values restored by `SetDefaults`.
 - **Found on:** [Digimon Story Time Stranger, issue #872](https://github.com/seedds/nxnative/issues/872), whose reporter identified these calls before an early crash. No repository profile exists yet. Archive extraction, rendering and the reported iPhone freeze are separate unresolved parts of that report; these getters alone do not establish that the game runs.
+### A retired pool remains read-only
+
+- **Symptom:** a host system call writing into storage after its NVN pool was finalized fails with `EFAULT`; a direct write can fault after the tracker stopped owning the page.
+- **Cause:** `nvn_dirty_protect` found a live range without holding the slot mutex. Pool retirement could restore its pages to writable and mark the range dead before protect changed the page state to BUSY. Protect then set the retired storage read-only, with no live descriptor left to release it. The same window allowed the range slot to be reused during protection.
+- **Fix:** hold the pool-slot mutex across protect's lookup, page-state transitions and final `mprotect`. Pool creation and retirement already hold that mutex. The page-fault and host pre-write paths still take no slot mutex, so they can finish a BUSY transition while protect waits.
+- **Found on:** the iOS 16/17 fork's shared dirty tracker, extracted from compatibility commit `587d5206`; the lookup/retirement race is also present on current `main`. This is independent of the Metal renderer and GPU generation; no game's reported picture failure is attributed to it without a reproducing game trace.
+- **Check:** `t_dirty_retire_race` starts retirement between the live-range lookup and the first protection-state update, then writes 16 bytes through `read()`. With the lookup hook but without the fix, retirement completes and the write returns -1. With the fix, retirement completes after protection, unregisters the pool and the write returns 16. Existing `t_dirty_race` and `t_dirty_slots` cover page-state publication and shared/reused pool slots.
 
 ### Integer sampler border colours
 

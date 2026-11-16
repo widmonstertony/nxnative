@@ -10,6 +10,65 @@ import os
 private func info(_ key: String) -> Any? { Bundle.main.object(forInfoDictionaryKey: key) }
 
 
+/// Where this game's data comes from, and a picker to change it.
+///
+/// The app can only read files it owns unless the player hands it a location through the document
+/// picker — so a game's RomFS kept on an external drive or in iCloud Drive could not be used at all
+/// before this. Picking an image (romfs.img) or a folder stores a bookmark (DataBookmark.m), and
+/// romfs_locate() prefers it from the next launch on.
+private struct GameDataSection: View {
+    @State private var picked: String = ""
+    @State private var note: String = ""
+    @State private var picking = false
+
+    var body: some View {
+        Section {
+            HStack {
+                Text("Game data")
+                Spacer()
+                Text(picked.isEmpty ? "This app's folder" : (picked as NSString).lastPathComponent)
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Button(picked.isEmpty ? "Choose game data…" : "Choose a different location…") { picking = true }
+                // The sheet sits on the button, not on the Section: SwiftUI hands a Section's modifiers to every row, so one tap presented a picker per row and they invalidated each other (LNPANDY/NX2Apple#315).
+                .sheet(isPresented: $picking) {
+                    DocumentPicker(types: [.item]) { url in
+                        picking = false
+                        if dm_store_picked_data(url) {
+                            note = "Saved. The game uses this location when you press Play."
+                            refresh()
+                        } else {
+                            note = "That location could not be remembered — try a different one."
+                        }
+                    } onCancel: { picking = false }
+                }
+            if !picked.isEmpty {
+                Button("Use the app's own data again", role: .destructive) {
+                    dm_clear_picked_data(); refresh(); note = ""
+                }
+            }
+        } footer: {
+            Text(note.isEmpty
+                 ? "Pick the game's romfs.img or its RomFS folder — an external drive or iCloud Drive works. The app remembers the choice; a re-signed build asks once more."
+                 : note)
+        }
+        .onAppear(perform: refresh)
+    }
+
+    private func refresh() {
+        // ObjC BOOL* is ObjCBool, not Bool: the bookmark header takes an indirect flag for
+        // "the bookmark exists but does not resolve under this signature", which is the one
+        // state worth telling the player about.
+        var stale: ObjCBool = false
+        picked = dm_picked_data_path(&stale) ?? ""
+        if stale.boolValue && picked.isEmpty {
+            note = "The location you picked before is no longer readable (the app was signed differently). Please choose it again."
+        } else if note.isEmpty, let old = dm_old_archive_message() {
+            note = String(cString: old)
+        }
+    }
+}
+
 /// Cloud saves: an iCloud Drive folder shared with the Mac app (chosen in its settings window's
 /// Cloud saves too). The host brings the save in from there when the game starts and
 /// sends it there after each save (dm/host/save_sync.h); the folder is a bookmark (CloudSaves.m).
@@ -19,6 +78,18 @@ private struct CloudSavesSection: View {
     @State private var picking = false
 
     var body: some View {
+        if (info("DMCloudSaveContainer") as? String)?.hasPrefix("iCloud.") == true {
+            Section {
+                LabeledContent("Cloud saves", value: "Automatic")
+            } footer: {
+                Text("Syncs with devices signed in to the same iCloud account. No folder to choose.")
+            }
+        } else {
+            folderSection
+        }
+    }
+
+    private var folderSection: some View {
         Section {
             HStack {
                 Text("Cloud saves")
@@ -61,14 +132,14 @@ private struct CloudSavesSection: View {
     }
 }
 
-/// UIDocumentPickerViewController for a folder, in the two callbacks a SwiftUI sheet wants.
+/// UIDocumentPickerViewController for files or folders (`types`), in the two callbacks a SwiftUI sheet wants.
 private struct DocumentPicker: UIViewControllerRepresentable {
     var types: [UTType] = [.folder]
     let onPick: (URL) -> Void
     let onCancel: () -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // .open (not .import): the folder stays where it is and the bookmark keeps pointing at it.
+        // .open (not .import): the file or folder stays where it is and the bookmark keeps pointing at it (an import would copy 16 GB of game data into the app's container).
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
@@ -133,6 +204,7 @@ private struct LauncherView: View {
                     } footer: {
                         Text("Brings back all settings this game was tested with.")
                     }
+                    GameDataSection()
                     CloudSavesSection()
                     Section {
                         HStack {
@@ -143,11 +215,10 @@ private struct LauncherView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
-                .contentMargins(.horizontal, 12, for: .scrollContent)
+                .launcherScrollMargins()
                 .frame(width: geometry.size.width * 2 / 3)
             }
         }
-        .preferredColorScheme(.dark)
         .confirmationDialog(SaveSyncReport.chooseTitle, isPresented: isAsking(.choose), titleVisibility: .visible, presenting: report) { r in
             Button(r.localLabel(here: "iPhone")) { go(r.localChoice) }
             Button(r.cloudLabel) { go(r.cloudChoice) }
@@ -252,4 +323,11 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
     parent.present(h, animated: false)
     fputs("launcher: \(file.settings.count) settings shown\n", stderr)
     return true
+}
+
+private extension View {
+    @ViewBuilder func launcherScrollMargins() -> some View {
+        if #available(iOS 17.0, *) { self.contentMargins(.horizontal, 12, for: .scrollContent) }
+        else { self }
+    }
 }

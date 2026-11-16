@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_refl.h"
+#else
 // Shader reflection json → fixed-length C arrays (A: PC chain reflection; B: reflection produced by translating the original Switch shaders, route = "B", output of tools/dmsh_build.py).
 // Kinds added by B: SBUFP = storage buffer device pointer (NVN storage buffer slot); SUPPORT = Ryujinx auxiliary constants; C1 = the shader's own constant segment (c[1]);
 //            DRV0 / DRV2 = NVN driver constant segments c[0] (storage buffer address table) / c[2] (texture and sampler handle table)
@@ -94,4 +98,6 @@ typedef struct {
 #import <Foundation/Foundation.h>
 // 0 on success; on failure returns non-0 and writes the reason into err (unknown binding type, fixed-length limit exceeded, missing field)
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *out, char *err, int errlen);
+#endif
+
 #endif

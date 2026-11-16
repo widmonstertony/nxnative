@@ -1,6 +1,15 @@
 # The rewriter's patches of Nintendo SDK module builds (sdk), which several games can ship: dm/tools/patch_nso.py applies those of a module's NSO build ID, whatever the game.
 # A patch of a game's own module (main) goes in its profile's patches.py (dm/games/<id>/patches.py). CUTS as described in patch_nso.py ("Registered patches")
 CUTS = {
+  # Arceus 1.1.1, SDK 11.4.0. On Air the alias starts at 0x7010000000;
+  # 1 GB placement starts 768 MB into the alias region, so the host-capped
+  # 4.0625 GB StandardAllocator region cannot fit in 4.375 GB. Keep both
+  # reviewed node-area cuts and align large regions to 32 MB as above.
+  'b39add63421be525d352e576dab438d3': [
+    (0x34e048, '08fca752', '087ca052', 'AddressRegionManager node area limit: 1 GB to 62 MB'),
+    (0x34e0e4, '09fca752', '097ca052', 'AddressRegionManager occupied node area: 1 GB to 62 MB'),
+    (0x34e244, '0a00a852', '0a40a052', 'AllocateAddressRegion: align regions of 1 GB and more to 32 MB'),
+  ],
   # Kingdom Battle 1.9.589692, SDK 4.4.0: the older VammManager reserves a
   # full 1 GB node area (constructor +0x93dd8, occupied range +0x93e98).
   # Snowdrop's compact 3 GB region follows its small metadata reservation;

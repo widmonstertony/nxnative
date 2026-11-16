@@ -50,7 +50,7 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Cause:** the host held frames up to `FSTEP_MAX` (3) vsyncs and paid debt back with a step one above the hold, but Mario Kart World's stub hands the game at most 2 vsyncs (its own intervals). At hold 3 the game stepped 2 vsyncs for every 3 shown, and at hold 2 the paid-back step of 3 was cut to 2, so the debt the host counted as paid was lost.
 - **Fix:** a frame-step stub declares the largest step it hands the game (`ctx.step_max`, written to `fixups.tsv` as `STEP_MAX`), the loader passes it to the host (`dm_fps_step_max`), and `nvn_fstep_next` keeps the hold, a step the game fixes and the paid-back step within it (`smax`). Stubs that declare nothing keep `FSTEP_MAX`.
 - **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md#frame-rate) (2 vsyncs; the 0.977 window on the 16 GB M6, and frames at hold 3 in every window of issue #1823's M4 Max runs).
-- **Check:** `t_fstep` (frames of 2.6 vsyncs with a cap of 2: hold 2, no step above 2; a step the game fixes at 3 held at 2); `test_patches` (Mario Kart World's stub declares 2).
+- **Check:** `t_fstep` (frames of 2.6 vsyncs with a cap of 2: hold 2, no step above 2; a step the game fixes at 3 held at 2); `test_patches` (Mario Kart World's stub declares 2). The classic selection runs the same routes as `t_fstep_legacy`, with its caller now passing the loaded `STEP_MAX`; device deployment remains separate.
 
 ### A regress run stops when another app takes the key window
 
@@ -466,6 +466,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Check:** the reporter confirmed that the deferred request entered fullscreen on its first attempt and stayed there, without a refusal. A harness of the startup callbacks checks both readiness orders, bounded refusal recovery, and cancellation before startup or a queued retry, plus later manual failures after successful startup.
 - **Not checked:** the revised lifecycle handling in a real game through the launcher's console mode; native refusal recovery (the reporter's deferred request succeeded without it).
 
+### The pointer stays on a Mac game
+
+- **Symptom:** the mouse pointer stayed on the picture of a Mac game, in a window and in fullscreen, until it was moved to a screen corner.
+- **Cause:** `front_run` never hid it. macOS hides the pointer only for an app that asks, and a game window is not one.
+- **Fix:** `front_mac.m` `front_run` hides it after `DM_CURSOR_HIDE` seconds (3 by default, `0` keeps it) without movement over the game view, and shows it on the next movement, click or scroll (a local event monitor and a 0.25 s timer). It is shown whenever the window is not key or the pointer is outside the game view, so the title bar and other windows keep theirs.
+- **Found on:** the NX2Apple launcher's issue #272, no game in particular.
+- **Not checked:** not yet run on a game here.
+
 ### Frame latency 2 for the display link in fullscreen
 
 - **Symptom:** on a ProMotion built-in screen, only in fullscreen, the frame step went 1 → 2 → 3 vsyncs on frames costing 0.1–0.6 vsyncs (`3 late frames; cost 0.32 vsyncs`) and the game presented 15 frames a second; a window, or the screen set to a fixed 60 Hz, did not do it. The `DM_NVN_TSV` rows show presents shown one 120 Hz refresh late (`@pres_at_ms` − `@link_target_ms` = 8.3 ms) with a skipped tick after each (`@link_gap_ms` 33 ms), and `@link_lead_ms` about 16 ms against about 50 ms in a window.
@@ -697,6 +705,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Cause:** worker initialization applied the guest QoS policy, but `svc_thread_main_init` only recorded the boot pthread's inherited class. On iOS that class can be default. A time-constraint policy may hide this difference until it is disabled for measurement, and does not establish the intended underlying QoS.
 - **Fix:** main-thread registration calls the same `qos_apply` used by worker threads, before recording the actual class, and logs the resulting class. With diagnostics enabled, `DM_NVN_CPUPROF=1` measures inclusive CPU/wall time in pass begin/end, pipeline lookup, argument encoding, texture lookup, draw, geometry, and submission indexing. These nested phase times overlap. The thread regression confirms `0x21`; on-device performance remains to be validated.
 - **Found on:** [NieR:Automata US 1.0.3](../../dm/games/010056B015FE8000/README.md), where the slow gameplay captures show 159–160 million host translation instructions per frame, considerable scheduling delay, nominal thermal state, and ample memory headroom.
+
+### CPU phase reports miss the queued submission thread
+
+- **Symptom:** `DM_NVN_CPUPROF=1` reports only small texture/index counts despite thousands of draws and substantial submission CPU time. Enabling full per-operation timing also noticeably slows the scene.
+- **Cause:** phase counters are thread-local, but only `mtl_stats` reported them. When the NVN queue executes submission on another thread, its draw, pass and argument timings never reach that reporting call. Reading the wall and thread-CPU clocks at every nested operation adds diagnostic overhead.
+- **Fix:** submission commit also reports its own thread's counters. Reports identify the thread. `DM_NVN_CPUPROF=N` takes one in every N calls independently for each phase (bounded to 4096); `1` retains full timing, absent/zero/negative reads no clocks. Reports give sampled/total calls and **raw sampled** CPU/wall time, not extrapolated totals. Nested times overlap, and repeated engine call patterns can bias deterministic sampling. Use sampling to locate candidates, then verify changes with diagnostics disabled.
+- **Check:** `python3 dm/gfx/tests/test_cpuprof.py` compiles the actual diagnostic functions, exercises nested phases on independent pthreads, checks disabled clock reads, full coverage, sampling and the stride bound. It does not establish gameplay performance.
+- **Found on:** [Pokémon Pokopia on Air](../../dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680). The full-timing run increased scene submission CPU time and reported no draw phases; no new smoothness claim follows from it.
 
 ### Time-constraint computation declared below the thread's peaks
 

@@ -97,6 +97,53 @@ static NSView *hq_prompt_view(NSRect bounds, NSString *title, NSString *note, NS
     return hq_card_view(bounds, title, note, quit, cancel, a_symbol, b_symbol, 1);
 }
 
+// The Home menu of a short press (home_quit.h HQ_MENU, LNPANDY/NX2Apple#952): on the same scrim and card as the prompt, the title (the game's name) and one row per
+// action, stacked. The selected row is the cream pill with the controller's A glyph, the others plain; front_mac.m builds it again when the selection moves.
+// Rows are this wide (points at a 720-high view), whatever their labels: a longer label gets a smaller font, then is cut
+#define HQ_ROW_W 360
+static NSView *hq_menu_row_view(NSString *label, int selected, NSString *a_symbol, CGFloat k) {
+    NSColor *fg = selected ? HQ_BACKGROUND : [NSColor colorWithWhite:1 alpha:0.85];
+    CGFloat w = HQ_ROW_W * k, glyph = 24 * k, gap = 10 * k, inset = 20 * k, room = w - 2 * inset - (selected ? glyph + gap : 0);
+    NSTextField *t = hq_label(label, hq_fit(label, 22 * k, room), NSFontWeightSemibold, fg, 0);
+    t.lineBreakMode = NSLineBreakByTruncatingTail;
+    [t setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *row = [NSStackView stackViewWithViews:selected ? @[hq_glyph(a_symbol, @"a.circle", glyph, fg), t] : @[t]];
+    row.spacing = gap; row.translatesAutoresizingMaskIntoConstraints = NO;
+    NSView *pill = [NSView new]; pill.translatesAutoresizingMaskIntoConstraints = NO;
+    pill.wantsLayer = YES; pill.layer.cornerRadius = 28 * k;
+    pill.layer.backgroundColor = selected ? HQ_CREAM.CGColor : [NSColor colorWithWhite:1 alpha:0.06].CGColor;
+    [pill addSubview:row];
+    [NSLayoutConstraint activateConstraints:@[[pill.widthAnchor constraintEqualToConstant:w], [pill.heightAnchor constraintEqualToConstant:56 * k],
+        [row.centerXAnchor constraintEqualToAnchor:pill.centerXAnchor], [row.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+        [row.widthAnchor constraintLessThanOrEqualToConstant:w - 2 * inset]]];
+    pill.accessibilityElement = YES; pill.accessibilityRole = NSAccessibilityButtonRole; pill.accessibilityLabel = label; pill.accessibilitySelected = selected;
+    return pill;
+}
+// labels: the rows' texts in order; sel: the selected one
+static NSView *hq_menu_view(NSRect bounds, NSString *title, NSArray<NSString *> *labels, NSInteger sel, NSString *a_symbol) {
+    CGFloat k = hq_scale(bounds.size);
+    NSView *scrim = [[HqScrim alloc] initWithFrame:bounds]; scrim.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    scrim.wantsLayer = YES; scrim.layer.backgroundColor = [NSColor colorWithWhite:0 alpha:0.6].CGColor;
+    NSTextField *t = hq_label(title, 34 * k, NSFontWeightBold, NSColor.whiteColor, 1);
+    NSMutableArray<NSView *> *rows = [NSMutableArray new];
+    for (NSUInteger i = 0; i < labels.count; i++) [rows addObject:hq_menu_row_view(labels[i], (NSInteger)i == sel, a_symbol, k)];
+    NSStackView *list = [NSStackView stackViewWithViews:rows];
+    list.orientation = NSUserInterfaceLayoutOrientationVertical; list.alignment = NSLayoutAttributeCenterX;
+    list.spacing = 12 * k; list.translatesAutoresizingMaskIntoConstraints = NO;
+    NSStackView *card = [NSStackView stackViewWithViews:@[t, list]];
+    card.orientation = NSUserInterfaceLayoutOrientationVertical; card.alignment = NSLayoutAttributeCenterX;
+    card.spacing = 28 * k;
+    card.edgeInsets = NSEdgeInsetsMake(40 * k, 48 * k, 40 * k, 48 * k); card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.backgroundColor = HQ_SURFACE.CGColor; card.layer.cornerRadius = 28 * k;
+    card.layer.borderWidth = 1; card.layer.borderColor = [NSColor colorWithWhite:1 alpha:0.10].CGColor;
+    [scrim addSubview:card];
+    CGFloat w = 600 * k;
+    [NSLayoutConstraint activateConstraints:@[[card.centerXAnchor constraintEqualToAnchor:scrim.centerXAnchor], [card.centerYAnchor constraintEqualToAnchor:scrim.centerYAnchor],
+        [card.widthAnchor constraintEqualToConstant:w], [t.widthAnchor constraintLessThanOrEqualToConstant:w - 96 * k]]];
+    scrim.accessibilityElement = YES; scrim.accessibilityRole = NSAccessibilityGroupRole; scrim.accessibilityLabel = title;
+    return scrim;
+}
+
 // The hold indicator at the top of the view: a pill with a ring that fills while Home is held, and its label. hq_hold_set moves the ring
 static NSView *hq_hold_view(NSRect bounds, NSString *label, CAShapeLayer **ring_out) {
     CGFloat k = hq_scale(bounds.size), d = 26 * k, line = 3.5 * k;

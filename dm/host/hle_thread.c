@@ -579,7 +579,7 @@ static void hitch_init(void) {
 uint32_t svc_thread_main_init(void) {
     pthread_key_create(&g_keythr, NULL);
     qos_map_init();
-    { const char *e = getenv("DM_PREEMPT"); g_core_preempt = e ? atoi(e) != 0 : DM_GAME_CORE_PREEMPT; }
+    { const char *e = getenv("DM_PREEMPT"); g_core_preempt = e ? atoi(e) != 0 : dm_profile()->core_preempt; }
     { const char *e = getenv("DM_WAKE_UNLOCKED"); if (e) g_wake_unlocked = atoi(e) != 0; }
     pause_install();
     hitch_init();

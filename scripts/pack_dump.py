@@ -13,7 +13,7 @@
 #   extract/v<version>/ExeFS/   the newest version's code modules (APFS clones, or copies on another volume)
 #   extract/v<version>/RomFS.img   its RomFS as one image (dm/tools/romfs_image.py: the host's DM_ROMFS, the IPA's romfs.img)
 #   aoc/<index>.img   each DLC's RomFS (index = DLC title ID − base title ID − 0x1000), the host's DM_AOC_DIR
-# A dump has no control data, so there is no control.nacp or icon.jpg beside them, as there is after nx_extract.
+# A complete indexed RomFS image from nx_extract can stand in for each romfs/ directory as romfs.img. A version can also carry its extracted control.nacp and icon.jpg.
 # The title ID is the program ID in main.npdm. A repeat run keeps code modules that are the same and an image whose source tree, packer and image are unchanged (romfs_image.py --reuse).
 # Usage: pack_dump.py <dump folder> [--version N] [--work-dir DIR]   (exit 1 on error)
 import argparse, filecmp, shutil, struct, subprocess, sys
@@ -46,9 +46,33 @@ def exefs(src, dst):
     shutil.rmtree(dst, ignore_errors=True); tmp.rename(dst)
 
 
+def control(src, out):
+    for name in ('control.nacp', 'icon.jpg'):
+        f, dst = src / name, out / name
+        if not f.is_file(): dst.unlink(missing_ok=True)
+        elif not dst.is_file() or not filecmp.cmp(f, dst, shallow=False): shutil.copyfile(f, dst)
+
+
 def pack(src, img, say=print):
     img.parent.mkdir(parents=True, exist_ok=True)
     say(f'packing {src} → {img}')
+    if src.is_file():
+        src = src.resolve()
+        dst = str(img)
+        before = romfs_image.file_identity(src)
+        stamp = f'image:{src}:{before}'
+        if romfs_image.reusable(dst, stamp): return
+        part = img.with_suffix(img.suffix + '.part')
+        part.unlink(missing_ok=True)
+        try:
+            expected = romfs_image.identity(src)
+            clone(src, part)
+            if romfs_image.file_identity(src) != before or romfs_image.identity(part) != expected:
+                raise Error(f'{src}: source changed or copy is incomplete')
+            romfs_image.publish(part, dst, stamp)
+        except ValueError as e: raise Error(str(e)) from e
+        finally: part.unlink(missing_ok=True)
+        return
     try: n = romfs_image.pack(src, img, reuse=True)
     except RuntimeError as e: raise Error(f'{src}: {e}') from e   # the files changed while packing
     say(f'  {n:,} entries, {img.stat().st_size / 2**30:.2f} GB')
@@ -58,8 +82,13 @@ def has_code(src):   # base/ or updates/<version>/ with its code
     return (src / 'exefs/main.npdm').is_file()
 
 
+def romfs_of(src):
+    folder, image = src / 'romfs', src / 'romfs.img'
+    return folder if folder.is_dir() else image if image.is_file() else None
+
+
 def is_version(src):   # base/ or updates/<version>/ with its code and its RomFS
-    return has_code(src) and (src / 'romfs').is_dir()
+    return has_code(src) and romfs_of(src) is not None
 
 
 def updates(folder):   # {version: updates/<version>/}
@@ -74,7 +103,7 @@ def base_of(folder):   # the base game's folder: base/, or the folder itself whe
 
 def is_dump(folder):   # whether a folder has the layout above: a base game's code with a RomFS beside it or in an update, or an update with its code and RomFS and no base
     base, ups = base_of(folder), updates(folder).values()
-    if base: return (base / 'romfs').is_dir() or any((p / 'romfs').is_dir() for p in ups)
+    if base: return romfs_of(base) is not None or any(romfs_of(p) is not None for p in ups)
     return any(is_version(p) for p in ups)
 
 
@@ -89,17 +118,29 @@ def scan(dump):
         try: tid = int(d.name, 16)
         except ValueError: raise Error(f'{d}: not a DLC title ID') from None
         if not 0 < tid - app - 0x1000 <= 2000: raise Error(f'{d}: {tid:016X} is not a DLC of {app:016X}')
-        roms = sorted(d.glob('*/romfs')) or ([d / 'romfs'] if (d / 'romfs').is_dir() else [])
+        roms = [p for version in sorted(d.iterdir()) if version.is_dir() and (p := romfs_of(version)) is not None]
+        if not roms and (rom := romfs_of(d)) is not None: roms = [rom]
         if len(roms) != 1: raise Error(f'{d}: expected one <n>/romfs folder, found {len(roms)}')
         dlc[tid] = roms[0]
     return app, vers, dlc
 
 
-def pack_version(src, app, out, say=print):   # one version's folder (base/ or updates/<version>/) → out/ExeFS and out/RomFS.img
-    if not (src / 'exefs/main').is_file() or not (src / 'exefs/main.npdm').is_file() or not (src / 'romfs').is_dir(): raise Error(f'{src}: no exefs/main, exefs/main.npdm and romfs')
+def pack_version(src, app, out, say=print, reference_image=False):   # one version's folder (base/ or updates/<version>/) → out/ExeFS and out/RomFS.img
+    if not (src / 'exefs/main').is_file() or not (src / 'exefs/main.npdm').is_file() or (rom := romfs_of(src)) is None: raise Error(f'{src}: no exefs/main, exefs/main.npdm and romfs')
     if (pid := program_id(src / 'exefs/main.npdm')) != app: raise Error(f'{src}: program ID {pid:016X}, the base is {app:016X}')
     exefs(src / 'exefs', out / 'ExeFS')
-    pack(src / 'romfs', out / 'RomFS.img', say)
+    image = out / 'RomFS.img'
+    if reference_image and rom.is_file():
+        target = rom.resolve(strict=True)
+        try: romfs_image.identity(target)
+        except ValueError as e: raise Error(str(e)) from e
+        if not image.is_symlink() or image.resolve() != target:
+            if image.exists() or image.is_symlink(): raise Error(f'{image}: existing image uses a different source; use a separate work folder')
+            image.symlink_to(target)
+        say(f'referencing {target} → {image}')
+    else:
+        pack(rom, image, say)
+    control(src, out)
 
 
 def pack_dlc(app, dlc, aoc, say=print):   # {DLC title ID: its RomFS folder} → aoc/<index>.img; images of DLC no longer in the folder go

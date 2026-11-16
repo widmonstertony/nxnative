@@ -13,7 +13,7 @@
 # Final summary: success / failure counts and the distribution of reasons; distribution of driver segment read offsets (those outside the range the replay layer can fill are listed separately);
 # a [RED] line per shader that built but lost something (shader_regressions.report_losses), which does not change the exit status
 import atexit, inspect, multiprocessing, os, re, sys, json, mmap, struct, hashlib, shutil, subprocess, tempfile, time, collections, threading, concurrent.futures as cf
-import dmsh_geometry, dmsh_tess, dmsh_atomic, dmsh_wide, dmsh_meshstage, dmsh_rewrite, dmsh_reflect, dmsh_entry, dmsh_abi as abi   # abi: the driver segment layout and the binding kinds the host shares (dm/gfx/nvn/dmsh_abi.h)
+import dmsh_geometry, dmsh_tess, dmsh_atomic, dmsh_legacy_atomic, dmsh_wide, dmsh_meshstage, dmsh_rewrite, dmsh_reflect, dmsh_entry, dmsh_abi as abi   # abi: the driver segment layout and the binding kinds the host shares (dm/gfx/nvn/dmsh_abi.h)
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
@@ -244,7 +244,13 @@ def publish_cache(key, digest, rule_fp, code_fp):
 
 def write_refl(key, refl):
     for target, d in (('mac', out),) + ((('ios', IOSOUT),) if IOSOUT else ()):
-        atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, refl))
+        record = refl
+        if target == 'ios' and any(b.get('atomic') for b in refl.get('bindings', [])):
+            source = open(os.path.join(out, key + '_b.metal')).read()
+            with open(os.path.join(d, key + '_b.metallib'), 'rb') as library:
+                digest = hashlib.file_digest(library, 'sha256').hexdigest()
+            record = dmsh_legacy_atomic.reflection(source, refl, digest)
+        atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, record))
 
 VIN_STATS = collections.Counter()
 PULL_STATS = collections.Counter()
@@ -516,7 +522,7 @@ RULES = []   # MSL rewrite rules attached by shader name (function, applicabilit
 # dmsh_side.py is in it: dmsh_entry's fs_uint and fs_dual write main0's shared body (shared_body).
 # dmsh_fetch.py is not, but for screen_varyings (raster_facts), nor are the other side libraries' modules: they are made again from the restored MSL on every build (ps_libraries;
 # test_dmsh_code_fp.py checks this list).
-CODE_FP = hashlib.sha256(source_without_rule_bodies() + b''.join(b'\0' + dmsh_chain.code_form(open(m.__file__, 'r').read()) for m in (dmsh_chain, dmsh_geometry, dmsh_tess, dmsh_atomic, dmsh_wide, dmsh_meshstage, dmsh_rewrite, dmsh_reflect, dmsh_entry, dmsh_ampere, dmsh_side, abi) + ((ios_metal,) if IOSOUT else ()))
+CODE_FP = hashlib.sha256(source_without_rule_bodies() + b''.join(b'\0' + dmsh_chain.code_form(open(m.__file__, 'r').read()) for m in (dmsh_chain, dmsh_geometry, dmsh_tess, dmsh_atomic, dmsh_legacy_atomic, dmsh_wide, dmsh_meshstage, dmsh_rewrite, dmsh_reflect, dmsh_entry, dmsh_ampere, dmsh_side, abi) + ((ios_metal,) if IOSOUT else ()))
                          + b'\0' + inspect.getsource(dmsh_fetch.screen_varyings).encode()
                          + b'\0abi\0' + repr(sorted(abi.VALUES.items())).encode()).hexdigest()
 TOOL_FP = tool_fingerprint().encode()

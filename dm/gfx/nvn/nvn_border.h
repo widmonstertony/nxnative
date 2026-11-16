@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_border.h"
+#else
 // Border colours Metal has no sampler state for (pure function, unit test tests/t_border.m). NVN takes any RGBA colour, Metal has three (MTLSamplerBorderColor 0 transparent black,
 // 1 opaque black, 2 opaque white). The sampler gets the nearest, bn. When the colour B is none of them, a wrap mode reaches the border and the sampler filters linearly (a min / max
 // reduction does not), a twin with another Metal colour bw lets the shader correct its samples, r = s_n + (s_w - s_n) k with k = (B - Bn) / (Bw - Bn) per channel
@@ -26,3 +30,5 @@ static inline int nvn_border(const float B[4], const uint8_t wrap[3], int reduct
     }
     return 0;   // not reached: transparent black and opaque white differ in every channel
 }
+
+#endif

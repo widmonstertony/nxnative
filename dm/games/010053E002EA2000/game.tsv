@@ -1,0 +1,25 @@
+# Fate/EXTELLA: The Umbral Star, base 1.0.0
+title_id	010053E002EA2000
+program_id	010053E002EA2000
+name	Fate/EXTELLA
+ipa	FateExtella.ipa
+app_category	public.app-category.games
+
+build	v0	1.0.0	main=76ec789b99a25ba58ae9a4a60fc867a6	subsdk0=669e4a7ee7f99b52048d897a4e36c7a4	subsdk1=ae40a23348fc9fc0126c3786a8d5f70e	sdk=3b353895d8e688841c45c34b45169228
+package	v0
+shader_versions	v0
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	resource/target/nx/pack/mount/retail/ARCHIVE.pk
+zip_store	.awb:.pk:.usm:.metallib
+
+# SDK 0.12.17 aborts if CreateAliasStackUnsafe cannot find room for a
+# guarded stack. Grow the virtual stack region from 256 to 768 MiB without
+# shrinking the heap or alias region or increasing the physical pool.
+mem_reserve	0x120000000
+mem_alias	0x10000000
+mem_stack	0x30000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+shader_groups	/resource/=resource /work/=work
+shader_note	Fate/EXTELLA shaders

@@ -31,7 +31,10 @@ class Game:
 
     def words(self, key, default=None): return self.get(key, default).split()
     def int(self, key): return int(self.get(key), 0)
-    def table(self, name): return self.dir / name
+    def table(self, name):
+        path = self.dir / name
+        if name == 'desktop.tsv' and not path.is_file(): return HERE / self.id / name
+        return path
 
     @property
     def title_id(self): return int(self.get('title_id'), 16)
@@ -173,6 +176,9 @@ def header_one(g):
     if not utp.isdigit(): sys.exit(f"{g.id}: ue_texture_pool must be megabytes (0 = the game's own pool): {utp}")
     ufc = g.get('ue_fps_cvar', 't.MaxFPS')   # the Unreal console variable the host writes fps_target into (hle_fpslock.c; found by name by the rewriter, ue_cvar.py NAMES): a game's own frame limit its settings apply to t.MaxFPS
     if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.]{0,30}', ufc): sys.exit(f'{g.id}: ue_fps_cvar must be a console variable name: {ufc}')
+    feedback = g.words('feedback_snap', '')
+    if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in feedback):
+        sys.exit(f'{g.id}: feedback_snap takes fragment shader keys (8-16 lowercase hex digits): {feedback}')
     ps = g.get('present_snap', 'off')   # present snapshots by default (nvn_mtl.m mtl_snap_on; DM_PRESENT_SNAP and the iOS launcher's Frame buffering override it): on / off
     if ps not in ('on', 'off'): sys.exit(f'{g.id}: present_snap must be on or off: {ps}')
     p4 = g.get('pso_mtl4', 'off')   # render pipelines through MTL4Compiler on iOS by default, with the pipeline archive and hybrid pipelines (on by default on the Mac; DM_PSO_MTL4 overrides): on / off
@@ -182,13 +188,19 @@ def header_one(g):
         sys.exit(f"{g.id}: pso_gpu takes 1-4 whitespace-separated GPU architectures such as 'g18p applegpu_g19p' (each an optional applegpu_ prefix then an alphanumeric token; there is no none: omit the key for g18p with pso_mtl4 on, or no archive with pso_mtl4 off): {pg}")
     et = g.get('enc_thread', 'off')   # Metal encoding on its own thread on the Mac by default (nvn_rec.h rec_on; on iOS it is on for every game; DM_NVN_ENC_THREAD overrides): on / off
     if et not in ('on', 'off'): sys.exit(f'{g.id}: enc_thread must be on or off: {et}')
+    pf = g.get('nvn_prefetch', 'on')   # a program's shader libraries loaded in the background when the game makes it (nvn_mtl.m mtl_prog_prefetch; DM_NVN_PREFETCH and the iOS launcher's Shader prefetch override it): on / off
+    if pf not in ('on', 'off'): sys.exit(f'{g.id}: nvn_prefetch must be on or off: {pf}')
     cp = g.get('core_preempt', 'off')   # same-core preemption approximation (hle_thread.c): on / off
     if cp not in ('on', 'off'): sys.exit(f'{g.id}: core_preempt must be on or off: {cp}')
     aba = g.get('alloc_big_align', 'off')   # nn::mem::StandardAllocator::Allocate aligns blocks of 64 KB or more to 64 KB (hle_os.c; Vanillaware's memory pool storage): on / off
     if aba not in ('on', 'off'): sys.exit(f'{g.id}: alloc_big_align must be on or off: {aba}')
     sf = g.get('shared_font', 'bfttf')   # what the shared-font address points at (hle_sdk16.c): bfttf = 8-byte header + TTF, ttf = the TTF alone
     if sf not in ('bfttf', 'ttf'): sys.exit(f'{g.id}: shared_font must be bfttf or ttf: {sf}')
-    pl = g.get('pad_layout', 'simple')   # the virtual gamepad's first layout (DmGamepad.m; afterwards whatever the player switched to in game is kept): simple = 2D, full = 3D (D-pad, right stick, L3 / R3),
+    touch_defaults = dict(line.split() for line in (HERE / 'touch_defaults.tsv').read_text().splitlines()
+                          if line and not line.startswith('#'))
+    touch = touch_defaults.get(f'{g.title_id:016X}')
+    om = g.get('op_mode', 'handheld' if touch else 'console')
+    pl = g.get('pad_layout', 'touch' if touch == 'tap' and om == 'handheld' else 'simple')
     if pl not in ('simple', 'full', 'touch'): sys.exit(f'{g.id}: pad_layout must be simple, full or touch: {pl}')   # touch = Tap (no control: every touch goes to the game's touch screen)
     sks = g.get('shader_key_skip', '')   # control-section bytes the shader keys hash as zeros, <offset>+<length> (hle_nvn.c keys_hash, shader_split.py key_ctl; Batman: Arkham Knight: GLSLC's compile information, 0x770+0x78)
     m = re.fullmatch(r'(0x[0-9a-fA-F]+|\d+)\+(0x[0-9a-fA-F]+|\d+)', sks) if sks else None
@@ -200,6 +212,8 @@ def header_one(g):
     if tfu not in ('on', 'off'): sys.exit(f'{g.id}: tex_flush_upload must be on or off: {tfu}')
     tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off
     if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
+    tbc = g.get('tex_bc_cpu', 'off')   # decode BC-compressed textures on the CPU when the GPU has no BC support (A15/A16 and older; nvn_mtl.m uses nvn_bcdec.c): on / off
+    if tbc not in ('on', 'off'): sys.exit(f'{g.id}: tex_bc_cpu must be on or off: {tbc}')
     tds = g.get('tex_dyn_slots', 'off')   # shaders whose texture handle the translator could not trace to one slot: slot indices in c2, the bound slots in the fallback arrays (nvn_mtl.m): on / off
     if tds not in ('on', 'off'): sys.exit(f'{g.id}: tex_dyn_slots must be on or off: {tds}')
     vcr = g.get('vconv_range', 'off')   # vertex attributes converted on the CPU only over the vertices each draw reads (nvn_mtl.m vc_draw_range): on / off
@@ -207,9 +221,10 @@ def header_one(g):
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     ups = upscaler_keys(g)   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
+    fco = g.get('family_compress', 'off')   # resolution families (nvn_mtl.m image_texture) keep lossless compression: on / off (DM_NVN_FAMILY_NOCOMPRESS overrides)
+    if fco not in ('on', 'off'): sys.exit(f'{g.id}: family_compress must be on or off: {fco}')
     dbr = g.get('draw_barriers', 'full')   # how draw passes are ordered (nvn_mtl.m barrier_game): full = each waits for all earlier GPU work, game = by the game's own barriers, so vertex work overlaps the previous pass's fragments
     if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
-    om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     if pl == 'touch' and om != 'handheld': sys.exit(f'{g.id}: pad_layout touch needs op_mode handheld (the touch screen reaches the game only in handheld mode)')
     pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
@@ -250,9 +265,12 @@ def header_one(g):
          f'#define DM_GAME_FPS_HOLD {int(fh == "on")}',
          f'#define DM_GAME_UE_TEXTURE_POOL {int(utp)}',
          f'#define DM_GAME_UE_FPS_CVAR {q(ufc)}',
+         f'#define DM_GAME_RENDER_COND 1',
+         f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(feedback))}',
          f'#define DM_GAME_PRESENT_SNAP {int(ps == "on")}',
          f'#define DM_GAME_PSO_MTL4 {int(p4 == "on")}',
          f'#define DM_GAME_ENC_THREAD {int(et == "on")}',
+         f'#define DM_GAME_NVN_PREFETCH {int(pf == "on")}',
          *([f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}'] if g.get('shared_font', '') else []),   # without the key the host decides by the SDK version (hle_sdk16.c)
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
@@ -260,8 +278,10 @@ def header_one(g):
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_SHADER_KEY_SKIP_OFF {sko:#x}', f'#define DM_GAME_SHADER_KEY_SKIP_LEN {skl:#x}',
          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
+         f'#define DM_GAME_TEX_BC_CPU {int(tbc == "on")}',
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
+         f'#define DM_GAME_FAMILY_COMPRESS {int(fco == "on")}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
@@ -280,6 +300,43 @@ if __name__ == '__main__':
     elif len(a) == 3 and a[0] == 'modules':   # the modules to load from a folder of rewritten modules: its main build's row, else all the profile's (main.c profile_modules)
         g, bid = load(a[1]), re.search(r'^# BUILD_ID\s+(\w+)', (Path(a[2]) / 'main.fixups.tsv').read_text(errors='replace'), re.M)
         print(' '.join(g.build_modules().get(bid.group(1) if bid else '', g.words('modules'))))
+    elif len(a) == 3 and a[0] == 'profile':   # the runtime profile the host reads from DM_PROFILE (hle_profile.h): the header's values, as the TSV form
+        g = load(a[1]); out = Path(a[2]); out.parent.mkdir(parents=True, exist_ok=True)
+        M = dict(re.findall(r'^#define (DM_GAME_\w+) (.*)$', header_one(g), re.M))   # exactly what the compiled profile of this one program would hold (header() is a table of programs for a multi-program game)
+        # macro → the runtime profile's key (hle_profile.c set_kv); the header's spelling of the value is the file's
+        KEYS = [('title_id', 'ID'), ('program_id', 'PROGRAM_ID'), ('name', 'NAME'), ('romfs_marker', 'ROMFS_MARKER'),
+                ('modules', 'MODULES'), ('mem_reserve', 'MEM_RESERVE'), ('mem_alias', 'MEM_ALIAS'), ('mem_stack', 'MEM_STACK'),
+                ('app_pool', 'APP_POOL'), ('mem_used', 'MEM_USED'), ('sys_resource', 'SYS_RESOURCE'), ('mem_map_limit', 'MEM_MAP_LIMIT'),
+                ('present_interval', 'PRESENT_DISPLAY'), ('core_preempt', 'CORE_PREEMPT'), ('alloc_big_align', 'ALLOC_BIG_ALIGN'),
+                ('fps_target', 'FPS_TARGET'), ('fps_hold', 'FPS_HOLD'), ('present_snap', 'PRESENT_SNAP'), ('pso_mtl4', 'PSO_MTL4'),
+                ('shared_font', 'SHARED_FONT_TTF'), ('pad_layout', 'PAD_LAYOUT'), ('op_mode', 'OPMODE'), ('perf_mode', 'PERF_BOOST'),
+                ('feedback_snap', 'FEEDBACK_SNAP'), ('tex_flush_upload', 'TEX_FLUSH_UPLOAD'),
+                ('tex_dirty_upload', 'TEX_DIRTY_UPLOAD'), ('tex_dyn_slots', 'TEX_DYN_SLOTS'), ('gpu_timestamps', 'GPU_TS_SEGMENT'),
+                ('vconv_range', 'VCONV_RANGE'), ('stdalloc_cap', 'STDALLOC_CAP'), ('tex_bc_cpu', 'TEX_BC_CPU'), ('ue_texture_pool', 'UE_TEXTURE_POOL'),
+                ('enc_thread', 'ENC_THREAD'), ('draw_barriers', 'DRAW_BARRIERS_GAME'), ('game_args', 'ARGS'), ('game_env', 'ENV')]
+        def val(macro):   # the header's C spelling → the file's plain spelling
+            v = M.get('DM_GAME_' + macro)
+            if v is None: return None
+            v = v.strip()
+            if v.startswith('{') and v.endswith('}'):   # {"main", "sdk"} → main sdk
+                return ' '.join(x.strip().strip('"') for x in v[1:-1].split(',') if x.strip())
+            if v.startswith('"'): return v[1:-1]
+            return v[:-3] if v.endswith('ull') else v
+        L = [f'# Runtime game profile of {g.id} ({g.get("name")}), written by dm/games/game.py profile from {g.dir}/game.tsv',
+             '# Read by the host from DM_PROFILE (hle_profile.c set_kv): KEY<TAB>VALUE, # starts a comment. Every value the compiled',
+             '# profile would hold is written, so the file alone describes the game.']
+        for key, macro in KEYS:
+            v = val(macro)
+            if v is not None: L.append(f'{key}\t{v}')
+        api = [val('NVN_API_MAJOR'), val('NVN_API_MINOR')]
+        L.append(f'device_api\t{api[0]}.{api[1] or 0}' if api[0] is not None else 'device_api\t0.0')   # 0.0 = by the SDK version: a key left out would keep the compiled game's value
+        if val('SHARED_FONT_TTF') is None: L.append('shared_font\tauto')   # by the SDK version, likewise
+        L.append(f'shader_key_skip\t{val("SHADER_KEY_SKIP_OFF")}+{val("SHADER_KEY_SKIP_LEN")}')   # 0x0+0x0 = none: written always, a key left out would keep the compiled game's
+        for b, d in re.findall(r'\{"([0-9a-f]+)", "([^"]*)"\}', M.get('DM_GAME_DISPLAY_VERSIONS', '')):
+            L.append(f'display_version\t{b}\t{d}')
+        text = '\n'.join(L) + '\n'
+        if not (out.exists() and out.read_text() == text): out.write_text(text, encoding='utf-8')   # unchanged: keep the mtime
+        print(out)
     elif len(a) == 2 and a[0] == 'dir':
         print(load(a[1]).dir)
     elif len(a) == 3 and a[0] == 'link':   # link → the profile folder (replaced when it points elsewhere)

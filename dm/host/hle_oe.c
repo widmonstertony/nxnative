@@ -16,7 +16,7 @@
 static _Atomic int g_opmode = -1;
 int dm_opmode(void) {
     int m = g_opmode;
-    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
+    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : dm_profile()->opmode; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
     return m;
 }
 // ---------- System notification queue (AppletMessage): front end state changes → fetched by the game every frame with TryPopNotificationMessage ----------
@@ -219,7 +219,7 @@ static int prog_plan_make(char **rows, int nr, int hit, prog_plan *out, const vo
     if (relaunch) env[k++] = "DM_RELAUNCH=1";
     else {
         char *pp = NULL, *pe = NULL, *pv = NULL;
-        if (asprintf(&pp, "%s/launch_param.bin", dir) < 0 || asprintf(&pe, "DM_LAUNCH_PARAM=%s", pp) < 0 || asprintf(&pv, "DM_PREV_PROGRAM=%d", (int)(DM_GAME_PROGRAM_ID & 0xf)) < 0) die("%s: out of memory", call);
+        if (asprintf(&pp, "%s/launch_param.bin", dir) < 0 || asprintf(&pe, "DM_LAUNCH_PARAM=%s", pp) < 0 || asprintf(&pv, "DM_PREV_PROGRAM=%d", (int)(dm_profile()->program_id & 0xf)) < 0) die("%s: out of memory", call);
         FILE *po = fopen(pp, "wb");
         if (!po || (n && fwrite(param, n, 1, po) != 1)) LOG("[RED] %s: cannot write %s", call, pp);
         if (po) fclose(po);
@@ -231,7 +231,7 @@ static int prog_plan_make(char **rows, int nr, int hit, prog_plan *out, const vo
 // The Mac's plan for starting program `index` in this one's place, into P (an earlier plan there is freed first); 0: nothing can start, this program just ends (P holds nothing)
 static int oe_plan(int index, const void *param, size_t n, int relaunch, prog_plan *P, const char *call) {
     prog_plan_free(P);
-    int cur = (int)(DM_GAME_PROGRAM_ID & 0xf);   // the program index is the program ID less the application's
+    int cur = (int)(dm_profile()->program_id & 0xf);   // the program index is the program ID less the application's
     const char *pf = getenv("DM_PROGRAMS");
     if (!pf || !*pf) {   // a program run by itself
         if (!relaunch && index != cur) return 0;
@@ -280,7 +280,7 @@ static void oe_start(int index, const void *param, size_t n, int relaunch) {
     const char *what = relaunch ? "oe::RequestToRelaunchApplication" : "oe::ExecuteProgram";
     char hex[3 * 32 + 1] = "", call[192]; for (size_t i = 0; i < n && i < 32; i++) snprintf(hex + 3 * i, 4, " %02x", ((const uint8_t *)param)[i]);
     if (relaunch) snprintf(call, sizeof call, "%s", what); else snprintf(call, sizeof call, "%s(%d, %zu bytes of parameters:%s)", what, index, n, hex);
-    int cur = (int)(DM_GAME_PROGRAM_ID & 0xf);
+    int cur = (int)(dm_profile()->program_id & 0xf);
     dm_gfx_quit_begin();   // this program ends: the pipeline archive starts writing now, beside the iPhone's notice (front_program_handoff, 1.5-3 s), and the exit waits for the rest
 #if !TARGET_OS_IPHONE
     static prog_plan P;
@@ -334,7 +334,7 @@ HLE_FORCE("_ZN2nn2oe16GetOperationModeEv", "operation mode query; a fixed value 
 // Profile perf_mode boost: Boost whatever the operation mode, a combination a Switch 1 never reports, so a profile choice and not a default. Rhythm Heaven Groove keeps one flag per mode
 //   (main+0xa764 / main+0xa784): console means a TV, which gets a latency calibration (main+0x20d0, scene script main+0x4c0820), and Boost alone picks its 1920x1080 draw size
 //   (table main+0xada6d0, else 1280x720). Handheld with Boost: no TV calibration on a phone, full-size drawing
-HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "performance mode query; same as the operation mode (profile perf_mode boost: Boost)", int, h_oe_GetPerfMode, void) { return DM_GAME_PERF_BOOST ? 1 : opmode(); }
+HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "performance mode query; same as the operation mode (profile perf_mode boost: Boost)", int, h_oe_GetPerfMode, void) { return dm_profile()->perf_boost ? 1 : opmode(); }
 // SDK 11 calls of Monster Hunter Rise: the CPU overclock query reads an apm session the host never opened (null read in sdk+0x35258 at the start of nnMain, main+0x6bc8650);
 // the default display resolution is the TV's (1080p docked) or the panel's (720p handheld) and only changes with the operation mode
 // Taiko Risshiden V DX (SDK 12.3.3) turns it on in nnMain (main+0x2e1e4c): the setter goes through the same apm session (null read at sdk+0x362b8). The host does not scale clocks;
@@ -351,7 +351,13 @@ HLE_FORCE("_ZN2nn2oe22SetCpuOverclockEnabledEb", "CPU overclock switch (through 
 // adds to its GPU time (main+0x549614). Star Fox keeps only "tier 0" (byte +0xa of its event 5, main+0xba69970) and renders 0.8 times smaller below it: docked, 768x432 for
 // its 1920x1080 window where tier 0 gives 960x540, its handheld size. Ocarina of Time draws 2048x1152 with tier 1 and 2560x1440 with 0. The host answered 1 docked until
 // these were found. DM_GFX_SCALE sets a tier, to see what a game does with a reduced one
-static int gfx_scale(void) { const char *e = getenv("DM_GFX_SCALE"); int v = e ? atoi(e) : 0; return v >= 0 && v <= 2 ? v : 0; }
+static int gfx_scale(void) {
+    const char *e = getenv("DM_GFX_SCALE");
+    if (!e) e = getenv("DM_GRAPHICS_SCALE"); // legacy TonTon per-game profiles
+    if (e && e[0] >= '0' && e[0] <= '2' && !e[1]) return e[0] - '0';
+    return 0; // preserve current upstream's whole-GPU default
+}
+HLE_FORCE("_ZN2nn2oe28GetGraphicsScalingParametersEv", "Switch 2 graphics parameters: 10, 20 or 30", unsigned, h_oe_GfxParams, void) { return 10u * (unsigned)(gfx_scale()+1); }
 HLE_FORCE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", "graphics scale (Switch 2, through am): 0, the whole GPU (DM_GFX_SCALE sets 1 or 2)", int, h_oe_GfxScale, void) { return gfx_scale(); }
 HLE_FORCE("_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", "graphics scale change notification (Switch 2, through am); the host's scale never changes",
           void, h_oe_GfxScaleNotify, unsigned on) { (void)on; }

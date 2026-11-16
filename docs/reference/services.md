@@ -56,6 +56,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Reminder alarms:** `nn::notification`'s alarm calls (`ListAlarmSettings`, `RegisterAlarmSetting`, `UpdateAlarmSetting`, `DeleteAlarmSetting`, `LoadApplicationParameter`), which most SDKs link, connect to `notif:a` on their first call and abort on any failure: Fit Boxing 3 2.0.0 (SDK 21.4.4) lists them when its Settings open. The client sends only commands 1000 (Initialize, with the process ID), 500, 510, 520, 530 and 540 (SDK 21: `sdk+0x58ac80`..`0x58ad10` in Splatoon Raiders 1.1's `sdk`); the notification event comes from `am`, not from this service. The host schedules no alarms, so `notif:a` is served: a list is empty and leaves the caller's array as it is, a registration succeeds with ID 0 and never fires, a parameter loads 0 bytes.
 - **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) (SDK 20.5.4); [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md) (capture services); Fit Boxing 3 2.0.0 (`0100AC101BFA2000`, a provisional profile, no note: `notif:a`, PR #1974).
 
+### Network service discovery (`nsd:a`, `nsd:u`) served by the host
+
+- **Symptom:** `[RED] sf: the game connects to service nsd:a itself, which the host does not serve`, the same for `nsd:u`, then `game called nn::diag abort: Result 0xe8d` (module 141, nsd) about 0.3 s into `nnMain`, before the first frame.
+- **Cause:** the SDK's nsd client connects to `nsd:a`, then to `nsd:u`, through the game's own HIPC client ([Game-linked HIPC clients of system services](#game-linked-hipc-clients-of-system-services)), and aborts when `sm` refuses both. Hogwarts Legacy gets there from `nn::oe::GetServerEnvironmentType`, which SDK 17 sends to nsd as `GetApplicationServerEnvironmentType` (traced in [PR #890](https://github.com/seedds/nxnative/pull/890)). Hooks on the SDK's nsd functions by name (`GetEnvironmentIdentifier`, `Resolve`) miss any other function that reaches the service.
+- **Fix:** `hle_sf.c` serves `nsd:a` and `nsd:u` as a retail console that is offline, whichever SDK function asks: `GetEnvironmentIdentifier` (11) writes `lp1` to its output buffer, `GetApplicationServerEnvironmentType` (100) answers 1 (`lp1`) or the type `SetApplicationServerEnvironmentType` (101) set until `DeleteApplicationServerEnvironmentType` (102), `GetDeviceId` (12) is zero, `IsChangeEnvironmentIdentifierDisabled` (63) is false. `Resolve` (20) and the NAS lookups (30, 40, 42) fail as the hooked `nsd::Resolve` does, and their `Ex` forms (21, 31, 41, 43) succeed with the failure as their `InnerResult`. Any other command logs a red line once and fails with `ResultUnknownCommandId` (`0x1ba0a`). For this, a service's answer reads the request's buffers (X, A, B and the receive list) and writes output data after `SFCO`.
+- **Found on:** PATAPON 1+2 REPLAY (`01006DC020DB8000`, call site `sdk+0x3aefa8`) and Hogwarts Legacy 1.0.5 (`0100F7E00C70E000`, `sdk+0x3a1748`), from players' logs ([NX2Apple #426](https://github.com/LNPANDY/NX2Apple/issues/426), [#475](https://github.com/LNPANDY/NX2Apple/issues/475)); neither game was run with the fix, which unit tests check (`t_sf.c`); not in the games table yet.
+
 ## SDK names that changed between versions
 
 ### Older SDK names for the same calls
@@ -394,6 +401,27 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** look up the player once and derive the style from that same result before constructing the player mask.
 - **Found on:** clang static analysis ([issue #424](https://github.com/seedds/nxnative/issues/424)); no gameplay failure reported.
 
+### Steam Controller hotplug interrupts other players
+
+- **Symptom:** connecting a Steam Controller clears another controller's held input or rumble and makes it press a button to rejoin; a composite controller can appear as two players or lose native fallback after a partial exclusive open.
+- **Cause:** resetting every native profile covered the native/HID notification race, but discarded unrelated players. Independent opens of native, generic gamepad and vendor siblings could leave half of one controller seized. A generic reader with a separate slot table or an auto-opening HID manager could also allocate a duplicate player or prevent the exclusive claim. Dropping a deferred matching callback lost that generic controller until reconnect.
+- **Fix:** `controllers_mac.m` completes synchronous HID discovery before admitting a fresh, non-neutral native event. It gates only unadmitted snapshots and preserves established slots and the merged rumble owner. USB device ancestry, per-port Puck interface ancestry, or the OS physical-device ID groups sibling claims; report metadata selects the Triton endpoint. Opens commit together, suppression handles have no decoder, and failure releases only that group. Generic HID uses the same registry, slot allocation, shared mapping and focus gate, with a separate transport that never receives Triton output reports. Both managers use independent devices and open only after admission. Standard nonprotocol collections without physical identity or Puck interface metadata retain generic fallback when no conflicting raw route exists; ambiguous new raw claims wait instead of guessing a port. Deferred generic matches are retained and reconsidered when discovery changes, then released on unplug. See [Mac controller behavior and fallback](../mac-controllers.md#steam-controller-2026).
+- **Found on:** synthetic native/HID race, ownership-failure and mixed-controller regressions in `dm/host/tests/t_controllers_mac.m`; physical controller/game validation remains pending.
+
+### Steam Controller bypasses the rumble cutoff
+
+- **Symptom:** `DM_RUMBLE_MIN` silences quiet effects on native controllers but has no effect on the Steam Controller's direct HID output.
+- **Cause:** the direct adapter converted the game's vibration bands and gain into motor reports without applying the cutoff used by the Core Haptics and DualShock 4 routes.
+- **Fix:** all three routes share `dm_haptics_apple_controller_intensity`. The Steam adapter applies it independently to each motor after band conversion and gain, before encoding the output report. Guest vibration values are unchanged. Replacing a DualShock route with a direct output also releases that player's old HID claim, preserving other players' claims.
+- **Found on:** synthetic regressions in `dm/host/tests/t_controllers_mac.m` and `t_haptics_apple.m`, covering packet mapping, gain before cutoff, threshold/rescaling and route replacement. No new hardware or game validation.
+
+### Steam Controller stick drift suppresses gyro aiming
+
+- **Symptom:** six-axis values reach the game but gyro aiming does nothing, or stops after using a stick.
+- **Cause:** the raw Triton reports contain small nonzero stick values at rest. Passing them through as intentional input prevents a game that prioritizes stick input from using motion aiming.
+- **Fix (resolved in the decoder):** apply a radial deadzone to both sticks in `steam_input.h`, default 10%, rescaling the remaining travel to full range. `DM_STEAM_DEADZONE` accepts 0 to below 0.9; invalid values retain the default. Trackpads and motion remain unchanged. Decoder regressions cover all three report formats, centre drift, radial boundaries, travel, diagonals and settings.
+- **Found on:** [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#services); the contributor's USB-C test confirmed gyro aiming with the proposed deadzone. No new local gameplay validation.
+
 ### History reads fill every requested entry
 
 - **Symptom:** buttons and menus work, the sticks do nothing in play (Super Mario Odyssey: its first hint, "Look Around", waited forever); an `nn::diag` abort with Result 0x2aca in the first frames of `nnMain` (Hollow Knight: Silksong, Unity 6000.0.50f1: `bt: sdk+0x514580 main+0x1296c64 …`).
@@ -420,7 +448,7 @@ Most service calls can be found before they crash, before the first boot or the 
 
 - **Symptom:** motion moves never happen; shaking does nothing (Super Mario Odyssey: cap throws by shaking).
 - **Cause:** the host handed out six-axis handles but reported no sensor.
-- **Fix:** it now reports one per connected controller: two for handheld or dual Joy-Cons, one otherwise, with the style, npad id and device in the handle. At rest the sensor lies flat: acceleration (0, 0, −1) G, no rotation, identity direction. Samples are 5 ms apart on the guest clock and numbered by time, so a history read returns the samples at those times. `DM_BTN_SHAKE` (`dm_input.h`: the iPhone shaken, Space on the Mac, `DM_KEYS` `Shake`) plays a side-to-side shake in whole cycles.
+- **Fix:** it reports one combined sensor per FullKey or Handheld controller, two for dual Joy-Cons and one for a single Joy-Con, with the SDK style index, npad id and device in the handle ([handle encoding](#six-axis-handle-encoding)). At rest the sensor lies flat: acceleration (0, 0, −1) G, no rotation, identity direction. Samples are 5 ms apart on the guest clock and numbered by time, so a history read returns the samples at those times. `DM_BTN_SHAKE` (`dm_input.h`: the iPhone shaken, Space on the Mac, `DM_KEYS` `Shake`) plays a side-to-side shake in whole cycles.
 - **Found on:** [Super Mario Odyssey](../../dm/games/0100000000010000/README.md): it reads all 16 history entries per sensor and ignores the count, like its npad history ([History reads fill every requested entry](#history-reads-fill-every-requested-entry)).
 - **Note:** find a game's swing detector by probing the accelerometer value it reads (`DM_PROBE=main:626248@x8+10` in Odyssey 1.4.1).
 
@@ -544,6 +572,19 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** `IOHIDManager` hands a device over once per matching dictionary it meets, each time as a new `IOHIDDeviceRef` for the same I/O Registry entry. The Pro Controller meets both the GamePad usage dictionary and its own vendor / product one (added so identical pads are counted), and `hidpad_found` knew devices by reference only, so one pad counted as two pads of its model against GameController's one controller ([Identical controllers that GameController lists as one](#identical-controllers-that-gamecontroller-lists-as-one)).
 - **Fix:** `pad_hid_mac.h` knows a device by its registry entry ID (`hidpad_entry`): a second reference to a known entry is ignored in every list.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), one Pro Controller over Bluetooth on the Mac: no music in Kokiri Forest gameplay or its cutscenes, back once the pad was read once.
+### Six-axis handle encoding
+
+- **Symptom:** six-axis handles use byte 0 = 0 for a FullKey controller, which the SDK reserves for no style; Handheld exposes two sensors instead of its combined sensor.
+- **Cause:** `GetSixAxisSensorHandles` encoded the style bit number rather than the SDK style index, and treated Handheld like a Joy-Con pair. The reader accepted the same private format, hiding the mismatch.
+- **Fix (resolved):** use SDK style indices 3 through 7, with device 2 for FullKey / Handheld, 0 and 1 for JoyDual, and the corresponding side for single Joy-Cons, following [libnx's handle construction](https://github.com/switchbrew/libnx/blob/master/nx/source/services/hid.c). Readers validate the style, device, player and reserved byte consistently; invalid handles return no connected samples and report at rest. Tests use independent wire-format fixtures and cover docked / handheld histories, bounds and invalid handles.
+- **Found on:** the [Tears of the Kingdom PR #221 hardware investigation](../../dm/games/0100F2C0115B6000/README.md#services). This mismatch predates the Steam Controller adapter; correcting the style alone did not fix that game's aiming, which required the [stick deadzone](#steam-controller-stick-drift-suppresses-gyro-aiming). No new local gameplay validation.
+
+### Mapped Shake on secondary controllers
+
+- **Symptom:** a button mapped to Shake does nothing on a secondary controller, including the first physical controller with `DM_KBD_PLAYER=own`, even though its normal buttons work in a one-player game.
+- **Cause:** the synthetic shake tracked only the keyboard and controller slot 0, and six-axis reads enabled it only for player 1.
+- **Fix:** track whole shake cycles per controller slot and select a source using the same player assignments as buttons and physical motion. One-player games merge secondary sources into player 1; multiplayer keeps each player's shake separate. Short taps, release completion, physical-motion fallback and the at-rest query follow that source. Removing a slot discards its pending shake so reconnecting cannot inherit it.
+- **Found on:** controller-mapping review and synthetic regressions in `dm/host/tests/t_hid.c`, covering all secondary slots, keyboard reservation, docked/handheld merging, disconnect and physical-motion coexistence.
 
 ### A HID entry that sends nothing counted as a second pad
 
@@ -663,6 +704,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Low levels on rotating motors (open).** Controller motors and the Switch's resonant actuators disagree at low amplitudes, in two directions. The Xbox controller's motors showed nothing at intensity 0.05, a faint buzz from about 0.1 and a soft one at 0.3, so Breath of the Wild's charged attack (0.07 for about 3 s, `DM_RUMBLE_LOG=1`) was not felt even at `DM_RUMBLE_GAIN=2.5`. Mario Kart 8 Deluxe holds its low band at 0.1–0.4 all race long (about 30 changes a second, 0.84 peaks every few seconds): a texture on a Joy-Con, rumble that never lets up on a DualShock 4's motors. A floor with a square-root rise (0.15 + 0.85·√x) fixed the first and would make the second much worse, so the mapping stays linear. `DM_RUMBLE_MIN=0..0.9` (default 0) silences controller levels below it and stretches the rest over the full range, on every controller route; 0.45 leaves Mario Kart 8 Deluxe's crashes and drifts, as an emulator gives them on that controller. `t_haptics_apple` covers the cutoff.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (1.9.0), on macOS 27.0.1 with an Xbox Wireless Controller over Bluetooth and an Xbox 360 USB receiver; [NieR:Automata The End of YoRHa Edition](../../dm/games/010056B015FE8000/README.md) (the Asian release, `0100B8E016F76000`) on an iPhone with a GameSir Super Nova in DualShock 4 mode, which plain players fixed; [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md) (4.0.1) on macOS 27.0.1 with a GameSir Cyclone; the same error in issue #219 (Sifu, provisional profile), controller unnamed.
 
+### Paired Joy-Cons rumble both halves on one channel
+
+- **Symptom:** a paired Bluetooth `Joy-Con (L/R)` rumbles both Joy-Cons together for every effect—including when a game splits the pair into sideways `JoyLeft` and `JoyRight` npads so player 1's rumble shakes player 2's Joy-Con too—and logs `localities All, Default, JoyCon (L), JoyCon (R), 1 channels`.
+- **Cause:** `GameController` reports the per-half actuator localities of a combined `Nintendo Switch Joy-Con (L/R)` as `"JoyCon (L)"` and `"JoyCon (R)"` rather than `GCHapticsLocalityLeftHandle` and `GCHapticsLocalityRightHandle`. `haptics_apple.m` checked only the handle localities and fell back to `Default` (one mixed channel), and on a server without advanced players `c.merge` would also collapse a two-channel route back to `Default`.
+- **Fix:** when `supportedLocalities` contains both `"JoyCon (L)"` and `"JoyCon (R)"`, `configure` creates motor 0 on `"JoyCon (L)"` (`controller left Joy-Con`) and motor 1 on `"JoyCon (R)"` (`controller right Joy-Con`) without setting `c.merge`, since the two halves are separate Bluetooth devices whose plain-player engines do not override each other. Single-side `LeftHandle` / `RightHandle` routes likewise map onto `"JoyCon (L)"` / `"JoyCon (R)"` when present. `t_haptics_apple` covers paired and single-side sends on plain players plus the startup fallback to `Default`.
+- **Found on:** Super Mario Party (`010036B0034E4000`, Apple M1 Pro).
+
 ### A haptic engine that stops under a call raises, and ended the app
 
 - **Symptom:** the app dies with `*** Terminating app due to uncaught exception 'com.apple.CoreHaptics', reason: '-[CHHapticEngine(CHHapticEngineInternal) checkEngineRunning:]: self.running'`, then `[dm] CRASH sig=6` in `__pthread_kill`; no `[RED] haptics` line comes first. Seen after about 85 s of a Mario Kart World race on an iPhone, a few seconds after the log's `oe focus state` changed twice (2, then 1).
@@ -696,7 +744,7 @@ Most service calls can be found before they crash, before the first boot or the 
 
 - **Symptom:** taps in handheld mode do nothing, though the game reads the touch screen (the title's PRESS ANY BUTTON, the menus' cards).
 - **Cause:** the game's touch handler (`main+0x42f1ac`) uses `GetTouchScreenState` only to track the finger and takes its taps, pans and swipes from `hid::GetGestureStates` (it acts on types 5–9), which the host answered with no entries.
-- **Fix:** the host now recognizes gestures from the same touch points, by yuzu's rules plus an 8 px slop before a touch counts as moving (`hle_touch.c` `gesture_sample`, unit test `t_gesture`; only in handheld mode, as touches): Touch, Press after 0.5 s, Pan, Pinch / Rotate with two fingers, Cancel on a change in the finger count, then Tap (IsDoubleTap within 0.35 s), Swipe above 400 px/s or Complete, and Idle. For every game.
+- **Fix:** the host now recognizes gestures from the same touch points, by yuzu's rules plus an 8 px slop before a touch counts as moving (`hle_touch.c` `gesture_sample`, unit test `t_gesture`; only in handheld mode, as touches): Touch, Press after 0.5 s, Pan, Pinch / Rotate with two fingers, Cancel on a change in the finger count, then Tap (IsDoubleTap within 0.35 s), Swipe above 400 px/s or Complete, and Idle. Rotation uses the shortest signed difference between the angles, including across ±180°. For every game.
 - **Check:** every menu, the cards, the map's drag and flick worked by touch with it. `DM_TOUCH_LOG=1` logs each gesture entry, and a `DM_CTL` line `drag <x0> <y0> <x1> <y1> [seconds]` moves a finger for testing pans and swipes on the Mac.
 - **Found on:** [Taiko Risshiden V DX](../../dm/games/0100346017304000/README.md) (SDK 12.3.3, Koei Tecmo's KTGL).
 - **Two-argument `InitializeGesture`:** SDK 20.5.15 has an overload `nn::hid::InitializeGesture(int, int)`, whose SDK body opens the hid service and aborts in `sm::Initialize` (Result 0xe15) on the host; it is taken over as the other one is ([PRAGMATA](../../dm/games/0400C76024710000/README.md)).
@@ -717,6 +765,20 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Check:** `dm/host/tests/t_hid.c` (`t_touch_sampling`): reads within 4 ms share the sample and the sampler runs once, 4 ms later is a new sample, the history is newest first and holds 16, a small reader's stride and count (a sample it makes still holds every finger), a Start found at index 1 by a later reader, mode changes within 4 ms, `n <= 0` makes no sample, and a read applies the `DM_KEYS` frame steps due in its frame first. Pokémon Friends on the Mac (a copy of a phone save, 30 fps): taps on Start Game and the room button work and a dragged object follows the finger. Mario Kart 8 Deluxe 4.0.1 on the Mac, handheld (`GetTouchScreenStates<16>`, given up to 16 states now where it had one): each tap on its menus (Single Player, Grand Prix, back) moves exactly one step. Animal Crossing was not run here: an iPhone check of the name-entry keyboard is still wanted. `DM_TOUCH_LOG` prints one line per sample, so its 500 lines are about 8 s of touch at 60 reads a second.
 - **Open:** a reader that looks only at the newest state misses an edge made more than 4 ms before its read, as on hardware; a reader polling faster than every 4 ms sees no new sample.
 - **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) 3.0.3, the name entry in handheld mode ([issue #2567](https://github.com/seedds/nxnative/issues/2567), [PR #2603](https://github.com/seedds/nxnative/pull/2603)); Pokémon Friends 1.1.5, dragging furniture on the Mac and on an iPhone.
+### TonTon confines the mouse in touch mode
+
+- **Symptom:** TonTon confines the pointer even in touch mode and takes it back when a camera game regains focus.
+- **Cause:** its capture request started enabled and survived focus loss. The touchscreen path then reconstructed a clamped pointer from relative movement.
+- **Fix:** adopt the capture lifecycle in [the mouse-stick patch](https://github.com/SanteeMarcel/nxnative/commit/0637a9c3ccdac52c1eeb56e8d71d281a5e3b47dd). Touch uses AppKit's absolute coordinates. In camera mode a click captures without sending a game button. Escape, F8, focus loss and modal prompts release the pointer and clear its held buttons and motion. The desktop profiles still supply stick response and mouse bindings.
+- **Found on:** TonTon touchscreen games and the camera profiles for [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md) and [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md).
+
+### A Mac touchscreen tap triggers the mouse camera
+
+- **Symptom:** finger input on a Mac touch display can be interpreted as a click on a camera game. The emulated mouse cannot send separate touch points for a two-finger gesture.
+- **Cause:** macOS uses mouse emulation in games that do not request direct touch. The front end consumed mouse clicks and relative deltas without access to the original contacts.
+- **Fix:** follow [Apple TN3216](https://developer.apple.com/documentation/technotes/tn3216-supporting-touch-input-for-games-on-macos). Mac game bundles claim native touch and the game view installs a direct-touch recognizer on macOS 27. Each contact keeps a stable finger ID and uses its absolute position inside the game picture. The controller router merges the screen, mouse and controller touchpads without sharing IDs. Focus loss and applet entry lift the screen contacts. Switch HID delivers them in handheld mode and recognizes gestures for games that read them.
+- **Check:** an isolated Mac run of TSUKIHIME 1.0.2 (`010057A01E4D4000`, main `625fc1d9d9485debdd407d7259722ed5`) accepted the player's taps and read changing coordinates during drags. A separate AppKit test wired the same direct-touch recognizer to the Switch HID gesture reader. On the Mac touch display, the player moved one finger and used two fingers to scale in both directions and rotate clockwise and counterclockwise. The displayed test shape and recorded gesture samples tracked all five actions. In-game two-finger support depends on which events each game reads.
+- **Found on:** TonTon's Mac touch and camera modes. The mouse capture lifecycle remains independent of direct touch.
 
 ### Mac pointer stays over the game
 
@@ -1548,3 +1610,35 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** an NRR with 1 in the byte at +5 (the Switch 2's) has a header 0x180 bytes longer. The same fields follow it: program ID +0x4b0, size +0x4b8, hash table +0x4c0, its count +0x4c4.
 - **Fix:** `hle_ro.c` and `nro_collect.py` read the table by that byte.
 - **Found on:** [Mario Tennis Fever](../../dm/games/0400D4201C6EA000/README.md).
+
+### Offline gRPC requires local event descriptors
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** startup calls `nn::diag::Abort` while gRPC selects a polling backend, after audio output has already started.
+- **Cause:** gRPC probes `nn::socket::EventFd(0, 0)` and closes it through `nnsocketClose`. The offline socket stub returned `ENETDOWN` for the probe, which disabled every candidate that needs a wakeup descriptor.
+- **Fix:** the host supplies process-local event counters with nonblocking reads, poll readiness and thread wakeups (`hle_net.c`). Creating an event counter does not create a network connection. The usual socket, name resolution and SSL calls still behave as offline.
+- **Found on:** the Ocarina of Time Switch 2 package (0400486024DEC000, boot abort at `main+0x21f0c7c`).
+
+
+### Backbone button letters and automatic touch visibility
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** Backbone A/B and X/Y invoke the opposite game letters; virtual buttons remain visible after connecting a controller.
+- **Cause:** the iOS adapter always used Nintendo positional mapping, while `DM_PAD_KEEP_TOUCH=1` also overrode controller-driven hiding.
+- **Fix:** recognized Backbone vendor/category names select printed-letter ABXY mapping. Other controllers keep their established Nintendo positional mapping. A connected extended gamepad or keyboard always hides the touch layer, including when keep-touch is enabled. The shared policy applies to every iPhone/iPad game. Disconnect restores touch when no keyboard/gamepad remains; keep-touch now affects mouse-only visibility. Touch geometry, battle layout, keyboard J=A/K=B/U=X/I=Y, and native trigger bits are unchanged.
+- **Checks:** the actual C policy is tested over every face-button combination and connection/keyboard/mouse/preference state; existing keyboard and face-layout regressions remain enabled. Physical Backbone gameplay is left to the user after installation.
+- **Found on:** [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md) and [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md), iPhone Air.
+
+### An explicit graphics tier is ignored by a frozen host
+
+- **Symptom:** a per-game reduced graphics tier is selected but the SDK still reports the operation-mode default. A handheld title continues choosing its full-budget renderer path.
+- **Cause:** the compatibility host's `GetCurrentGraphicsScale` only read operation mode, while its shelf could overwrite a per-game override. Tier 0 means the whole GPU; it does not mean the smallest image. The SDK's parameter values 10/20/30 correspond to tiers 0/1/2.
+- **Fix:** both SDK queries use the same validated `DM_GFX_SCALE` override, with `DM_GRAPHICS_SCALE` accepted for existing TonTon profiles. The frozen compatibility patch keeps its operation-mode default for unset or invalid values; current main keeps its upstream whole-GPU default (tier 0). The shelf must preserve the explicit per-game value. A tier is not a pixel-size guarantee: measure the actual scene attachments separately from the final UI composite and MetalFX output. This changes neither simulation timing nor the shader chain.
+- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md), M2 TonTon 60.96 and Air 60.75. The M2 race remained below 60 FPS; the tier fix alone is not a performance pass.
+
+### Duplicate forced HID registrations abort a merged Mac host
+
+- **Symptom:** startup aborts before the frame loop with `FATAL duplicate entry in the forced takeover list: _ZN2nn3hid27BeginForcedVibrationSessionEv`.
+- **Cause:** the upstream host and the frontend patch series registered the same begin/end forced-vibration symbols under different C handler names. The forced-takeover table intentionally rejects duplicate guest symbols.
+- **Fix:** keep the upstream implementation and remove the redundant pair of registrations. The Mac host accepts `--validate-forced-takeovers` to initialize only that table and exit without opening game data or saves. The Mac packer runs this check on the linked host before publishing an app when the source supports it; frozen sources retain their old build contract. The merged host reports 1,287 unique entries. Updated hosts were repaired without changing their matching shader chain or save location.
+- **Found on:** startup capture during the local TonTon library update, whose shared host also covers [NieR:Automata](../../dm/games/0100B8E016F76000/README.md). The registry check passes; this is not a new gameplay or FPS acceptance result.

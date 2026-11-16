@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_capture.c.inc"
+#else
 // NVN frame capture: the record field walk and the chunk file (see nvn_capture.h). Plain C, shared by the host, the replayer and the unit test.
 #include "nvn_capture.h"
 #include <stdlib.h>
@@ -214,3 +218,5 @@ void cap_buf_put(cap_buf *b, const void *data, size_t n) {
     if (b->n + n > b->cap) { size_t c = b->cap ? b->cap : 4096; while (c < b->n + n) c *= 2; b->p = realloc(b->p, c); b->cap = c; }
     memcpy(b->p + b->n, data, n); b->n += n;
 }
+
+#endif

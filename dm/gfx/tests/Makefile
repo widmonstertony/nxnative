@@ -13,7 +13,7 @@ GAME_H = ../../host/gen/$(GAME)/game_profile.h
 MSL_H = ../../host/gen/msl-macosx/host_msl_gen.h
 CFLAGS=-O1 -g -Wall -Wno-unused-function -I../nvn/include -I$(dir $(GAME_H)) -I$(dir $(MSL_H))
 GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m)))
-GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) $(GAME_H) $(MSL_H)
+GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/legacy/*.h ../nvn/legacy/*.inc ../nvn/include/*.h ../tex/*.h) $(GAME_H) $(MSL_H)
 .DEFAULT_GOAL := t_nvn   # the profile header rule comes first, so keep the default goal as before
 # Regenerated on every make (host_msl_force), by the host Makefile: a header from an older game.py lacks newer defines; game.py writes it only when it changes, so an unchanged header rebuilds no test
 $(GAME_H): host_msl_force
@@ -32,7 +32,7 @@ MTL_T_SRC=../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_s
 # runs several ways. A new test needs its source and its build rule; no list to add it to. NOT_RUN: helpers linked into other tests (t_host_stubs, t_present_rescue_focus, t_gpu_lost_front),
 # fixtures test_image_atomic_bounds.py and test_global_memory.py build themselves (t_atomic_return, t_global_memory), t_geometry_primitive_id (the GPU half of test_dmsh_geometry.py, which gives it the directory of
 # its translated fixtures), t_gpuprof, which CI's CPU subset runs (.github/workflows/tests.yml), and t_gpu_fault_kinds, whose cases fault the GPU on purpose
-NOT_RUN = t_host_stubs t_present_rescue_focus t_gpu_lost_front t_atomic_return t_global_memory t_geometry_primitive_id t_gpuprof t_gpu_fault_kinds
+NOT_RUN = t_framegen_screen t_mkw_terrain_pair t_host_stubs t_present_rescue_focus t_gpu_lost_front t_atomic_return t_global_memory t_geometry_primitive_id t_gpuprof t_gpu_fault_kinds
 RUN_TESTS = $(filter-out $(NOT_RUN),$(basename $(sort $(wildcard t_*.c t_*.m))))
 check_t_%: t_%
 	$(RUN_ENV) ./$<
@@ -106,6 +106,8 @@ t_thread_rt: t_thread_rt.c ../nvn/nvn_rt.h
 	clang -O1 -Wall -o $@ t_thread_rt.c
 t_link_drain: t_link_drain.c ../nvn/nvn_link_drain.h
 	clang -O1 -Wall -o $@ t_link_drain.c
+t_fstep_legacy: t_fstep_legacy.c t_fstep.c ../nvn/legacy/nvn_fstep.h
+	clang -O1 -Wall -o $@ t_fstep_legacy.c
 t_thermal: t_thermal.c $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_thermal.c $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
 t_thermal_tsan: t_thermal.c $(MTL_T_DEP)
@@ -474,6 +476,14 @@ check_t_copy_alias: t_copy_alias
 .PHONY: check_t_linear_readback
 check_t_linear_readback: t_linear_readback
 	MTL_DEBUG_LAYER=1 ./t_linear_readback
+t_linear_depth: t_linear_depth.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_linear_depth.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+t_linear_depth_legacy: t_linear_depth.m $(MTL_T_DEP) $(wildcard ../nvn/legacy/*)
+	clang $(CFLAGS) -DDM_NVN_LEGACY_RENDERER_TEST=1 -fobjc-arc -o $@ t_linear_depth.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+.PHONY: check_t_linear_depth
+check_t_linear_depth: t_linear_depth t_linear_depth_legacy
+	MTL_DEBUG_LAYER=1 ./t_linear_depth
+	MTL_DEBUG_LAYER=1 ./t_linear_depth_legacy
 t_pfv: t_pfv.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m $(MTL_T_SRC) $(FW)
 t_dlss_scaler: t_dlss_scaler.m $(MTL_T_DEP)
@@ -635,6 +645,8 @@ check_t_vk_dontcare: RUN_ENV = MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_VALIDATE_LOAD_A
 # Swap chain images are released once the presents that showed them are done, over more recreations than the window-texture list holds
 t_vk_swapchain_life: t_vk_swapchain_life.m ../vk/hle_vk.m $(MTL_T_DEP)
 	clang $(CFLAGS) -I../../third_party/vulkan-headers/include -fobjc-arc -o $@ t_vk_swapchain_life.m $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
+t_vk_swapchain_life_legacy: t_vk_swapchain_life_legacy.m t_vk_swapchain_life.m ../vk/hle_vk.m $(MTL_T_DEP)
+	clang $(CFLAGS) -DDM_NVN_LEGACY_RENDERER_TEST=1 -I../../third_party/vulkan-headers/include -fobjc-arc -o $@ t_vk_swapchain_life_legacy.m $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
 t_vk_1d: t_vk_1d.m ../vk/hle_vk.m $(MTL_T_DEP)
 	clang $(CFLAGS) -I../../third_party/vulkan-headers/include -fobjc-arc -o $@ t_vk_1d.m $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
 check_t_vk_1d: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -742,6 +754,11 @@ check_t_pool_standin: t_pool_standin
 	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=1 ./t_pool_standin
 	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=0 DM_NVN_POOL_STANDIN=0 ./t_pool_standin
 
+# Classic backend smoke test alongside the current modern renderer tests.
+t_legacy_pipeline: CFLAGS += -DDM_NVN_LEGACY_RENDERER_TEST=1
+t_legacy_pipeline: t_legacy_pipeline.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_legacy_pipeline.m $(MTL_T_SRC) $(FW)
+
 # A virtual pool's first whole mapping aliases it only while no address of its own range has left the host; sampler IDs past the pool are empty slots (issue #2513, PR #2519)
 t_vpool_first_map: t_vpool_first_map.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_vpool_first_map.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
@@ -771,3 +788,12 @@ check_t_sparse_pool_cache: RUN_ENV = MTL_DEBUG_LAYER=1
 t_sparse_copy: t_sparse_copy.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_sparse_copy.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 check_t_sparse_copy: RUN_ENV = MTL_DEBUG_LAYER=1
+t_bc_cpu: t_bc_cpu.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_bc_cpu.m $(MTL_T_SRC) $(FW)
+check_t_bc_cpu: RUN_ENV = MTL_DEBUG_LAYER=1
+
+t_vpool_alias: t_vpool_alias.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_vpool_alias.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+.PHONY: check_t_vpool_alias
+check_t_vpool_alias: t_vpool_alias
+	MTL_DEBUG_LAYER=1 ./t_vpool_alias

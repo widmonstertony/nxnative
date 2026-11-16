@@ -545,8 +545,7 @@ def site_gate(ins, kind, arg):
 
 def site_obs(off, oid, word):
     """Observation gate: original entry instruction → enter the host gate (arg = observation number) → restore x29/x30 → execute the original instruction → jump back to off+4.
-        The first half of the gate block is word-for-word isomorphic with site_gate; dm_gate saves x0–x28 and the flags in its frame and restores them, so a register keeps its value unless the callback writes it
-        (OBS_STDALLOC_INIT's x2, OBS_UE_REGION's size). Any instruction that can be relocated takes one"""
+        The first half is isomorphic with site_gate. entry.S preserves the complete saved frame; callbacks normally observe it, while exact-build display/allocator callbacks may adjust selected saved values."""
     ins = dis(word, off)
     assert ins.mnemonic not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz') and not ins.mnemonic.startswith('b.') \
         and not (ins.mnemonic.startswith('ldr') and '[' not in ins.op_str) and not has18(ins), f'observation gate original instruction cannot be relocated {off:#x} {ins.mnemonic} {ins.op_str}'
@@ -1324,7 +1323,7 @@ for off, oid, ow, why in obs:
 # who asked for it and how much of it is used. They only read registers. VammManager::AllocateAddressRegion(this, uintptr_t *out, size_t size): at its entry the size (x2) and the caller's
 # frames; at the one store of the region's address through out (copied from x1 in its prologue: str xA, [xB]) the address, A passed in the gate number's upper bits;
 # VammManager::FreeAddressRegion(this, address): at its entry. A build where one of them is not found that way gets none of them (logged); the host then has no region table
-OBS_UE_MALLOC, OBS_REGION_ASK, OBS_REGION_GOT, OBS_REGION_FREE, OBS_STDALLOC_INIT, OBS_UE_REGION = 21, 22, 23, 24, 25, 26   # dm/host/dm.h
+OBS_UE_MALLOC, OBS_REGION_ASK, OBS_REGION_GOT, OBS_REGION_FREE, OBS_STDALLOC_INIT, OBS_UE_REGION = 21, 22, 23, 24, 25, 37   # dm/host/dm.h; fork26..36 are persisted CPU-table gates
 def region_gates():
     from nso_syms import defined
     sym = defined(IMG)

@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_dirty.h"
+#else
 // Write-protect dirty-page tracking for guest memory (nvn_dirty.c)
 #pragma once
 #include <stddef.h>
@@ -28,3 +32,5 @@ void nvn_dirty_stats(uint64_t *faults, uint64_t *preps);           // Cumulative
 void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns);   // Cumulative: this module's mprotect call count, pages covered, time spent
 void nvn_dirty_describe(const void *addr, const void *span, char *out, size_t n);   // Diagnostic: every live range over the host page at addr (state, generation, registration; span = the caller's kept range) and the kernel's protection of it
 void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total); // Currently live slots, slot table high-water mark, total number of registrations
+
+#endif

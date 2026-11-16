@@ -129,7 +129,7 @@ static uint64_t cap_pool_obj(const pool_t *p) {
     uint8_t k[8 + sizeof(pool_t)]; memcpy(k, &p, 8); memcpy(k + 8, p, sizeof *p);
     void *have = nvn_hm_get(&g_cap_pool, k); if (have) return cap_obj(CAP_K_POOL, (uint64_t)(uintptr_t)have - 1);
     uint32_t idx = g_cap_npool++; nvn_hm_put(&g_cap_pool, k, (void *)(uintptr_t)(idx + 1));
-    cap_pobj o = {idx, p->flags, (uint64_t)(uintptr_t)p->mem, p->size, p->vmode, 0};
+    cap_pobj o = {idx, p->flags, (uint64_t)(uintptr_t)p->mem, p->size, p->vmode, p->host_flags};
     if (p->vmode == 2) cap_fail("a sparse virtual pool (step 1 does not capture page tables)");
     cap_enc_addr(NULL, &o.mem, 0, 0); cap_buf_put(&g_cap_pobj, &o, sizeof o);
     return cap_obj(CAP_K_POOL, idx);
@@ -341,7 +341,7 @@ static void cap_head(void) {
     char exe[1024]; uint32_t en = sizeof exe; char commit[128] = "unknown";
     if (!_NSGetExecutablePath(exe, &en)) { char cmd[1400], *d = dirname(exe); snprintf(cmd, sizeof cmd, "git -C '%s' describe --always --dirty --abbrev=12 2>/dev/null", d);
         FILE *p = popen(cmd, "r"); if (p) { if (fgets(commit, sizeof commit, p)) commit[strcspn(commit, "\n")] = 0; else strlcpy(commit, "unknown", sizeof commit); pclose(p); } }
-    KV("format\t%u\n", CAP_VERSION); KV("iface\t%d\n", CAP_IFACE); KV("chain\t%s\n", DMSH_CHAIN); KV("commit\t%s\n", commit); KV("title\t%s\n", DM_GAME_ID); KV("build\t%s\n", dm_main_build());
+    KV("format\t%u\n", CAP_VERSION); KV("iface\t%d\n", CAP_IFACE); KV("chain\t%s\n", DMSH_CHAIN); KV("commit\t%s\n", commit); KV("title\t%s\n", dm_profile()->id); KV("build\t%s\n", dm_main_build());
     KV("frame\t%d\n", g_cap_frame); KV("frames\t1\n"); KV("mtl_frame\t%llu\n", (unsigned long long)atomic_load(&g_cur_frame));   // the replay layer's frame number: the replayer takes it, so frame-keyed diagnostics (DM_NVN_TEXDUMP, DM_NVN_PASSDUMP) select the same frame
     for (char **e = *_NSGetEnviron(); *e; e++) if (!strncmp(*e, "DM_", 3) && strncmp(*e, "DM_NVN_CAPTURE=", 15)) KV("env\t%s\n", *e);
 #undef KV

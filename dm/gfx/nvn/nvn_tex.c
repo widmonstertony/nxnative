@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_tex.c.inc"
+#else
 // Storage size / alignment / per-level offsets of NVN textures (Tegra X1 block-linear layout).
 // The algorithm is ported from deko3d source/dk_image.cpp (zlib license, Copyright (C) 2018-2020 fincs):
 //   one GOB = 64 bytes × 8 rows = 512 bytes; the block height (tileH, in GOBs) is picked by 'height×1.5'; levels are accumulated with block alignment.
@@ -244,3 +248,5 @@ int nvn_tbuf_rows(uint64_t n, uint32_t bpb, uint32_t align, uint32_t *w, uint32_
     *row = (uint32_t)r;
     return *h == 1 || r == (uint64_t)NVN_TBUF_ROW * bpb;   // several rows must lie back to back, as the wrapped address assumes
 }
+
+#endif

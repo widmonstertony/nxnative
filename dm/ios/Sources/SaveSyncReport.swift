@@ -61,20 +61,25 @@ struct SaveSyncReport {
         if cloudDevice.hasPrefix("iPhone") { return "iPhone" }
         if cloudDevice.hasPrefix("iPad") { return "iPad" }
         if cloudDevice.contains("Mac") { return "Mac" }
-        return cloudDevice.isEmpty ? "another device" : cloudDevice
+        return cloudDevice.isEmpty ? Self.text("another device") : cloudDevice
     }
 
-    /// `here`: "iPhone" or "Mac"
-    func localLabel(here: String) -> String { "This \(here)'s: \(Self.when(localSaved)), \(Self.size(localSize))" }
-    var cloudLabel: String { "The \(cloudDeviceKind)'s in iCloud: \(Self.when(cloudSaved)), \(Self.size(cloudSize))" }
-    static let chooseTitle = "Which save do you want to play?"
-    func chooseMessage(here: String) -> String {
-        "Both this \(here)'s save and the one in iCloud changed since they were last the same. The newer one is not always the one with more progress: "
-            + "a new game saved a minute later is newer. The one you don't pick is kept in the save's backups folder."
+    private static func text(_ key: String) -> String {
+        Bundle.main.localizedString(forKey: key, value: key, table: "Launcher")
     }
-    static let unreadableTitle = "The cloud save didn't come"
+    /// `here`: "iPhone" or "Mac"
+    func localLabel(here: String) -> String {
+        String(format: Self.text("This %@'s: %@, %@"), here, Self.when(localSaved), Self.size(localSize))
+    }
+    var cloudLabel: String {
+        String(format: Self.text("The %@'s in iCloud: %@, %@"), cloudDeviceKind, Self.when(cloudSaved), Self.size(cloudSize))
+    }
+    static var chooseTitle: String { text("Which save do you want to play?") }
+    func chooseMessage(here: String) -> String {
+        String(format: Self.text("Both this %@'s save and the one in iCloud changed since they were last the same. The newer one is not always the one with more progress: a new game saved a minute later is newer. The one you don't pick is kept in the save's backups folder."), here)
+    }
+    static var unreadableTitle: String { text("The cloud save didn't come") }
     func unreadableMessage(here: String) -> String {
-        "iCloud didn't deliver this game's save in \(Self.waitMs / 1000) seconds. If you play this \(here)'s save now, it is not sent to iCloud "
-            + "until it has been compared with the cloud's at a later start."
+        String(format: Self.text("iCloud didn't deliver this game's save in %d seconds. If you play this %@'s save now, it is not sent to iCloud until it has been compared with the cloud's at a later start."), Self.waitMs / 1000, here)
     }
 }

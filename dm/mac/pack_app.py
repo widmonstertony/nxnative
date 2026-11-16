@@ -5,7 +5,8 @@
 # aoc/<index>/ (DLC), pso/ (an NVN game's pipeline archive made offline for this Mac's GPU, dm/gfx/tools/pso_offline.py: the launcher hands it to the host as DM_PSO_BUNDLE),
 # and dm/ (the rewritten modules and their rewriter tables, nro.tsv, the profile's shader_map.tsv / pso_manifest.tsv / c1_full.tsv / cb_extent.tsv / shader_pairs.tsv / pso_pairs.tsv, font/, env.txt,
 # launcher.json: the game's launcher settings, dm/games/settings.py, which the settings window and Mac front ends show),
-# plus AppIcon.icns from the game's icon (sips, iconutil) and the Info.plist keys the launcher reads (DMTitleID, DMRomfsMarker, DMLanguage).
+# plus AppIcon.icns from the game's icon (sips, iconutil) and the Info.plist keys the launcher reads (DMTitleID, DMRomfsMarker, DMLanguage, DMTitleNames: the game's name in each of its languages,
+# from --control, which Mac front ends show in their own language).
 # romfs.img, msl, aoc and pso are links into the signed data bundles in Contents/PlugIns that hold them (see Data bundles below), so that a pack which changes only the host signs in a second.
 # The large folders are APFS clones (cp -c) when the app is on the same APFS volume as the build, so they take no space; plain copies otherwise.
 # Signing: the new data bundles, the inner host, then the bundle (codesign --force --sign <identity>; '-' = ad-hoc), without the hardened runtime: the host maps the game's code executable, which the hardened
@@ -18,14 +19,17 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'tools'))
+import cloudkit_signing
+import nacp
 import romfs as rfs
+import romfs_image
 import shader_lib
 import vol_space   # the space a build may write, with what APFS frees on demand
 MODULE_FILES = ('*.patched.bin', '*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv', '*.changed.tsv', 'nro.tsv')   # what the host reads from the module folder (build_ipa.sh copies the same tables but changed.tsv: the iPhone's cheats never write code)
 MSL_FILES = ('*.metallib', '*.json', '*.tsv')   # what the host reads from msl/ (not the Mac build's .metal sources or _b_build.json); an NVN game's b-<chain> goes in as one file of them (shader_lib.py)
 # read beside DM_NVN_SHMAP; any of them may be absent (a Vulkan or GL game has no c1_full.tsv). The shader pairs are the pipeline prebuild's (nvn_mtl.m pso_prebuild): without them the
 # app makes no pulling bases, a hybrid draw has no stand-in and a new pipeline compiles on the submit thread (build_ipa.sh copies them into the IPA the same way)
-TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv')
+TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv', 'desktop.tsv', 'resolution_levels.tsv')
 PSO_FILES = ('*.mtl4a', '*-prewarm-*.keys', 'prebuilt.tsv', 'rest_pairs.tsv', 'archive.tsv', 'prewarm.tsv')   # what the app takes of pso_offline.py's output folder
 EXE = 'nxnative'   # the launcher's file name (Contents/MacOS/nxnative)
 ICON_SIZES = (16, 32, 128, 256, 512)
@@ -89,17 +93,32 @@ def min_os(host):   # the host's deployment target (LC_BUILD_VERSION minos): the
     return m.group(1) if m else '14.0'
 
 
-def swift_sources():   # the settings window, with the iOS launcher's model, rows and cloud-save report
-    return [HERE / 'Launcher.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift', HERE.parent / 'ios/Sources/SaveSyncReport.swift']
+def swift_sources():   # the settings window, with the iOS launcher's model and rows
+    return [HERE / 'Launcher.swift', HERE / 'ControllerMap.swift', HERE / 'DesktopControls.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift', HERE.parent / 'ios/Sources/SaveSyncReport.swift']
+
+
+def launcher_localizations():
+    return sorted((HERE / 'Localizations').glob('*.lproj/*.strings'))
+
+
+def copy_launcher_localizations(resources):
+    for source in launcher_localizations():
+        destination = resources / source.parent.name / source.name
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copyfile(source, destination)
+    notices = HERE / 'DesktopControlsNotices.txt'
+    if notices.is_file(): shutil.copyfile(notices, resources / notices.name)
 
 
 def build_launcher(out, minos, clang, swiftc, sdk):   # launcher.c's main and the host's cloud-save code (its send after the host exits), linked by swiftc with the settings window (no Swift main: -parse-as-library)
     with tempfile.TemporaryDirectory(dir=out.parents[3]) as t:
-        objs = [Path(t) / 'launcher.o', Path(t) / 'save_sync.o']
-        for obj, src in zip(objs, (HERE / 'launcher.c', HERE.parent / 'host/save_sync.c')):
-            run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-I', HERE.parent / 'host', '-c', '-o', obj, src])
+        srcs = (HERE / 'launcher.c', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m')
+        objs = [Path(t) / (src.stem + '.o') for src in srcs]
+        for obj, src in zip(objs, srcs):
+            arc = ['-fobjc-arc'] if src.suffix == '.m' else []
+            run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', *arc, '-I', HERE.parent / 'host', '-c', '-o', obj, src])
         run([swiftc, '-sdk', sdk, '-target', f'arm64-apple-macos{minos}', '-O', '-swift-version', '5', '-parse-as-library', '-module-cache-path', Path(t) / 'module-cache',
-             '-o', out, *swift_sources(), *objs, '-framework', 'CoreFoundation', '-framework', 'AppKit', '-framework', 'SwiftUI'])
+             '-o', out, *swift_sources(), *objs, '-framework', 'CoreFoundation', '-framework', 'AppKit', '-framework', 'SwiftUI', '-framework', 'CloudKit'])
 
 
 def make_icns(jpg, out):   # the game's icon (256x256 JPEG) at every size an .icns holds
@@ -117,22 +136,36 @@ def settings_rules(listed):   # DMSettings: what the launcher accepts as each se
         if s['kind'] == 'range': rules.append({'env': s['env'], 'min': float(s['min']), 'max': float(s['max'])})
         elif s['kind'] == 'choice': rules.append({'env': s['env'], 'values': [o[0] for o in s['options']]})
         elif s['kind'] == 'toggle': rules.append({'env': s['env'], 'values': [s.get('on', '1'), s.get('off', '0')]})
+        elif s['kind'] in ('keymap', 'padmap'): rules.append({'env': s['env'], 'mapping': s['kind']})
     return rules
+
+
+def fork_patches():
+    """The fork's patches this build carries (dm/fork_patches.txt, written by scripts/patches.py), comma-separated: DMForkPatches in Info.plist, and the first line of the log"""
+    try: return ','.join(l.strip() for l in (Path(__file__).resolve().parents[1] / 'fork_patches.txt').read_text().splitlines() if l.strip())
+    except OSError: return ''
 
 
 def info_plist(a, minos, icon):
     # LSSupportsGameMode off: macOS's Game Mode holds the GPU at its lowest clock while it is busy (docs/reference/frame-rate.md, macOS Game Mode holds the GPU at its lowest clock)
     p = {'CFBundleName': a.name, 'CFBundleDisplayName': a.name, 'CFBundleIdentifier': a.bundle_id or f'org.nxnative.{a.title_id.lower()}',
          'CFBundleVersion': a.version or '1.0', 'CFBundleShortVersionString': a.version or '1.0', 'CFBundlePackageType': 'APPL', 'CFBundleExecutable': EXE,
-         'CFBundleInfoDictionaryVersion': '6.0', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
+         'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleDevelopmentRegion': 'en', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
          'NSBluetoothAlwaysUsageDescription': 'Connect Switch 2 Joy-Con and Pro Controllers over Bluetooth.',
-         'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1}
+         'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1,
+         'DMForkPatches': fork_patches(), 'DMControllerMappings': 1, 'NSIsTouchNative': True}
+    # the front ends show DMDisplayVersion, else DMPackageVersion: CFBundleShortVersionString is 1.0 when the packed update has no display version of its own (#953)
+    if a.version: p['DMDisplayVersion'] = a.version
+    if a.package_version: p['DMPackageVersion'] = a.package_version
     if icon: p['CFBundleIconFile'] = 'AppIcon'
     if a.settings:
         listed = json.loads(Path(a.settings).read_text(encoding='utf-8'))['settings']
         p['DMSettings'] = settings_rules(listed)
         lang = next((s['default'] for s in listed if s['env'] == 'DM_LANG'), None)
         if lang: p['DMLanguage'] = lang   # the Game language row's default: --lang, or the game's first language when it lacks that one (settings.py), with or without the window
+    if getattr(a, 'control', None):
+        names = nacp.names(a.control)   # the title in each language the control data names it in: a front end shows the one of its own language (the bundle name is the base game's first)
+        if names: p['DMTitleNames'] = names
     return p
 
 
@@ -153,15 +186,20 @@ def strip_detritus(app):   # the "._name" files a copy from or onto an exFAT vol
                 except OSError: pass   # a ._ file the volume maps to the attributes of the file it belongs to: gone with them
 
 
-def sign(app, identity, codesign, nested=()):   # the new data bundles and the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
+def sign(app, identity, codesign, nested=(), cloud_entitlements=None, bundle_id=None):   # the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
     strip_detritus(app)   # before codesign reads the bundle, so that a build folder or an output folder on exFAT is not a signing failure
-    for target in (*nested, app / 'Contents/MacOS/dmhost', app):
-        try: run([codesign, '--force', '--sign', identity, target])
+    host = app / 'Contents/MacOS/dmhost'
+    for target in (*nested, host, app):
+        command = [codesign, '--force', '--sign', identity]
+        if cloud_entitlements and target in (host, app):
+            command += ['--entitlements', cloud_entitlements, '--identifier', bundle_id]
+        command.append(target)
+        try: run(command)
         except SystemExit as e:
             if not any(s in str(e) for s in ('detritus', '._', 'not signed at all')): raise
             subprocess.run(['xattr', '-cr', str(app)], capture_output=True)   # Finder information or resource forks on copied files: codesign refuses them
             strip_detritus(app)
-            run([codesign, '--force', '--sign', identity, target])
+            run(command)
     strip_detritus(app)   # codesign sets an attribute on what it signs, which is a "._name" file again on exFAT: the signature still verifies without it, and a later --force would refuse it
 
 
@@ -239,9 +277,13 @@ def msl_inputs(msl):
     return files if any(p.suffix == '.metallib' for p in files) else []
 
 
-def copy_msl(msl, msls, dst, clone):
-    """The shader libraries to dst, msl/<their name> in the app: an NVN game's as the one file dst.img, of what the host reads. Writing it costs the space of a copy, not a clone, as it leaves out the Mac build's sources"""
-    if is_chain_library(msl): shader_lib.subset(msl, f'{dst}.img'); return
+def msl_extra(a):   # --msl-extra: side libraries (<key>_bk.metallib, mesh shaders as compute) that go into the chain library's image beside its own files
+    return sorted(Path(a.msl_extra).glob('*.metallib')) if getattr(a, 'msl_extra', None) and is_chain_library(a.msl) else []
+
+
+def copy_msl(msl, msls, dst, clone, extra=()):
+    """The shader libraries to dst, msl/<their name> in the app: an NVN game's as the one file dst.img, of what the host reads (and the extra files). Writing it costs the space of a copy, not a clone, as it leaves out the Mac build's sources"""
+    if is_chain_library(msl): shader_lib.subset(msl, f'{dst}.img', extra={p.name: str(p) for p in extra}); return
     dst.mkdir(parents=True); copy(msls, dst, clone)
 
 
@@ -262,10 +304,12 @@ def selected_inputs(a):
     if a.pso and (not any(p.suffix == '.mtl4a' for p in pso) or not (Path(a.pso) / 'prebuilt.tsv').is_file()):
         raise SystemExit(f'no pipeline archive with its prebuilt.tsv in {a.pso}')
     tables = [Path(a.tables) / n for n in TABLES if (Path(a.tables) / n).is_file()]
+    desktop = HERE.parent / 'games' / a.title_id.upper() / 'desktop.tsv'
+    if not any(p.name == 'desktop.tsv' for p in tables) and desktop.is_file(): tables.append(desktop)
     pairs = Path(a.pso_pairs) if a.pso_pairs and not any(p.name == 'pso_pairs.tsv' for p in tables) else None
     fonts = sorted(p for p in Path(a.font).glob('*.ttf') if not detritus(p.name))
-    files = [Path(a.host)] + mods + msls + pso + tables + fonts + ([pairs] if pairs else [])
-    files += [Path(p) for p in (a.env_file, a.settings, a.icon, a.control_nacp) if p]
+    files = [Path(a.host)] + mods + msls + msl_extra(a) + pso + tables + fonts + ([pairs] if pairs else [])
+    files += [Path(p) for p in (a.env_file, a.settings, a.icon, a.control, a.control_nacp) if p]
     for p in files:
         if not p.is_file(): raise SystemExit(f'no input file at {p}')
     return mods, msls, pso, tables, pairs, fonts, files
@@ -313,9 +357,28 @@ def pack(a):
     except (OSError, ValueError): previous = None
     try:
         a = argparse.Namespace(**vars(a))
-        for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html', 'control_nacp'):
+        for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html', 'control_nacp', 'control'):
             if getattr(a, name): setattr(a, name, str(Path(getattr(a, name)).resolve()))
+        profile_path = getattr(a, 'cloudkit_profile', None)
+        cloudkit = None
+        if profile_path:
+            if a.sign == '-':
+                raise SystemExit('CloudKit requires a real signing identity (--sign)')
+            profile_path = Path(profile_path).resolve()
+            profile = cloudkit_signing.read_profile(profile_path)
+            bundle_info = info_plist(a, '', False)
+            app_id = a.cloudkit_app_identifier
+            bundle_id = bundle_info['CFBundleIdentifier']
+            cloudkit = cloudkit_signing.configure(
+                profile, bundle_info, {'com.apple.application-identifier': app_id},
+                app_id, a.cloudkit_container, a.cloudkit_environment)
+        if a.external_romfs and (a.program or not rfs.is_image(a.romfs)):
+            raise SystemExit('--external-romfs requires a single-program app and a RomFS image file')
         mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a)
+        if a.external_shaders and (a.program or not is_chain_library(a.msl) or len(msls) != 1 or
+                                   msls[0].resolve().name != f'{shader_lib.name_of(a.msl)}.img' or not rfs.is_image(msls[0]) or
+                                   (a.msl_name and a.msl_name != shader_lib.name_of(a.msl))):
+            raise SystemExit('--external-shaders requires a single-program app and a complete NVN shader image')
         # --program: the other programs of a game of several programs (index, rewritten modules, RomFS, shader libraries, tables, offline pages; tab-separated), which go in beside the first's as one app
         programs = []
         for row in a.program or []:
@@ -323,6 +386,8 @@ def pack(a):
             pa = argparse.Namespace(**{**vars(a), 'patched': patched, 'romfs': prom, 'msl': pmsl, 'tables': ptab, 'pso': None, 'pso_pairs': None, 'aoc': None, 'marker': None})
             pmods, pmsls, _, ptables, _, _, pfiles = selected_inputs(pa)
             programs.append((n, Path(prom), Path(pmsl), Path(phtml), pmods, pmsls, ptables)); files += pfiles
+        if profile_path: files += [profile_path, Path(cloudkit_signing.__file__)]
+        if a.control and Path(a.control).is_file(): files.append(Path(a.control))   # its names go into Info.plist
         clang = Path(run(['xcrun', '--find', 'clang']).strip()).resolve()
         swiftc = Path(run(['xcrun', '--find', 'swiftc']).strip())   # not resolved: the driver is a link to swift-frontend, which acts by its name
         sdk = Path(run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()).resolve()
@@ -331,10 +396,12 @@ def pack(a):
         if not codesign: raise SystemExit('codesign is not available')
         codesign = Path(codesign).resolve()
         minos = min_os(a.host)
-        sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py'] + swift_sources()
-        large = {*msls, *pso, *(p for x in programs for p in x[5])}   # the shader libraries and pipeline archives (13.5 GB for Ocarina of Time): by stat, as the RomFS trees below
+        sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/romfs_identity.h',
+                   HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/nacp.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources() + launcher_localizations()
+        if (HERE / 'DesktopControlsNotices.txt').is_file(): sources.append(HERE / 'DesktopControlsNotices.txt')
+        large = {*msls, *msl_extra(a), *pso, *(p for x in programs for p in x[5])}   # the shader libraries and pipeline archives (13.5 GB for Ocarina of Time): by stat, as the RomFS trees below
         inputs = {'options': vars(a), 'files': [file_row(p, p in large) for p in files + sources],
-                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.html, str(Path(a.romfs).parent / PROGRAM_ROMFS), *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
+                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.romfs and f'{a.romfs}.id', a.aoc, a.html, str(Path(a.romfs).parent / PROGRAM_ROMFS), *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
                             str(sdk), run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
                             str(codesign), codesign.stat().st_mode, digest(codesign), minos]}
@@ -353,15 +420,17 @@ def pack(a):
     romfs, msl, aoc = Path(a.romfs), Path(a.msl), Path(a.aoc) if a.aoc else None
     # each source is probed on its own, as they may lie on different volumes; cp -c copies what it cannot clone, so a probe decides only the free-space check and the step line
     sib = romfs.parent / PROGRAM_ROMFS   # the RomFS of the application's other programs, beside this one's where the host mounts them by program index (hle_fs.c; scripts/pack_nup.py)
-    trees, lists = {'romfs': romfs, 'aoc': aoc, 'programs': sib if sib.is_dir() else None}, {'mods': mods, 'msl': msls, 'pso': pso}
+    trees, lists = {'romfs': None if a.external_romfs else romfs, 'aoc': aoc, 'programs': sib if sib.is_dir() else None}, {'mods': mods, 'msl': [] if a.external_shaders else msls, 'pso': pso}
     clone = {k: bool(d) and can_clone(d, res) for k, d in trees.items()} | {k: bool(ps) and can_clone(ps[0], res) for k, ps in lists.items()}
-    if is_chain_library(msl): clone['msl'] = False   # copy_msl writes it, which the free-space check below counts
+    share_msl = a.share_shader_image and is_chain_library(msl) and len(msls) == 1 and msls[0].suffix == '.img' and clone['msl']
+    if is_chain_library(msl) and (not share_msl or msl_extra(a)): clone['msl'] = False   # copy_msl writes a filtered image
     need = sum(tree_bytes(d) for k, d in trees.items() if d and not clone[k]) + sum(p.stat().st_size for k, ps in lists.items() if not clone[k] for p in ps)
     if need:
         free = vol_space.free_bytes(res)
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
-    step(f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
+    step('launcher and host (external game image)' if a.external_romfs else f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
     build_launcher(mac / EXE, minos, clang, swiftc, sdk)
+    copy_launcher_localizations(res)
     shutil.copy(a.host, mac / 'dmhost')   # data and mode, not the build's extended attributes (copy2 would carry them into the app)
     copy(mods, dm, clone['mods'])
     if tables: copy(tables, dm, False)
@@ -369,7 +438,10 @@ def pack(a):
     if fonts: copy(fonts, dm / 'font', False)
     if a.env_file: shutil.copyfile(a.env_file, dm / 'env.txt')
     if a.settings: shutil.copyfile(a.settings, dm / 'launcher.json')
-    if a.control_nacp: shutil.copyfile(a.control_nacp, res / 'control.nacp')
+    control = a.control_nacp or a.control
+    if control: shutil.copyfile(control, res / 'control.nacp')
+    msl_additions = msl_extra(a)
+    if msl_additions and a.external_shaders: raise SystemExit('--msl-extra needs a packaged shader image, not --external-shaders')
     msl_dst = res / 'msl' / (a.msl_name or msl.name)
     old_app = out if out.is_dir() else None
     took = {f[0]: f[1:] for f in inputs['files']}   # what the app's key took of each selected file
@@ -384,14 +456,24 @@ def pack(a):
             fill(b / 'Contents/Resources' / top); fresh.append(b)
         link.parent.mkdir(parents=True, exist_ok=True); link.symlink_to(os.path.relpath(b / 'Contents/Resources' / top, link.parent))
     def fill_msl(d):   # the libraries of every program: msl/<library>, msl/p<N>/<library>
-        d.mkdir(parents=True); copy_msl(msl, msls, d / msl_dst.name, clone['msl'])
+        d.mkdir(parents=True)
+        if not a.external_shaders:
+            if share_msl and not msl_additions:
+                dst = d / (msl_dst.name + '.img')
+                if ctypes.CDLL(None, use_errno=True).clonefile(os.fsencode(msls[0]), os.fsencode(dst), 0) != 0:
+                    e = ctypes.get_errno()
+                    raise OSError(e, os.strerror(e), dst)
+            else:
+                copy_msl(msl, msls, d / msl_dst.name, clone['msl'], msl_additions)
         for n, _, pmsl, _, _, pmsls, _ in programs: (d / f'p{n}').mkdir(); copy_msl(pmsl, pmsls, d / f'p{n}' / pmsl.name, can_clone(pmsls[0], res))
     lib_code = [digest(Path(shader_lib.__file__)), digest(Path(rfs.__file__))]   # what writes a chain library's one file
-    place('ShaderLibraries', 'msl', 'shader libraries', [lib_code, msl_dst.name, [took[str(p)] for p in msls], [(x[0], x[2].name, [took[str(p)] for p in x[5]]) for x in programs]], fill_msl)
+    if not a.external_shaders or programs: place('ShaderLibraries', 'msl', 'shader libraries', [lib_code, msl_dst.name, [took[str(p)] for p in (*msls, *msl_additions)], [(x[0], x[2].name, [took[str(p)] for p in x[5]]) for x in programs]], fill_msl)
     if aoc: place('AddOnContent', 'aoc', 'add-on content', inventory(aoc), lambda d: copy([aoc], d, clone['aoc']))
     if pso: place('PipelineArchive', 'pso', 'pipeline archive', [took[str(p)] for p in pso], lambda d: (d.mkdir(parents=True), copy(pso, d, clone['pso'])))
     rtop = 'romfs.img' if romfs.is_file() else 'romfs'
-    place('GameData', rtop, 'game files', inventory(romfs), lambda d: copy([romfs], d, clone['romfs']))
+    if not a.external_romfs: place('GameData', rtop, 'game files', inventory(romfs), lambda d: copy([romfs], d, clone['romfs']))
+    image_id = Path(f'{romfs}.id')   # the image's identity (build_ipa_from_nsp.py write_image_id): an iPhone build of this game reuses the image from the app instead of extracting it again (LNPANDY/NX2Apple#708)
+    if not a.external_romfs and romfs.is_file() and image_id.is_file(): shutil.copyfile(image_id, res / 'romfs.img.id')
     if a.html and Path(a.html).is_dir(): copy([Path(a.html)], res / 'html', False)   # the offline pages, beside the RomFS where the host looks for them (hle_web.c)
     if trees['programs']: place('GameDataPrograms', PROGRAM_ROMFS, 'other programs\' game files', inventory(sib), lambda d: copy([sib], d, clone['programs']))
     # The other programs: p<N>/ (RomFS in the data bundle GameData<N>, offline pages), msl/p<N>/<library> (in ShaderLibraries), dm/p<N>/ (modules, tables), and the table of them all, which the
@@ -409,13 +491,31 @@ def pack(a):
     icon = bool(a.icon)
     if icon: step('icon'); make_icns(a.icon, res / 'AppIcon.icns')
     info = info_plist(a, minos, icon)
+    if a.external_romfs:
+        info['DMExternalRomfs'] = str(romfs)
+        (res / 'romfs.id').write_text(romfs_image.identity(romfs, a.title_id, a.version or '') + '\n')
+    if a.external_shaders:
+        shader_image = msls[0].resolve()
+        info['DMExternalShaders'] = str(shader_image)
+        (res / 'shaders.id').write_text(romfs_image.identity(shader_image, a.title_id, a.version or '') + '\n')
     info['DMModuleFiles'] = [p.name for p in mods]
     commit = source_commit()
     if commit: info['DMCommit'] = commit
     if msl_dst.name.startswith('b-'): info['DMChain'] = msl_dst.name[2:]   # the library chain the app carries (a Vulkan or GL game's vk / gl has none)
+    if cloudkit:
+        info['DMCloudSaveContainer'] = cloudkit[0]['DMCloudSaveContainer']
+        shutil.copyfile(profile_path, c / 'embedded.provisionprofile')
     (c / 'Info.plist').write_bytes(plistlib.dumps(info))
     (c / 'PkgInfo').write_text('APPL????')
-    step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})'); sign(tmp, a.sign, codesign, fresh)   # a new data bundle is read whole once; the app's signature then takes its hash
+    step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})')
+    if cloudkit:
+        with tempfile.TemporaryDirectory(dir=tmp.parent) as t:
+            ent = Path(t) / 'CloudKit.entitlements'
+            ent.write_bytes(plistlib.dumps(cloudkit[1]))
+            sign(tmp, a.sign, codesign, fresh, ent, bundle_id)
+        run([codesign, '--verify', '--deep', '--strict', tmp])
+    else:
+        sign(tmp, a.sign, codesign, fresh)
     had_old = out.exists()
     replace_app(tmp, out)
     key_tmp = key_file.with_name(key_file.name + '.partial')
@@ -438,8 +538,12 @@ def parse(argv):
     ap.add_argument('--host', required=True, help='the Mac host built for the profile')
     ap.add_argument('--patched', required=True, help='the rewritten modules (patch_nso.py output)')
     ap.add_argument('--romfs', required=True, help='the RomFS of the packed version')
+    ap.add_argument('--external-romfs', action='store_true', help='read the RomFS image from its current absolute path instead of copying it into the app')
     ap.add_argument('--msl', required=True, help='the Mac shader libraries: <shader>/cache/b-<chain>, or a Vulkan or GL game\'s <shader>/vk or gl')
+    ap.add_argument('--msl-extra', help='a folder of side libraries (*.metallib: mesh shaders as compute, dmsh_meshcompute.py) to add to the chain library\'s image')
     ap.add_argument('--msl-name', help='its folder name in the app (default: its own)')
+    ap.add_argument('--share-shader-image', action='store_true', help='on the same APFS volume, clone the complete Mac shader image instead of writing a filtered copy')
+    ap.add_argument('--external-shaders', action='store_true', help='keep the complete NVN Metal shader image at its build path; its drive must remain available')
     ap.add_argument('--tables', required=True, help='the game profile folder (shader_map.tsv and the tables beside it)')
     ap.add_argument('--font', required=True, help='the folder of the shared-font stand-ins (nintendo_ext.ttf)')
     ap.add_argument('--aoc', help='the DLC RomFS images or folders by index')
@@ -451,10 +555,23 @@ def parse(argv):
     ap.add_argument('--env-file', help='environment switches baked in (Resources/dm/env.txt)')
     ap.add_argument('--settings', help='the game\'s launcher settings (dm/games/settings.py output; Resources/dm/launcher.json, which the Mac front end reads)')
     ap.add_argument('--title-id', required=True); ap.add_argument('--name', required=True)
-    ap.add_argument('--version'); ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
+    ap.add_argument('--version', help='the game\'s display version (CFBundleShortVersionString and DMDisplayVersion; 1.0 and no DMDisplayVersion without it)')
+    ap.add_argument('--package-version', help='the packed version (v458752): DMPackageVersion, which names an update packed without its display version')
+    ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
     ap.add_argument('--icon', help='the game icon (icon.jpg from the control data)')
+    ap.add_argument('--control', help='the game\'s control data (control.nacp): its title in each language goes into Info.plist as DMTitleNames')
     ap.add_argument('--sign', default='-', help='codesign identity (default: - = ad-hoc)')
-    return ap.parse_args(argv)
+    ap.add_argument('--cloudkit-profile', type=Path, help='Apple provisioning profile for this existing Mac app')
+    ap.add_argument('--cloudkit-app-identifier', help='exact app identifier, including its App ID prefix')
+    ap.add_argument('--cloudkit-container', help='existing iCloud container shared with the mobile builds')
+    ap.add_argument('--cloudkit-environment', choices=('Development', 'Production'))
+    a = ap.parse_args(argv)
+    cloudkit = (a.cloudkit_profile, a.cloudkit_app_identifier, a.cloudkit_container, a.cloudkit_environment)
+    if any(cloudkit) and not all(cloudkit):
+        ap.error('all four --cloudkit-* options are required together')
+    if a.cloudkit_profile:
+        a.cloudkit_profile = str(a.cloudkit_profile.resolve())
+    return a
 
 
 if __name__ == '__main__':

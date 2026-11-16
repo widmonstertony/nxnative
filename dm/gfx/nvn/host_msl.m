@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/host_msl.m.inc"
+#else
 #import "host_msl.h"
 #include "host_msl_gen.h"
 #include <os/lock.h>
@@ -40,3 +44,5 @@ id<MTLLibrary> host_msl_lib(id<MTLDevice> dev, id<MTL4Compiler> comp, const char
     os_unfair_lock_unlock(&lk);
     return lib;
 }
+
+#endif

@@ -47,6 +47,10 @@ Run headless: `DM_WINDOW` set to anything, `0` too, opens a window, and a covere
 
 ## Found on this game
 
+- [Imported TonTon Mac target decoded as iOS](../../../docs/reference/packing.md#an-imported-tonton-mac-game-selects-iphone-when-configuring-a-build): resolved by using the frontend's `BuildTarget.mac` token.
+
+- TonTon's linked NUP input failed its size check; resolved in the frontend by checking the open container's size ([packing note](../../../docs/reference/packing.md#tonton-rejects-a-complete-nup-reached-through-a-symbolic-link)). Input metadata and update module hashes were checked; gameplay was not retested for this frontend fix.
+
 - [GameChat at boot](../../../docs/reference/services.md#gamechat-at-boot): boot aborts.
 - [No Game language row in an app packed from a NUP or a dump](../../../docs/reference/packing.md#no-game-language-row-in-an-app-packed-from-a-nup-or-a-dump): its NUP has no NACP. With `DM_LANG` it boots in German, Dutch and Simplified Chinese; Russian and Portuguese, which it lacks, show English.
 - [Whether the language selection is limited](../../../docs/reference/services.md#whether-the-language-selection-is-limited).

@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_feedback.h"
+#else
 // The first 64 bytes are shared with offline main0_tf (dmsh_build.py).
 // Control buffers are opaque to the game: four byte offsets followed by Metal
 // array-draw arguments. All updates and saved/restored counts follow GPU order.
@@ -9,3 +13,5 @@ typedef struct {
 } nvn_tf_job;
 _Static_assert(offsetof(nvn_tf_job, state) == 64 && sizeof(nvn_tf_job) == 128, "feedback capture ABI");
 // The kernel tf_prepare: dm/gfx/msl/tf.metal (host_msl_lib "tf")
+
+#endif

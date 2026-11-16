@@ -2,7 +2,27 @@
 
 The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
 
+## Scene resolution
+
+### A handheld setting leaves the scene at 1080p
+
+- **Symptom:** a mobile game remains GPU-bound with handheld mode and MetalFX enabled; its log still shows a 1080p window. A 1080p allocation alone is not proof of the scene size: Violet's retained Air log crops such a window to 1280x720 before MetalFX.
+- **Cause:** operation mode, scene resolution, allocated target size and final output size are separate. MetalFX on presentation scales what it receives; it does not lower earlier 3D work. Some games keep their own dynamic-resolution level lists above the desired mobile budget.
+- **Fix (mobile stopgap):** `resolution_levels.tsv` supplies an exact build ID, original size table and all original mode lists. The loader validates the complete contract, writable data bounds and non-overlap before limiting any choices. Its `default` is the scene cap; `DM_WINDOW_SIZE` overrides it or selects `original`. Maximum target sizes and the level table remain unchanged. The optional `DM_RESOLUTION_LEVELS_PATH` selects a contract for a multi-game front end. Games without a verified contract retain their own behavior. This changes neither the shader chain nor the simulation clock.
+- **Found on:** [Pokémon Pokopia v327680 on TonTon Air](../../dm/games/0400A3A01EE4C000/README.md#tonton-air-scene-resolution-cap-v327680). Device performance after this change remains open.
+- **Check:** `python3 -m unittest dm.tools.tests.test_resolution_levels` covers both caps and atomic rejection of wrong builds, changed values, malformed requests and unsafe data ranges. A separate local check used all nine original lists from the owned embedded image.
+- **Front-ends:** expose a scene-resolution control only for a contract matching the selected signed build; distinguish it from output size. The targeted TonTon menu adaptation is retained in `dm/ios/tools/tonton_resolution_controls.patch`. Existing MetalFX preferences are preserved.
+
 ## Textures and formats
+
+### An independent iPad engine reads performance options without applying them
+
+- **Symptom:** Pokopia logs `DM_WINDOW_SIZE=960x540` and `DM_PRESENT_UPSCALE=metalfx`, but neither a verified scene cap nor a MetalFX dispatch appears.
+- **Cause:** its frozen independent engine reads CPU tables from the signed framework, while the imported resolution contract lives beside the cartridge. Its classic MetalFX helper also rejected every title except Mario Kart World, despite advertising device capability. Capability and environment logs do not establish execution.
+- **Fix:** the resolution loader prefers its signed table directory, then resolves an imported contract relative to the current `DM_ROMFS`; an explicit override remains authoritative. Build, original-value and writable-range checks remain unchanged. The frozen iPadOS 16.1 renderer adaptation is retained in [the compatibility patch](../compat/m2-pokopia-classic-metalfx.patch): remove the title gate while retaining supported-format, device, crop, size and per-slot GPU completion checks. This does not replace a shader chain. Classic present snapshots remain a separate, unimplemented path in that frozen renderer; merely setting `DM_PRESENT_SNAP` does not port it.
+- **Found on:** [Pokopia on TonTon M2](../../dm/games/0400A3A01EE4C000/README.md#tonton-m2-performance-port).
+- **Check:** the resolution C fixture covers moved cartridge containers, signed-table precedence, missing explicit overrides, relative paths and oversized paths. Device validation must check the cap and actual scaler dispatch independently.
+- **Front-ends:** distinguish supported MetalFX capability from a scaler that actually ran. Do not report a saved preference as verified execution.
 
 ### Null textures in diagnostic logs
 
@@ -2193,7 +2213,7 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 
 - **Symptom:** portrait gameplay overlaps the touch controls, touch coordinates land outside the game picture, or a TV's picture renders at 4K again after a layout pass.
 - **Cause:** the front end assumed a landscape screen with the controls over the whole view, so its picture and touch geometry did not follow a portrait screen (an iPad, an iPhone Duo's inner display) or a Duo's fold. On iPadOS the deprecated `UIRequiresFullScreen` kept the game out of resizable windows, and a native rotation A/B on the iPhone Duo iOS 27.1 simulator showed that it also blocked upside-down portrait.
-- **Fix:** `dm/ios/Sources/DmLayout.h` computes the picture and controls rectangles from the view's bounds, its safe area and UIKit's division region (`UIHingeInteraction`, iOS 27.1); front_ios.m lays the views out from them and DmGamepad.m its controls. Landscape keeps the overlay unless the hinge is half open over a horizontal division; portrait puts a fitted 16:9 picture above the controls, at the division or the midpoint. On a Duo in portrait only the top safe-area inset applies. Game touches map through the picture rectangle (with [Fill](../settings.md#picture), larger than the view), and a layout change releases held inputs. The phone's orientation list stays landscape (the Duo's inner display follows its bounds), the iPad's has all four and no `UIRequiresFullScreen`. While a TV shows the picture the phone is all controls (`dm_layout_pad_only`). The drawable's scale is set in one place, `DmGameView layoutSubviews`: the screen's pixels, at most `maxPixelWidth` across, which the TV sets to 1920, so a later layout pass cannot undo the TV's 1080p cap.
+- **Fix:** `dm/ios/Sources/DmLayout.h` computes the picture and controls rectangles from the view's bounds, its safe area and UIKit's division region (`UIHingeInteraction`, iOS 27.1); front_ios.m lays the views out from them and DmGamepad.m its controls. Landscape keeps the overlay unless the hinge is half open over a horizontal division; portrait puts a fitted 16:9 picture above the controls, at the division or the midpoint. On a Duo in portrait only the top safe-area inset applies. Game touches map through the picture rectangle (with [Fill](../settings.md#picture), larger than the view), and a layout change releases held inputs. The phone's orientation list stays landscape (the Duo's inner display follows its bounds), the iPad's has all four and no `UIRequiresFullScreen`. While a TV shows the picture the phone uses the controls-only layout (`dm_layout_pad_only`). A connected gamepad hides both the touch controls and the gear in this layout. The drawable's scale is set in one place, `DmGameView layoutSubviews`: the screen's pixels, at most `maxPixelWidth` across, which the TV sets to 1920, so a later layout pass cannot undo the TV's 1080p cap.
 - **Check:** the [Duo harness](../../dm/ios/tests/duo/README.md) tests layout, hit targets, touches, the in-game menu's live settings and the drawable cap in the Simulator with synthetic host state. A physical Duo was tested by the PR #683 author on their fork; full-game tests on a physical iPad and a Duo with this repository's build are open.
 - **Found on:** [Pokémon Brilliant Diamond](../../dm/games/0100000011D90000/README.md).
 
@@ -2204,3 +2224,95 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** the present reports the shape of the frame it draws ([the layer's](#a-crop-only-picks-texels-the-picture-has-the-layers-shape)) whenever its width / height changes (`nvn_mtl.m` `present_now` → `front.h` `front_picture_shape`; every graphics API presents there). The iOS front end lays the game's view out in that shape (`DmLayout.h` takes it as a parameter: the overlay, the split, Fill and the TV alike), so a 1.43:1 picture fills a 1.43:1 screen in Fit and touches are normalized on the picture as drawn; the Mac maps the mouse on the picture's own rectangle. A 16:9 game reports 16:9 and keeps its layout, and a size change of the same shape (1280x720 handheld, 1920x1080 docked) is not reported.
 - **Check:** the [Duo harness](../../dm/ios/tests/duo/README.md) tests the taller picture in Fit, in Fill and on a wider screen, and the production root view following a reported shape and returning to 16:9. Not yet run on a device.
 - **Found on:** [Breath of the Wild](../../dm/games/01007EF00011E000/README.md#screen-shape-dm_screen_aspect-current) and [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md#screen-shape-dm_screen_aspect-current) with `DM_SCREEN_ASPECT=1.43`.
+
+### Compact buffer bindings lost by legacy replay
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** games present black or gray frames while video/audio and frame counters advance. Logs report `stage 0 cb1 has no uniform buffer bound` despite the game recording a uniform binding; vertex streams can also remain empty.
+- **Cause:** the recorder emits `OP_BIND_UBO_SMALL` for bounded uniform ranges and `OP_BIND_VBUF1` for a single vertex range. The legacy dispatch and state replay accepted only their wide equivalents and silently dropped both compact records. The zero uniform fallback prevents a fault but cannot recover the missing transforms or vertex addresses.
+- **Fix:** route both compact opcodes through state replay and decode them with the same `bind_buf_rec` / `vbuf_rec` helpers as the modern renderer. Preserve the wide-record path and uniform argument invalidation. No shader-chain or resource stamp changes are required.
+- **Checks:** `t_legacy_pipeline` records through the real NVN bootstrap API, replays all six stages' sixteen uniform slots and sixteen vertex streams, and checks wide-range compatibility. Combined with the pipeline tests, 252 checks pass on M4; reverting only this fix makes exactly 112 binding checks fail. This proves producer/replay agreement, not a device gameplay result.
+- **Found on:** [Pokken](../../dm/games/0100B3F000BE2000/README.md), [Arceus](../../dm/games/01001F5010DFA000/README.md), and [Need for Speed](../../dm/games/010029B0118E8000/README.md). Their frozen legacy hosts contained the same incompatible recorder/replay pair. Device confirmation remains open.
+
+
+### Legacy depth prediction and secondary blend sources
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** `Fragment shader writes to depth, but pipeline's depth attachment pixel format is not set` persists even for later descriptors with a valid depth format; games show black or gray scenes. Separate SRC1 blend failures reject otherwise valid draws.
+- **Cause:** speculative legacy pipeline prediction tried the depth-less format before the valid depth-attached draw. A native Metal reproduction showed the first invalid compilation poisoning subsequent depth-format variants of the same functions. In addition, older shader libraries expose output 1 as MRT color 1, while SRC1 blending requires color 0, index 1 and a single physical color attachment.
+- **Fix:** exact-library-hash-bound raster metadata identifies depth-writing fragments. Reject their invalid depth-less predictions before calling Metal, retaining all valid depth/stencil variants. A hash-bound supplemental dual-source entry preserves the original fragment arithmetic and argument layout while exposing the secondary blend ABI. Keep the original MRT entry for ordinary draws, split passes when switching modes, preserve clears on other logical targets and reject tile-fetch merging for dual-source draws. The pipeline-cache ABI advances to `pso8`. An unwritten secondary source uses the same zero convention as the modern renderer; blending remains enabled.
+- **Checks:** `t_legacy_pipeline` executes 135 GPU checks: all four SRC1 factors against explicit references, MRT/dual-source transitions in separate and shared submissions, preserved clears, and an invalid/valid/invalid depth-format sequence. The actual failing NFS fragment also passes that sequence. Export tests cover native-entry preservation and exact source/library identity. These M4 tests establish resource semantics, not A10X gameplay.
+- **Found on:** [Arceus](../../dm/games/01001F5010DFA000/README.md), [Pokken](../../dm/games/0100B3F000BE2000/README.md), and [Need for Speed](../../dm/games/010029B0118E8000/README.md). Game-specific delivery and remaining failures are recorded in those notes.
+
+The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
+
+## Textures and formats
+
+
+### EGL function lookup returns null for current-display queries
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** run-time GL shader capture exits at a null `blr x0`, before any shaders are captured. Fate/stay night REMASTERED 1.4.2 calls `eglGetProcAddress("eglGetCurrentDisplay")` at `main+0x589bf4`, then calls its result without a null check.
+- **Cause:** the procedure resolver accepted only names starting with `gl`, and current display/context/surface queries were absent. The imported EGL entry points and the dynamic lookup path therefore disagreed.
+- **Fix:** resolve registered EGL names through the same import table, retaining big-stack wrappers. Current queries return the calling thread's actual `eglMakeCurrent` bindings, and unbinding/releasing a thread clears them. Unknown EGL names still return null. `make -C dm/gfx/tests GAME=010014E00DB56000 gl-imports` checks both procedure paths, missing names, distinct read/draw surfaces, invalid query errors and thread isolation in both diagnostic modes.
+- **Found on:** provisional Fate/stay night REMASTERED and Fate/hollow ataraxia REMASTERED capture attempts. Passing the import regression is not proof of successful capture or gameplay; further capture failures remain open.
+- **Modern Mac:** `eglGetProcAddress` resolves registered EGL names and `eglGetCurrentDisplay` reads thread-local state. `gl_shaders.py` carries sampler bindings above slot 15 in a Metal argument buffer whose reflection is read by the host. `t_gl_imports` exercises lookup, display unbinding, and GPU sampling through that argument buffer. A profile's `gl_capture/` can supply the GLSL from later scenes when each source matches the hash listed in `gl_capture.tsv`. The Fate Mac builds use that path to preserve the existing shader coverage through a rebuild.
+
+
+### Experimental image optical-flow presentation
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** A 120 Hz display request and final spatial scaling alone leave a costly 3D scene below 60 rendered frames per second. Interpolating with unrelated or placeholder depth/motion data produces invalid images.
+- **Cause:** Apple MetalFX frame interpolation requires matched game resources that are not yet identified for Arceus. This implementation does not use `MTLFXFrameInterpolator` and does not invent those inputs.
+- **Experimental alternative:** `DM_FRAMEGEN=opticalflow` copies the valid present crop into owned history, builds a three-level luminance pyramid, estimates bidirectional motion, and synthesizes the midpoint from warped images. Inconsistent/occluded pixels and detected cuts fall back to current pixels. UIKit controls are composed afterwards; the game's own HUD remains image-based and may show artifacts. First frames, pauses and suspend/resume reset history. The shader is a host module independent of DMSH_CHAIN.
+- **Scheduling:** A 120 Hz display-link tick submits the midpoint, the next submits the retained real image, then the next game frame is eligible. Guest texture ownership ends only after the real submission completes; allocator and parameter slots are fenced per drawable, not per guest ticket. Pending pairs are dropped safely on suspend or display-link loss. The exact Arceus timing adapter limits real work to 60 when the requested target is higher and interpolation is enabled, while preserving elapsed game time. The iOS front end also selects a 60 Hz real-frame pacer before guest startup for this combination; the display link still targets the screen's 120 Hz capability. This is a maximum target, not a measured rate. An inactive interpolation path displays real frames normally.
+- **Upscaling and measurement:** The exact-build launcher defaults to native handheld mode and MetalFX spatial scaling; saved choices still win. Generated and real images keep the same pixel format, avoiding a spatial-scaler rebuild on alternating frames. Actual render dimensions must be measured in the game. The overlay separates guest enqueues from actual presented drawables; GPU feedback logs separate real/upscale and flow/upscale costs. No sustained 120 fps, latency benefit or iOS 16/17 compatibility is established by the synthetic tests.
+- **Checks:** `check_t_framegen` reads back a moving object's generated midpoint and scene-cut output on a real GPU. `check_t_framegen_present` checks paired submission, texture release, suspend and watchdog handling. Existing crop/allocator tests, elapsed-clock tests, launcher tests and a complete iOS build also run. Air gameplay testing is delegated to the user.
+- **Found on:** [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md), experimental modern-Metal host. The separate exact-build Z-A snapshot also passes the production GPU pair/allocator tests and a complete iOS build with its original shader chain; its Air gameplay/performance validation remains open.
+
+
+The fullscreen HUD adapter now keeps the original logical canvas (including
+handheld sizes) and adapts only full-screen 16:9 rectangles. Unrelated menu
+panels retain their dimensions and origin. The image-only interpolator keeps
+stable real pixels and protects a narrow border around stable high-contrast
+strokes; output alpha comes from the current real frame. This reduces text and
+icon distortion without changing controller mappings. It is a conservative
+image heuristic, not a separate engine UI layer: moving or translucent UI still
+requires user evaluation. Regression covers docked/handheld canvases, panel
+rejection and stationary HUD strokes over a moving scene on the GPU.
+
+
+### Legacy format-view copies end a live consumer encoder
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** a black scene followed by SIGSEGV in `legacy_use_resource`, immediately after `tex_upgrade_pfv`; iPad logs report address `0x550` or `0x5c8`.
+- **Cause:** argument encoding lazily resolved an integer/normalized texture view. Adding `PixelFormatView` copies the old allocation through `blit()`, which ends the render pass. The argument loop then declared the resource on its saved, ended render encoder. Both iPad GPU drivers crashed inside that declaration.
+- **Fix:** resolve shader-visible texture, image and bindless-UBO handles before choosing a draw or compute encoder, including rasterizer-discard draws. The copy stays in command-buffer order after the producer, and argument encoding uses the newly opened consumer pass. Do not skip resource declarations or move the copy to an earlier independent submission.
+- **Validation:** a production draw regression writes an integer RGBA8 target, upgrades its view to normalized RGBA8, then samples the earlier GPU writes into a float target in the same submission, under Metal validation. Native and forced-no-BC modes each pass 266 checks. Restoring the old encoder selection order reproduces SIGSEGV (exit 139) in the same regression. Device installation and user evaluation are separate checkpoints.
+- **Found on:** [Need for Speed Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md), both M2 iPadOS 16.1 and A10X iPadOS 17.7.11, build `20261029.6`.
+
+
+### Fullscreen HUD extends past a narrow device canvas
+
+*Retained classic-backend finding; modern implementations may differ.*
+- **Symptom:** Pokemon fullscreen UI extends outside an iPad display, despite a correctly adapted 3D camera.
+- **Cause:** the ultrawide HUD rule always corrected width. On a 4:3 screen it enlarged the 16:9 logical rectangle beyond its native canvas, with a negative left edge.
+- **Fix:** fit the HUD rectangle in both axes. Wider screens retain the width correction; narrower screens retain the full native width and reduce the centered HUD height. The camera still uses the actual screen ratio; the 3D picture fills the display. Keep unrelated menu rectangles and the original guest tables intact.
+- **Validation:** handheld/docked canvases, 4:3 and 683:512 iPads, ultrawide and native aspect ratios; callback tests retain unrelated saved registers and exact-build guards. User visual evaluation remains required.
+- **Found on:** [Arceus](../../dm/games/01001F5010DFA000/README.md) and [Z-A](../../dm/games/0100F43008C44000/README.md). Adapted from the author's [aspect/HUD patches](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods), with the narrow-screen case handled separately.
+
+### Linear depth targets are not Metal buffer textures
+
+- **Symptom:** a new title aborts at `minimumLinearTextureAlignmentForPixelFormat:` with “Linear textures do not support depth/stencil pixel formats”.
+- **Cause:** an NVN texture can carry `LINEAR_RENDER_TARGET` with a depth/stencil format. `linear_fit` treated its linear layout as permission to create a Metal buffer view, but Metal forbids both that view and the alignment query for those formats.
+- **Fix:** depth/stencil formats are excluded from the buffer-view path before the alignment query. They use the normal depth/stencil texture path; color linear-target storage and alignment handling remain unchanged. This does not assert that CPU read/write coherence of every linear depth layout is verified.
+- **Found on:** the provisional [Fate/EXTELLA LINK bring-up](../tonton-upstream-audit.md#evidence-and-scope), update 1.0.2, main build `c8b28801a4f97a6bc1cf169c759a144b`.
+- **Check:** `t_linear_readback` resolves depth16, depth32, combined depth/stencil and stencil-only targets and clears them with Metal validation, alongside the existing color-buffer-view, row-stride and CPU/GPU coherence cases (73 checks). The new title then passes a 45-second Mac frame-loop run; iOS gameplay remains open.
+### CPU-decoded BC uploads and format views
+
+- **Symptom:** with `tex_bc_cpu` enabled on an A15, Wonder's character-selection screen has striped rectangles and noise around otherwise readable characters. Metal can also abort when a BC view is requested on the decoded R8, RG8 or RGBA8 backing texture.
+- **Cause:** `tex_desc` allocates decoded storage, but the GPU deswizzle paths copy compressed blocks without decoding them. A view still resolves the original BC Metal format instead of the backing texture's decoded format.
+- **Fix:** CPU-decoded textures bypass both GPU upload paths and reach the existing CPU decoder. Sampled views, render-target views and clear views resolve BC formats through the same decoded-format helper while preserving the NVN channel mapping. Native BC-capable devices keep their existing path.
+- **Checked:** `make -C dm/gfx/tests GAME=010015100B514000 check_t_bc_cpu` forces the decoded path on a Mac GPU through the production implementation. It checks pooled uploads and reuploads, partial blocks, three mip levels, two array layers, both direct-upload settings, all sixteen BC format views, attachments and clears. Before the fix the upload and sampled-view cases abort under Metal validation. Historical iPhone 13 Pro Max / A15 evidence on iOS 27.0.1 shows Wonder 1.0.0 character selection before and after the equivalent fix. The current engine revision has not been installed on that phone.
+- **Limits:** this does not implement raw compressed-block views, GPU BC block encoding, or decoded-to-compressed readback. It keeps the existing compatibility opt-in and does not change the supported-device check.
+- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).

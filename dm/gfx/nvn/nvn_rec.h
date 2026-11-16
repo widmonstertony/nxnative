@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_rec.h"
+#else
 // Deferred encoding (DM_NVN_ENC_THREAD=1; included by nvn_mtl.m only): the replay's Metal encoding runs on a worker thread while the submit thread goes on translating.
 // About 40% of the submit thread's time was spent inside Metal itself: encoder creation, draw calls, state setters and argument table writes (Breath of the Wild: about 2.7 of 6.5 ms a frame).
 // With this switch the replay talks to stand-ins for the main command buffer, its encoders and the argument tables it rewrites per draw. Each call becomes a fixed-size record (objects retained);
@@ -106,7 +110,7 @@ static inline int rec_on(void) {
 #if TARGET_OS_IPHONE
     g_rec = !e || atoi(e) > 0;
 #else
-    g_rec = e ? atoi(e) > 0 : DM_GAME_ENC_THREAD;   // the profile's enc_thread: Need for Speed: Hot Pursuit Remastered waits on its fence each frame, so encoding on its thread took its 60 fps frame from 18.1 to 16.7 ms
+    g_rec = e ? atoi(e) > 0 : dm_prof()->enc_thread;   // the profile's enc_thread: Need for Speed: Hot Pursuit Remastered waits on its fence each frame, so encoding on its thread took its 60 fps frame from 18.1 to 16.7 ms
 #endif
     if (g_rec) MLOG("Metal encoding runs on its own thread (DM_NVN_ENC_THREAD=0 turns it off)");
     return g_rec;
@@ -500,3 +504,5 @@ static void rec_commit_upload(id cb, MTL4CommitOptions *o) {
 // committed after it and after the command buffers committed before it
 static void rec_queue_block(void (^block)(void)) { if (rec_on() && g_rb_started) rec_put(RO_Q_BLOCK, 1)->a[0] = rec_obj([block copy]); else block(); }
 static void rec_signal(id ev, uint64_t v) { if (rec_on() && g_rb_started) { rec_t *r = rec_put(RO_SIGNAL, 1); r->a[0] = rec_obj(ev); r->a[1] = v; } else [g_q4 signalEvent:ev value:v]; }
+
+#endif

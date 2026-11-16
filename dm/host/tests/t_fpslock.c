@@ -17,6 +17,8 @@ int nvn_fps_high_now(void) { return test_high; }
 static module_t test_modules[1];
 module_t *g_mod = test_modules;
 int g_nmod;
+static uint64_t test_guest_time=1000000000ull;
+uint64_t guest_ns(void) { return test_guest_time; }
 static int writes;
 void dm_guest_write_prepare(void *p, size_t n) { (void)p; assert(n == 4 || n == 8); writes++; }
 
@@ -230,7 +232,24 @@ static void check(int which) {
     munmap(base, len);
 }
 
+static void witcher_unlimited(void) {
+    size_t n=0x4140000;
+    uint8_t *base=mmap(NULL,n,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);assert(base!=MAP_FAILED);
+    memset(test_modules,0,sizeof test_modules);g_nmod=1;g_mod[0].base=base;g_mod[0].size=n;
+    strcpy(g_mod[0].name,"main");strcpy(g_mod[0].build_id,"b151a224a429f9a73abb05c5a3de9468");
+    int32_t *limit=(int32_t *)(base+0x411dcfc);float *a=(float *)(base+0x41312b4),*b=(float *)(base+0x41312e4);
+    *limit=30;*a=31.5f;*b=31.5f;writes=0;unsetenv("DM_FRAME_LIMIT");witcher_fps_tick();assert(*limit==30&&writes==0);
+    setenv("DM_FRAME_LIMIT","unlimited",1);witcher_fps_tick();assert(*limit==0&&writes==1&&*a==31.5f&&*b==31.5f);
+    witcher_fps_tick();assert(writes==1);*limit=30;witcher_fps_tick();assert(*limit==0&&writes==2);
+    *limit=30;g_mod[0].build_id[0]='0';witcher_fps_tick();assert(*limit==30&&writes==2);
+    g_mod[0].build_id[0]='b';g_mod[0].size=0x41312e7;witcher_fps_tick();assert(*limit==30&&writes==2);
+    g_mod[0].size=n;*a=0;witcher_fps_tick();assert(*limit==30&&writes==2);
+    *a=NAN;witcher_fps_tick();assert(*limit==30&&writes==2);
+    unsetenv("DM_FRAME_LIMIT");munmap(base,n);memset(test_modules,0,sizeof test_modules);g_nmod=0;writes=0;
+}
+
 int main(void) {
+    witcher_unlimited();
     // Each process starts the production one-time initialization with a fresh build and target.
     for (int i = 0; i < 38; i++) {
         pid_t p = fork(); assert(p >= 0);

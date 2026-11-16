@@ -425,6 +425,68 @@ static void test_doom3(void) {
     h_glPolygonMode(GL_FRONT_AND_BACK, 0x1b02); h_glDisable(0x2a02); assert(!S.lines && !S.poffset_line);
 }
 
+static void test_sampler_argument_buffer(void) {
+    g_dev = MTLCreateSystemDefaultDevice();
+    assert(g_dev);
+    g_q = [g_dev newCommandQueue];
+    NSError *error = nil;
+    id<MTLLibrary> library = [g_dev newLibraryWithSource:
+        @"#include <metal_stdlib>\nusing namespace metal;\n"
+         "struct Args { sampler outside [[id(17)]]; };\n"
+         "vertex float4 v(uint i [[vertex_id]]) {\n"
+         "  return float4(i == 1 ? 3 : -1, i == 2 ? 3 : -1, 0, 1);\n"
+         "}\n"
+         "fragment float4 f(texture2d<float> t [[texture(17)]], constant Args& a [[buffer(1)]]) {\n"
+         "  return t.sample(a.outside, float2(-0.25, 0.5));\n"
+         "}\n" options:nil error:&error];
+    assert(library && !error);
+    MTLRenderPipelineDescriptor *pipeline = [MTLRenderPipelineDescriptor new];
+    pipeline.vertexFunction = [library newFunctionWithName:@"v"];
+    pipeline.fragmentFunction = [library newFunctionWithName:@"f"];
+    pipeline.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    id<MTLRenderPipelineState> state = [g_dev newRenderPipelineStateWithDescriptor:pipeline error:&error];
+    assert(state && !error);
+
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:2 height:1 mipmapped:NO];
+    desc.storageMode = MTLStorageModeShared;
+    desc.usage = MTLTextureUsageShaderRead;
+    GLuint name;
+    h_glGenTextures(1, &name);
+    h_glActiveTexture(GL_TEXTURE0 + 3);
+    h_glBindTexture(GL_TEXTURE_2D, name);
+    h_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    tex_t *texture = tex_of(name);
+    texture->made = 1;
+    texture->tex = [g_dev newTextureWithDescriptor:desc];
+    const uint8_t colors[] = {255, 0, 0, 255, 0, 0, 255, 255};
+    [texture->tex replaceRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0 withBytes:colors bytesPerRow:8];
+
+    desc.width = 1;
+    desc.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> output = [g_dev newTextureWithDescriptor:desc];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = output;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    g_cb = [g_q commandBuffer];
+    g_enc = [g_cb renderCommandEncoderWithDescriptor:pass];
+    [g_enc setRenderPipelineState:state];
+    shinfo vertex = {.ub_slot = -1}, fragment = {.ub_slot = -1, .sampler_slot = 1, .sampler_mask = 1u << 17};
+    puni_t uniform = {.type = T_SAMP2D, .slot = {-1, 17}, .unit = 3};
+    prog_t program = {.si = {&vertex, &fragment}, .nu = 1, .u = &uniform, .serial = 1};
+    program.sampler_args[1] = [pipeline.fragmentFunction newArgumentEncoderWithBufferIndex:1];
+    assert(program.sampler_args[1]);
+    bind_uniforms_textures(&program);
+    [g_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [g_enc endEncoding];
+    [g_cb commit];
+    [g_cb waitUntilCompleted];
+    assert(g_cb.status == MTLCommandBufferStatusCompleted);
+    uint8_t pixel[4];
+    [output getBytes:pixel bytesPerRow:4 fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
+    assert(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255);
+}
+
 int main(int argc, char **argv) {
     (void)argv;
     int stubs = argc > 1;
@@ -493,7 +555,7 @@ int main(int argc, char **argv) {
     // A real link: the linked program keeps the stages' code (si, fn) whatever its attachments do afterwards; a relink without a stage fails. The same shader attached twice
     // changes nothing (its count included)
     void (*link)(GLuint) = import("glLinkProgram");
-    static shinfo none;   // no uniforms, samplers or attributes
+    static shinfo none = {.sampler_slot = -1};   // no uniforms, samplers or attributes
     id vfn = [NSObject new], ffn = [NSObject new];
     GLuint pr3 = createprog(), vs3 = create(GL_VERTEX_SHADER), fs3 = create(GL_FRAGMENT_SHADER);
     shader_of(vs3)->si = &none; shader_of(vs3)->fn = vfn; shader_of(fs3)->si = &none; shader_of(fs3)->fn = ffn;
@@ -525,6 +587,24 @@ int main(int argc, char **argv) {
     bindattr(pr4, 16, "a"); assert(geterr() == GL_INVALID_VALUE);
     getiv(vs4, GL_SHADER_TYPE, &value); progiv(pr4, GL_ATTACHED_SHADERS, &value); assert(geterr() == GL_NO_ERROR);   // calls that succeed leave the flag clear
     delprog(pr4); delete(vs4); delete(fs4); assert(geterr() == GL_NO_ERROR);
+    GLuint program = h_glCreateProgram();
+    h_glValidateProgram(program);
+    h_glGetProgramiv(program, GL_VALIDATE_STATUS, &value); assert(!value);
+    prog_t *linked = prog_of(program);
+    linked->linked = 1;
+    linked->nu = 2;
+    linked->u = zalloc(2 * sizeof *linked->u);
+    linked->u[1].type = 1;
+    h_glValidateProgram(program);
+    h_glGetProgramiv(program, GL_VALIDATE_STATUS, &value); assert(!value);
+    linked->u[1].unit = 1;
+    h_glValidateProgram(program);
+    h_glGetProgramiv(program, GL_VALIDATE_STATUS, &value); assert(value);
+    h_glDeleteProgram(program);
+    h_glLineWidth(2);
+    GLfloat width[2];
+    h_glGetFloatv(GL_LINE_WIDTH, width); assert(width[0] == 2);
+    h_glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, width); assert(width[0] == 1 && width[1] == 1);
 
     test_vertex_binding();
     test_literal_stride_fetch();
@@ -533,7 +613,7 @@ int main(int argc, char **argv) {
     test_doom3();
 
     unsigned long sz;
-    const hle_ent *sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
+    const hle_ent *sec = (const hle_ent *)getsectiondata(DM_HOST_IMAGE, "__DATA", "swhle", &sz);
     unsigned count = 0;
     for (unsigned long i = 0; i < sz / sizeof *sec; i++)
         if (!strncmp(sec[i].name, "gl", 2)) {
@@ -542,6 +622,15 @@ int main(int argc, char **argv) {
         }
     assert(count > 100);
     assert((void *)resolve_import(NULL, "eglGetProcAddress") == (void *)h_eglGetProcAddress_bs);
+    EGLDisplay (*current_display)(void) = h_eglGetProcAddress("eglGetCurrentDisplay");
+    assert(current_display == (EGLDisplay (*)(void))import("eglGetCurrentDisplay"));
+    EGLDisplay display = (EGLDisplay)&g_egl;
+    EGLContext context = (EGLContext)(uintptr_t)2;
+    assert(!current_display());
+    assert(h_eglMakeCurrent(display, NULL, NULL, context) && current_display() == display);
+    assert(h_eglMakeCurrent(display, NULL, NULL, NULL) && !current_display());
+    assert(h_eglMakeCurrent(display, NULL, NULL, context) && current_display() == display);
+    assert(h_eglReleaseThread() && !current_display());
     assert(!h_eglGetProcAddress(NULL));
     assert(!h_eglGetProcAddress("not_a_GL_function"));
     const char *missing = "glMissingFunctionForTest";
@@ -549,6 +638,7 @@ int main(int argc, char **argv) {
     assert((h_eglGetProcAddress(missing) != NULL) == stubs);
     assert(resolve_import(NULL, missing) == (uint64_t)&unimpl_stubs[0]);
     assert(!strcmp(wrap_kind, "STUB"));
+    if (!stubs) test_sampler_argument_buffer();
     printf("GL imports: %u shared entries, shader handle/source, shader and program lifetimes, the error flag, a depth texture's data, vertex formats and bindings, a binding's stride 0 drawn, the uniform buffer target, compressed 2D arrays, DOOM 3's calls (ARB names, extensions, named blocks, two-sided stencil, frame copies, compressed and byte-swapped images, vertex-only programs, LOD bias), wrappers and missing names (DM_GL_STUBS=%d): OK\n", count, stubs);
     return 0;
 }

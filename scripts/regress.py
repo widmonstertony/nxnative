@@ -716,7 +716,10 @@ def host_for(tree, g, jobs):
         r = sh(['make', '-s', f'GAME={g.id}', 'host_msl'], cwd=tree.path / 'dm/host', env=g.env(tree))
         if r.returncode: raise HarnessError(f'{g.id}: host shader libraries of {tree.id} do not build:\n{r.stdout}{r.stderr}')
         srcs.append(tree.path / 'dm/host/gen/msl-macosx/host_msl_gen.h')   # includes sources, compiler, SDK and deployment target, even on a cache hit
-    key = digest(srcs + [tree.path / 'dm/host/Makefile', g.profile_dir(tree) / 'game.tsv', tree.path / 'dm/games/game.py'], g.id.encode())[:16]
+    profile_inputs = [g.profile_dir(tree) / 'game.tsv', tree.path / 'dm/games/game.py']
+    touch_defaults = tree.path / 'dm/games/touch_defaults.tsv'
+    if touch_defaults.is_file(): profile_inputs.append(touch_defaults)
+    key = digest(srcs + [tree.path / 'dm/host/Makefile', *profile_inputs], g.id.encode())[:16]
     dst = game_root(g) / 'host' / key / 'dmhost'
     if dst.is_file(): return dst, key, 0
     t0 = time.time(); env = g.env(tree); hd = tree.path / 'dm/host'

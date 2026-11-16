@@ -9,8 +9,11 @@ import os, shlex, subprocess, sys
 host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 # Generate the game profile header and the host's shaders compiled for iOS (MSL_SDK=iphoneos: gen/msl-iphoneos, dm/gfx/tools/host_msl.py) for real first (make -n below only prints;
 # GAME comes from the environment). The compile command is then the iOS one: its -I names the iOS shader header
-subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos'], check=True)
-cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos'], capture_output=True, text=True, check=True).stdout
+renderer = os.environ.get('DM_IOS_RENDERER', 'legacy')
+if renderer not in ('legacy', 'metal4'): sys.exit('DM_IOS_RENDERER must be legacy or metal4')
+minimum = os.environ.get('DM_IOS_DEPLOYMENT_TARGET', '16.1') if renderer == 'legacy' else '26.0'
+subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos', 'MSL_MIN_iphoneos=' + minimum], check=True)
+cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos', 'MSL_MIN_iphoneos=' + minimum], capture_output=True, text=True, check=True).stdout
 # The host's own commands first (its per-source compiles and its link), then the per-file compile commands of the libraries it depends on (libvpx, dav1d: their objects go to
 # gen/vpx and gen/dav1d): header paths keep this order, so the host's headers are found first
 lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]
@@ -42,7 +45,10 @@ for s in srcs:
     flat = os.path.relpath(s, os.path.dirname(host)).replace('/', '__')   # Same-named files in different directories do not collide
     os.symlink(s, f'{gen}/src/{flat}')
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
+if renderer == 'metal4':
+    defs.append('-DDM_NVN_MODERN_RENDERER=1')
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
+print('IPHONEOS_DEPLOYMENT_TARGET = ' + minimum)
 sdk = subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], capture_output=True, text=True, check=True).stdout.strip()
 fws = list(dict.fromkeys(fws))
 mac_only = [f for f in fws if not os.path.isdir(f'{sdk}/System/Library/Frameworks/{f}.framework')]

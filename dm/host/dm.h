@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "game_profile.h"   // constants of the current game profile (generated from dm/games/<id>/game.tsv, chosen by the Makefile's GAME)
+#include "hle_profile.h"   // the runtime profile (DM_PROFILE): every constant above can also come from it; dm_profile() is the accessor
 
 // Explicit host work does not occupy a guest core (Metal submission, or a blocked native codec lock). A contended host mutex must count as blocked: a signal's same-core handoff
 // can otherwise wait forever for a peer that needs the signaller's native lock. Uncontended locks retain guest ordering; the counter nests inside existing host work.
@@ -75,6 +76,7 @@ typedef struct {
     uint64_t unity_target_fps; // Unity's Application.targetFrameRate, an int32 at main + this (patch_nso.py, unity_fps.py; hle_fpslock.c); 0 = none
     uint64_t unity_qs_ptr;     // Unity's QualitySettings (main's offset of the global pointer); the current level's vSyncCount, an int32, is at
     uint32_t unity_qs_idx, unity_qs_arr, unity_qs_size, unity_qs_vsync;   // [obj + arr] + (int32)[obj + idx] * size + vsync; 0 = none
+    unsigned fps_realtime;
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
     uint32_t step_max;         // the largest step the frame step stubs give the game (the fixups table's STEP_MAX, patch_nso.py ctx.step_max); 0 = FSTEP_MAX
     uint32_t render_scale_max; // a render-scale stub's largest scale (the fixups table's RENDER_SCALE, patch_nso.py): DM_RENDER_SCALE is held to it; 0 = no such stub
@@ -129,17 +131,26 @@ void *guest_sym(const char *name);
 module_t *module_of(const void *p);
 // Gate dispatch: rewritten svc / timer reads come in through the common entry, ret_addr = the return point of that gate block, regs points to the saved x0..x30
 uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
-// Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): read-only callbacks, called on a gate hit once attached
+// Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): callbacks of the saved frame, called on a gate hit once attached
 // IDs 19 / 20 belonged to the removed movie request-ring workaround. Old rewritten modules may still contain them; without callbacks those gates are harmless passes through.
 enum { OBS_UE_MALLOC = 21,                                       // Unreal's FMallocBinned3 constructor call, cut: the object in the register its upper bits name (patch_nso.py, hle_uemalloc.c)
        OBS_REGION_ASK = 22, OBS_REGION_GOT = 23, OBS_REGION_FREE = 24,   // the SDK's address regions, gates the rewriter places by symbol in every sdk (patch_nso.py "Address regions", hle_svc.c)
-       OBS_STDALLOC_INIT = 25,                                         // StandardAllocator::Initialize's entry, the same way: its callback writes the size (hle_svc.c)
-       OBS_UE_REGION = 26,                                             // the store of Unreal's engine region size before nninitStartup reserves it: the register its upper bits name (dm/tools/ue_region.py, hle_svc.c)
-       OBS_MAX = 27 };
+       OBS_STDALLOC_INIT = 25,                                         // StandardAllocator::Initialize's entry, the same way: the one gate whose callback writes a register (hle_svc.c)
+       OBS_ZA_CLOCK_DELTA = 26, OBS_ZA_INTERVAL = 27,                  // Pokemon Legends: Z-A 2.0.2 timing diagnostics / optional interval experiment
+       OBS_ZA_SKILL_VISIBILITY = 28, OBS_ZA_SKILL_DESTROY = 29,       // Read-only observation of the actual move layout lifetime
+       OBS_ZA_HUD_RECT = 30,
+       OBS_ARCEUS_ASPECT = 31, OBS_ARCEUS_HUD = 32,
+       OBS_VIOLET_CAMERA = 33, OBS_VIOLET_HUD = 34,
+       OBS_ARCEUS_TIMING = 35,
+       OBS_ARCEUS_TASK_TRACE = 36,
+       OBS_UE_REGION = 37, OBS_MAX = 38 };
+
 // A gate number's bits from 8 up are a parameter for its callback (OBS_REGION_GOT: the register that holds the address). Callbacks read the registers; a write to x0–x29 takes
-// effect when the gate returns (entry.S restores them from the frame), which OBS_STDALLOC_INIT and OBS_UE_REGION do
+// effect when the gate returns. Exact-build display callbacks may also adjust selected saved values; gate_frame.h describes scalar SIMD lanes.
 void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param));
 int gate_obs_present(int id);
+int dm_game_fullscreen_active(void);
+void dm_game_fullscreen_activate(void);
 uint64_t now_ns(void);
 uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance while frozen, guest_clock_freeze)
 uint64_t guest_ns_at_host_time(uint64_t host_ns);  // Host Mach-absolute ns projected into the current guest clock
@@ -175,6 +186,7 @@ uint32_t hle_dup_readable_handle(uint32_t h);   // hle_thread.c: a second read e
 int hle_signal_event_handle(uint32_t write_end);   // hle_thread.c: signal a host-made kernel event by its write end (any thread); 0 once that end is closed
 // Page fault hook / hook before the host writes guest memory (crash.c; used for write-protect dirty page tracking)
 void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc));
+void dm_fault_diagnostic_register(void (*fn)(const void *addr));
 void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len));
 void dm_res_report_register(void (*fn)(uint32_t tick, const char *why));   // Resource count callback (registered by the graphics layer): called every 250 ticks, when the loading screen has been dismissed, and on exit when the record is full
 void (*dm_res_report_cb(void))(uint32_t tick, const char *why);   // Get the registered resource count callback (null if not registered)

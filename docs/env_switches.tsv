@@ -19,6 +19,7 @@ DM_CHEATS_ANY_BUILD	switch	`1` loads a cheat file written for another build of t
 DM_CHEATS_DEBUG	diagnostic	Logs every memory write a cheat makes and the cheat file context the menu's "another version" rows come from
 DM_CHEATS_ON	switch	Comma-separated cheat names turned on at launch, besides the saved per-build enabled states
 DM_CHEATS_WINDOW	switch	`1` opens the Mac Cheats panel beside the game from the start
+DM_CLOUDKIT_CONTAINER	path	CloudKit container identifier used by the native save backend; the Mac launcher reads it from the app configuration
 DM_CONTROL_NACP	path	The game's control data, `control.nacp` (default: `control.nacp` beside the RomFS, as in the NSP script's extraction folder and the Mac app's Resources); the iOS app sets it to its `dm/control.nacp`. The host answers `fs::GetCacheStorageMax` from it
 DM_COPY_GAME_RESOURCES	switch	`NO` skips the Xcode build phase that copies the game's resources into the app (`stage_resources.sh`, on by default); `build_ipa.sh` sets it for its unsigned build, which packs them itself
 DM_COPY_ROMFS	switch	`NO` keeps the game files out of the app, in the Xcode build phase (`stage_resources.sh`) and in the unsigned IPA of `build_ipa.sh` (on by default): `main.m` takes the validated `Documents/romfs.img` copied by `scripts/push_romfs.sh`, then a `Documents/romfs` folder; the build writes the image's identity as `romfs.id` into the app, and `main.m` uses only a matching image (`--romfs separate` of the NSP script sets this)
@@ -46,6 +47,8 @@ DM_FORCE_STRICT	diagnostic	`=1` makes the loader fail on forced-hook entries no 
 DM_FPS	switch	`30` or `60` pins the frame rate the display link and frame pacing aim for; otherwise it follows the game's present interval (60, or 30 when the game asks for 30)
 DM_FPS_HOLD	player	`on` / `off` overrides the profile's `fps_hold`: whether late frames may raise the hold above the frame cap's vsyncs (on by default)
 DM_FPS_TARGET	player	Frame-rate cap: `30` or `60`, `120` for a game whose profile has `fps_max 120` (60 otherwise), or `0` for the game's own limit; overrides the profile's `fps_target`
+DM_FRAMEGEN	player	`off` or experimental `opticalflow`: paired image-based GPU intermediate/real pictures on a 120Hz display link; not Apple MetalFX frame interpolation; Arceus exact-build settings default to optical flow, other games stay off
+DM_FRAME_LIMIT	player	`unlimited` bypasses the host frame cap where supported; `game` keeps the game's frame limit
 DM_FS	diagnostic	When set, logs file opens, paths not found or not mounted, and a read summary every 64 MiB or 1000 reads
 DM_FSLOG	diagnostic	`=<file>` writes one TSV line per ReadFile: seconds since boot, guest path, offset, length and guest buffer address
 DM_FSLOG_HASH	diagnostic	With `DM_FSLOG`, adds a column with the FNV-1a 64 hash of the bytes read
@@ -69,6 +72,7 @@ DM_GL_STUBS	diagnostic	`=1` gives every GL function the layer lacks a stub that 
 DM_GPU_CAPTURE	diagnostic	`=<frame>[:<frames>]` or `gpu:<ms>[:<after frame>]` writes a Metal GPU trace of those frames for Xcode's Metal debugger; can be set while running through `DM_CTL`
 DM_GPU_CAPTURE_DIR	path	Folder for `DM_GPU_CAPTURE`'s traces (default `gpu_captures/` in the working directory)
 DM_GPU_CAPTURE_KEEP	diagnostic	Before each GPU capture, prunes the capture folder's `dm_*.gputrace` entries so that the newest `KEEP - 1` stay (default 2)
+DM_GRAPHICS_SCALE	player	Mario Kart World scene graphics scale tier (`0`, `1`, or `2`); does not change the window size
 DM_GUEST_FILE	switch	`1` puts the guest's memory in sparse, unlinked files mapped shared over the guest block, `0` keeps it anonymous (`hle_svc.c`): file pages are out of `phys_footprint`, the figure iOS ends an app at, and the kernel can write them out when it needs the room. Unset: on iOS when the game's memory pool and half of it again, for the host's own memory (`DM_GUEST_FILE_HOST`), are larger than the room to the memory limit at start (the log's `[mem] guest memory` line says which), off on the Mac. The guest stays anonymous, with a `[RED]` line, when the files cannot be made, or the disk has less than `DM_GUEST_FILE_MIN_FREE` free (on the Mac that plus 8 GB)
 DM_GUEST_FILE_CHUNK	switch	`=<size>` (whole MB, K / M / G; default 1G, at least 64M, at most 1024 files): the size of each guest file; one file when it is not under the block's size. The stall at the system's periodic flush grows with the file (on a 16 GB M5 Mac up to 148 ms with one 20 GB file, 4 ms with 20 files of 1 GB)
 DM_GUEST_FILE_DIR	path	Folder for `DM_GUEST_FILE`'s files (default the user's temporary folder; the iOS app sets it to `NSTemporaryDirectory()`)
@@ -149,6 +153,12 @@ DM_NVN_CSH_PRESCAN	diagnostic	`0` runs the compute-hoist scan at every pass's fi
 DM_NVN_CS_HOIST	switch	`0` makes a compute dispatch between the draws of a pass end it (on by default: the dispatch runs ahead of the pass when that changes nothing the draws before it read)
 DM_NVN_CUT	switch	`=<draws>`: the replay commits its command buffer every that many draws, between passes (default 64; `0` one command buffer per submission, except the cut after a buffer-to-texture copy)
 DM_NVN_CUT_BUSY	switch	`=0`: a segment boundary commits whatever the GPU is doing (the default commits only when earlier work has reported back, keeping the boundary's GPU timestamp otherwise)
+DM_NVN_CUT_DRY	switch	`0` commits segments only between passes; on by default a draw pass with at least DM_NVN_CUT_DRY_N (24) draws since the last commit ends and commits before its next draw when nothing is in flight (the GPU ran dry): Ocarina of Time on an M1 -0.3 / -0.15 ms a frame (both A/B polarities), its slow spot at 30 fps
+DM_NVN_CUT_DRY_N	number	draws since the last commit before DM_NVN_CUT_DRY may split a pass (default 24)
+DM_NVN_CUT_FIRST	switch	`0` turns off the early first segment: on by default a submission's first segment is cut after `DM_NVN_CUT_FIRST_N` draws (8) and committed even while earlier segments run, so a frame's first work reaches the GPU before the previous frame's runs out (Ocarina of Time on an M1: -0.85 ms a frame)
+DM_NVN_CUT_FIRST_N	diagnostic	`=<draws>`: the size of `DM_NVN_CUT_FIRST`'s first segment (default 8)
+DM_NVN_DEFER	switch	`0` turns off the deferred pass merging of the TBDR optimizations (which run only with `DM_NVN_TBDR=1`)
+DM_NVN_DEFER_AB	diagnostic	`=1` keeps the deferred pass merging (with `DM_NVN_TBDR=1`) off until the second screenshot has been written, then turns it on, to compare the pictures with and without it
 DM_NVN_DEPTHOVR	diagnostic	`=<fragment shader key prefix>,…`: those draws compare depth with `ALWAYS`; with `DM_NVN_HILITE`, tells "the depth test rejects every fragment" from "nothing rasterizes"
 DM_NVN_DIRECT_UPLOAD	switch	0 disables bounded direct RGBA16F array uploads and keeps staged copies; on by default for supported non-sparse textures.
 DM_NVN_DIRTYCHECK	diagnostic	`=1` fully hashes pool content on every use to find changes the dirty-page tracking missed; each missed texture (the first 16) gets a `[RED] dirty-page miss` line naming the host pages that changed and, for each, every pool range over it (state, generation, registration) and the kernel's protection of it
@@ -158,7 +168,7 @@ DM_NVN_DUAL_WANT	path	`=<file>`: appends the key of each pixel shader a pipeline
 DM_NVN_ENC_LABEL	diagnostic	`=1` labels every render encoder `p<pass in frame> <width>x<height> <first 8 digits of the first draw's fragment key> d<draws>` for Instruments traces
 DM_NVN_ENC_THREAD	player	`1` runs the replay's Metal encoding on a thread of its own while the submit thread goes on translating; on by default on iOS (`0` turns it off), off on macOS
 DM_NVN_END_ALIAS	diagnostic	`1` puts the resource-alias flush back on every encoder's end barrier (each costs the command allocator about 100 KB; the start barriers carry it); `ab` alternates it with the `DM_AB` phases
-DM_NVN_FAMILY_NOCOMPRESS	switch	`0` lets textures of a resolution family (one storage, several sizes) use lossless compression again; on by default they are written uncompressed, as a size reading another's compressed blocks decodes garbage (ASTRAL CHAIN's glow after the pause menu)
+DM_NVN_FAMILY_NOCOMPRESS	switch	`0` lets textures of a resolution family (one storage, several sizes) use lossless compression again; on by default they are written uncompressed, as a size reading another's compressed blocks decodes garbage (ASTRAL CHAIN's glow after the pause menu) The default comes from the game profile (family_compress on keeps the compression: Ocarina of Time)
 DM_NVN_FAST_WAKE	switch	`0` makes the game's `SyncWait`s wake on the commit feedback handler instead of the GPU's own signal of the fence (on by default)
 DM_NVN_FB_DEPTH	switch	`0` lets a draw that samples the depth attachment of its own render pass read it in the pass, as before (undefined on Apple's GPUs: compressed blocks of what the tiles stored so far); by default a draw that also writes depth or stencil reads a copy, reused until the game's next barrier, and one after a draw of its pass wrote depth ends the pass first
 DM_NVN_FB_SNAP	switch	Draws that sample a colour attachment of their own render pass: unset, those that write it (or follow a write in the pass) read a snapshot, reused until the game's next barrier; `0` none; `all` a fresh snapshot for every draw that samples one (slow, diagnostic, no tile reads)
@@ -185,16 +195,25 @@ DM_NVN_INDLOG	diagnostic	`=<n>`: the first n indirect draws (and those of pass-d
 DM_NVN_IXCLOG	diagnostic	`=<n>` logs the first n indirect draw and dispatch conversions (record to arguments) once the GPU has run them
 DM_NVN_KEYDUMP	diagnostic	`=<fs key>[:n[:every]]`: for up to n draws of that fragment shader (default 6), logs the pass dump binding lines plus vertex formats, vertex streams and uniform values; meant for devices
 DM_NVN_LAZY_CLEAR	switch	`0` makes clears with no draw after them open a pass of their own, as before; by default they wait to become the load action of the next pass on that target
+DM_NVN_LC_COUNTERS	switch	`0` lands a waiting clear at an occlusion counter reset / report or a timestamp; on by default the clear waits past them for the next draw: Ocarina of Time on an M1 about 2 fewer render passes a frame (115 -> 113), frame time within the noise
 DM_NVN_LINE_WIDTH	switch	`0` draws every NVN line 1 pixel wide, as before; by default a line draw wider than a pixel is drawn as a quad per segment (`nvn_wline.inc`)
 DM_NVN_LOG	diagnostic	`=1` logs the creation of NVN objects
 DM_NVN_MAGSCAN	diagnostic	`=<fs key>[:every[:phase]]`: device self-check that reads each pass's colour attachments every `every` frames (default 30) and logs `[mag]` lines for solid magenta 16×16 blocks or non-finite pixels
+DM_NVN_MARK_SKIP	int	`n` (default 8): one frame in n marks its pool reads, and every frame for n frames after a new read is found; the other frames draw with pipelines specialized without the marks (DMSH_MARK_FC), built in the background. `0` or `1` marks every frame. Ocarina of Time on an M1: 30.7 ms of GPU time on unmarked frames against 32.2 ms marked
 DM_NVN_MDX_PRESCAN	switch	`0` copies an indirect-count multi-draw's records at its own first draw, which splits a render pass an earlier draw opened; by default the draw that opens a pass copies those of the multi-draws after it first (ab with DM_AB)
+DM_NVN_MESH_COMPUTE	switch	`=1` runs task and mesh shaders as compute kernels before their render pass and draws their triangles with a plain indexed draw, for GPUs without mesh-shading hardware (Apple M1 and M2); needs the shaders' side libraries (`<key>_bk.metallib`, dm/gfx/tools/dmsh_meshcompute.py), which a Mac app build adds to its shader image (a draw without one stays native); `ab` alternates it with the DM_AB phases; on by default on a Mac without mesh-shading hardware, `=0` turns it off; off elsewhere
+DM_NVN_MESH_TGHINT	switch	`0` builds task / mesh pipelines without threadgroup-size hints; on by default a task or mesh shader of a multiple of 32 threads (one SIMD group) is declared a multiple of the SIMD width: Ocarina of Time on an M1 about -0.35 ms of GPU time a frame (two pairs of runs)
 DM_NVN_MFX_DIRECT	switch	`0` copies the game's colour into MetalFX's RGBA16F input (DM_UPSCALER=metalfx) unless it is RGBA16F; by default an input that is the whole rectangle MetalFX reads is taken in its own format (ab with DM_AB)
+DM_NVN_MK_EQ	diagnostic	`=1` keeps a mesh shader native once one of its draws has an equal depth test (with DM_NVN_MESH_COMPUTE); it made Ocarina of Time's grass worse, since its depth prepass draws with another shader
+DM_NVN_MK_IND	diagnostic	which indirect task / mesh draws DM_NVN_MESH_COMPUTE converts: `0` none, `task` only those with a task shader, `notask` only those without (all by default)
+DM_NVN_MK_UBSTOP	diagnostic	`=1` ends DM_NVN_MESH_COMPUTE's look-ahead at the first uniform-buffer update of the pass (it passes them by default and keeps native the draws that read an updated buffer)
 DM_NVN_PARTIAL_UPLOAD	switch	`0` reads a texture whole from its storage at every re-upload; by default a re-upload reads only the images (a layer's level) with a page written since the last upload and copies the others from the texture it replaces
 DM_NVN_PASSDUMP	diagnostic	`=<f>`, `<f1>-<f2>` or `every:<n>`: logs every render pass of those frames (attachments, clears, shader keys, bindings, draw state, presents, and the host function and line that ended each pass) for the `tbdr_*.py` tools
 DM_NVN_PASSDUMP_ALL	diagnostic	`=1` makes `DM_NVN_PASSDUMP` record every draw and binding change, not only the first per pass and stage, including copies and inline uniform updates
 DM_NVN_PASSGPU	diagnostic	`=<file>` writes the GPU time of each render and compute pass from stage-boundary timestamp counters (off under Metal 4); also gives each dispatch its own encoder
 DM_NVN_PASSGPU_SERIAL	diagnostic	`=1` makes each encoder on the main command buffer wait until all earlier work has finished, so `DM_NVN_PASSGPU` times read each pass's exclusive time (totals read high)
+DM_NVN_PASS_DEFER	switch	`=1` or `ab` (with `DM_AB`; on by default on a Mac without mesh-shading hardware, the M1 and M2, `=0` turns it off; off elsewhere, and with `DM_NVN_TBDR=1` it does nothing) runs the deferred pass merge without TBDR: a pass's draws wait for a later pass on the same colour targets when nothing between them depends on them (Ocarina of Time's eleven light passes become one). Extra rules: no bindless or memory-writing draw in the deferred pass, no memory-writing draw between, a scan of at most 6000 ops; a `pass defer` line every 300 frames counts groups and rejections
+DM_NVN_PASS_DEFER_BINDLESS	diagnostic	`=1` lets `DM_NVN_PASS_DEFER` defer draws whose shaders read bindless textures (their reads cannot be checked against the passes they move past)
 DM_NVN_PASS_SPLIT	switch	`=<draws>` (default 256, `0` off): a render pass is ended and its segment committed after this many draws while the GPU has no segment left, so the GPU starts a long pass (a G-buffer) before it is all translated; its attachments are stored and loaded again
 DM_NVN_PASS_SPLIT_MAX	switch	`=<n>` (default 2, `0` no limit): the most splits of one render pass (`DM_NVN_PASS_SPLIT`), as each stores and loads its attachments
 DM_NVN_POOL_CHUNKS	switch	`0` wraps a memory pool of 512 MB or more whole in one buffer, as before; by default it is wrapped in overlapping 16 MB chunks made as draws reach them, so only the parts in use are wired
@@ -234,6 +253,7 @@ DM_NVN_TESS_LEVEL	diagnostic	`=<N>` gives every edge and inside of every tessell
 DM_NVN_TESS_MAX	diagnostic	`=<level>` the highest tessellation level (even, 2 to 64, default 64; fractional_odd spacing one less); higher hull factors are clamped to it
 DM_NVN_TESS_ONLY	diagnostic	`=<hull key>,...` replays only the tessellated draws of those hull shaders (the first 16 hex digits of a key) and skips the others with a [RED] line; to tell their effects apart
 DM_NVN_TESS_STAGES	diagnostic	`=1` / `=2` stops a tessellated draw after the vertex capture / after the hull (and expansion) kernel, skipping the domain draw; to time the stages (default 3, all)
+DM_NVN_TEXCLEAR_WAIT	switch	`0` runs every texture clear (ClearTexture) as a pass of its own; on by default a whole-level colour clear waits and the next pass that draws into that level and layer takes it as its clear load action: Ocarina of Time on an M1 4 of its 5 texture clears a frame, frame time within the noise
 DM_NVN_TEXCPU	diagnostic	`=1` logs non-packaged (non-swizzled) textures in CPU-visible pools
 DM_NVN_TEXDUMP	diagnostic	`=<frame>:<path>`, `size=<W>x<H>:<path>` or `layers=<n>:<path>`: saves every colour render target of that frame as PNG (`%d` = serial × 100 + layer × 10 + level)
 DM_NVN_TEXINFO	diagnostic	`=<W>x<H>` logs storage and description of every texture of that size on first use, registration and initialization (pool, flags, packaged, non-zero bytes, swizzles)
@@ -259,6 +279,8 @@ DM_NVN_VCONV_CHECK	diagnostic	`=1` scans the indices again at every reuse of a c
 DM_NVN_VCONV_CPU	switch	`=1` converts on the CPU every vertex attribute Metal's fetch cannot read, as before, instead of through the shader's shadow inputs (`<key>_bv`) or its pulling entry (`<key>_bp`)
 DM_NVN_VCONV_KEEP	switch	`=0` turns off the kept vertex conversions (`vk_get`); `=<n>` sets the smallest range kept, in vertices (default 4096, which `=1` also gives)
 DM_NVN_VCONV_RANGE	switch	`0` / `1` overrides the profile's `vconv_range`: CPU vertex conversion only over the vertices each draw reads instead of the whole bound range
+DM_NVN_VC_KEEP	switch	`1` (default) keeps the texture-view set of a finalized texture that a registered ID still resolves through the ghost table, until the owner lets the serial go (vc_ghost_sweep, at the first commit of each frame); `0` refuses such sets, so each submission that reads the ID makes its view again; `ab` alternates it with the DM_AB phases
+DM_NVN_VIS_HEAPFRAME	switch	`0` gives image heaps the alias flush on every barrier; `1` only at each submission's start and after memory writes (it skips flushes Metal asks for after attachment stores); the default is 1 on Macs without MTLGPUFamilyApple9 (M1, M2: Ocarina of Time about -3 ms a frame, no missing draws seen) and 0 elsewhere (an M3 Max lost Ocarina of Time's foliage); ab for the DM_AB phases
 DM_NVN_VIS_NEED	switch	`0` counts every draw for occlusion queries once counting began, as before; by default a draw counts only while a report can see it (after a samples-passed reset or report whose next one is a reset, nothing reads it): the same values; `ab` for `DM_AB` phases
 DM_NVN_VLOG	diagnostic	Set: logs each NVN memory pool as it is created (address, memory, size, flags) with a backtrace
 DM_NVN_VSDUMP	path	Output file for post-vertex captures; used with DM_NVN_VSDUMP_KEY and the frame/count bounds
@@ -274,7 +296,10 @@ DM_OODLE_JOB	path	`=<job file>`: the host runs the game's own Oodle decoder on e
 DM_OODLE_MODULES	path	The rewritten modules the Mac host's Oodle tool mode loads when `shader_split.py` decodes Trinity packs; set by the NSP script
 DM_OODLE_SERVE	switch	`=1`: the host answers decode requests on stdin / stdout with the game's own Oodle (or LZ5) decoder from the guest main thread before the SDK starts, until stdin ends
 DM_OPMODE	player	The operation mode the game sees: `0` handheld, `1` console (default: the profile's `op_mode`, console unless set); read once at startup
+DM_PACK_SHADER_IMAGE	switch	`1` packs compiled NVN shader libraries into one verified image when building an IPA
+DM_PAD_FORCE_FULL	player	`1` always shows the complete iOS touch-controller overlay, including every D-pad, face, shoulder, stick and utility control
 DM_PAD_IDENTICAL	switch	`0` stops reading identical pads here when GameController lists fewer of their model than IOKit has, such as two Pro Controllers over USB (each a player of its own: a Pro Controller from its report 0x30, another model from its HID elements; `pad_hid_mac.h`, `pad_pro.h`); `DM_HID_PADS=0` stops it too; Mac only
+DM_PAD_KEEP_TOUCH	player	`1` keeps the complete touch controller visible and usable while a physical controller, keyboard or pointer is connected
 DM_PAD_MERGE	switch	`=1` merges every controller into player 1, as before, instead of giving each controller a player of its own (Mac and iOS)
 DM_PAD_PRESS_TO_JOIN	player	`1`: a controller is no player until one of its buttons is pressed, then it is the lowest player free, whatever its port, link or model, identical pads included (`front_mac.m`, `DmGamepad.m`, `pad_slots.h`); not with `DM_PAD_MERGE`. Launcher setting
 DM_PATCH_FRONT	switch	`=<bytes>`: the size of the patch area right before the module base for a long text (`BIG_TEXT`); set only by the rewriter's own rerun with the size it needs
@@ -398,10 +423,14 @@ DM_TEST_ARCHIVE_CONSTANTS	test	Use optional function constants in the synthetic 
 DM_TEST_ARCHIVE_MIXED	test	Mix a newly compiled shader function with compacted bases in the archive restart fixture
 DM_TEST_BORDER	test	Path to the native t_border executable that test_dmsh_border.py runs a rewritten shader through on the GPU (`make check_t_border` sets it)
 DM_TEST_BUILD	test	Build folder of `dm/host/tests` whose `t_svc_memory` `test_memory_profile.py` runs (default `build`; `make asan` sets `build/asan`)
+DM_TEST_CLASSIC_METALFX	test	Enables the classic presentation MetalFX spatial scaling checks in t_legacy_pipeline
+DM_TEST_DUAL_SHADER_DIR	test	External compiled shader directory for the real dual-source GPU regression
 DM_TEST_FS_FAIL	diagnostic	`=write:<n>[:<errno>]` makes the nth save write fail with that errno (default ENOSPC), which refuses the save transaction's commit
 DM_TEST_FS_FAILAT	diagnostic	`=<point>[:<count>][,…]` makes steps of the save transaction (`mountclone`, `reclone`, `guestname`, `renameback`) fail with ENOSPC
 DM_TEST_GEOMETRY	test	Path of the native `t_geometry` executable; `test_dmsh_geometry.py` runs its native geometry emitter checks only when it is set
 DM_TEST_GEOMETRY_PRIMITIVE_ID	test	Path to the native t_geometry_primitive_id replay executable used by test_dmsh_geometry.py with DMSH_TEST_GPU=1.
+DM_TEST_GHOST	test	`=px,py,gx,gy,gw,gh,cx,cy` enables the drag-follow image directly for Mac screenshot regression testing
+DM_TEST_GL_NVNTEX	test	Enables the NVN texture import checks in t_gl_imports
 DM_TEST_GPU_LOST	diagnostic	`=<n>` imitates the GPU access macOS revoked from the nth submission on: each submission's feedback reports `MTL4CommandQueueErrorAccessRevoked` and the GPU does not signal its fence, so the host stops presenting and the front end ends the game
 DM_TEST_KEYRACE	diagnostic	`=<n>` creates up to n (at most 512) pthread keys on a thread of its own while the host starts up
 DM_TEST_KILL_AT	diagnostic	`=write:<n>` exits the process (`_exit(9)`) at the nth save write, imitating a kill mid-write
@@ -424,6 +453,7 @@ DM_T_DUMP	test	`tests/t_blend_zero.m` prints the red channel each draw stored, r
 DM_UDC_SELFTEST	diagnostic	`=1` runs a start-up check of DontCare load and store on private depth-stencil and RGBA8 textures (clear, Load + DontCare, read back) and logs one result line
 DM_UE_SHADERS	path	Folder of the Unreal shader code archives decoded by `uepak.py`, for `shader_split.py` (default `ue_shaders` beside the RomFS); needed when the RomFS has Unreal paks
 DM_UE_TEXTURE_POOL	switch	Megabytes Unreal's texture streaming pool (`r.Streaming.PoolSize`) is raised to, overriding the profile's `ue_texture_pool`; `0` keeps the game's own pool. On iOS only this switch turns it on (`Documents/env.txt`)
+DM_UE_TEXTURE_POOL_MAX	switch	Positive upper bound in megabytes for Unreal's texture streaming pool; takes priority over DM_UE_TEXTURE_POOL
 DM_UPSCALER	player	`metalfx` draws the game's own upscaler shaders (agl's NDSR network, found by the shader map) with MetalFX's spatial scaler; `game` (the default) runs them
 DM_VK_CAPTURE	path	`=<dir>` (Mac) writes every SPIR-V module the game creates to `<dir>/<key>.spv`; the NSP script's Vulkan shader capture stage sets it
 DM_VK_LOG	diagnostic	`=1` logs Vulkan object creation in the Vulkan-on-Metal layer

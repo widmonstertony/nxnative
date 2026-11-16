@@ -1,6 +1,6 @@
-// Mac: raw HID gamepads that GameController does not list (pad_hid.h, GitHub issue #637), read on the main run loop alongside front_mac.m's GameController players.
-// Each device takes a player slot at its first button press (front_mac.m hidpad_first_press: a keyboard receiver that declares a GamePad collection never presses one, GitHub
-// issue #1657); front_mac.m defines the slot side (hidpad_attach / hidpad_detach / hidpad_read / hidpad_motion).
+// Mac: raw HID gamepads that GameController does not list (pad_hid.h, GitHub issue #637), read on the main run loop alongside GameController and Triton.
+// Each device takes a player slot at its first button press (controllers_mac.m hidpad_first_press: a keyboard receiver that declares a GamePad collection never presses one,
+// GitHub issue #1657); controllers_mac.m owns slots, mappings and transport admission (hidpad_attach / hidpad_detach / hidpad_read / hidpad_motion / hidpad_available).
 // Skipped, so no controller is read twice: GameController's synthetic devices, and a device GameController lists itself. +[GCController supportsHIDDevice:] is only a hint for
 // that: it answers YES for the 8BitDo Ultimate 2C (2dc8:301b), which GameController then never lists (GitHub issue #965). So a device it says YES for waits HIDPAD_GC_WAIT
 // seconds for a GCController of its name; without one it is read as HID, and given back if that GCController connects later. Microsoft's, Sony's and Nintendo's pads
@@ -9,7 +9,7 @@
 // numbers match, which may be why; over Bluetooth both are listed). So a device GameController reads is kept, unread, in g_hidpads_gc, to count each model's pads. When IOKit
 // has at least two pads of a model and more than GameController lists, after HIDPAD_TWIN_WAIT for a pad not listed yet (pad_dupes_want), every pad of that model is read here,
 // a player each, by USB location (twins): a Pro Controller from its report 0x30 (pad_pro.h, pro_motion), with its gyro and its own stick calibration, any other model from
-// its HID elements. GameController gives a controller no HID identity, so front_mac.m leaves GameController's controllers of that model unread (hidpad_gc_unread) rather than
+// its HID elements. GameController gives a controller no HID identity, so controllers_mac.m leaves GameController's controllers of that model unread (hidpad_gc_unread) rather than
 // read a pad twice. When GameController lists them all again, they go back to it. A model is matched to GameController's controllers by its name (vendorName is the HID product
 // string), a Pro Controller by its product category; the other pads of Microsoft, Sony and Nintendo cannot be matched by name, so they are never read this way.
 // Such pads have no rumble or player lights, and Home does not quit from them. DM_PAD_IDENTICAL=0 turns this part off.
@@ -28,7 +28,7 @@
 #include <string.h>
 
 typedef struct hid_pad {
-    IOHIDDeviceRef hid; pad_hid st; char name[64]; int vid, pid, gc_hint; struct hid_pad *next;
+    IOHIDDeviceRef hid; pad_hid st; char name[64]; int vid, pid, gc_hint, opened; struct hid_pad *next;   // opened: hidpad_open has it open and scheduled
     int twin, twin_want;   // twin: read here although GameController lists its model; twin_want: hidpad_twins_eval's choice for it
     uint64_t heard; int streams, shown;   // heard: its last input report; streams: it sends a Pro Controller's 0x30 (hidpad_live); shown: 1 / 2 logged as not counted / counted
     pad_pro pro; uint64_t pro_m; int32_t pro_s[4]; pro_motion motion; uint8_t pro_counter; int pro_logged;   // a twin Pro Controller, from its report 0x30, not from st
@@ -40,11 +40,24 @@ static hid_pad *g_hidpads_gc;                    // GameController reads them: k
 #define HIDPAD_GC_WAIT 2.0
 #define HIDPAD_TWIN_WAIT 3.0
 static int g_hidpad_log, g_hidpad_motion = 1, g_twins_off, g_twins_due, g_twins_waiting;
+// Matching callbacks are one-shot. Retain deferred matches until ownership
+// changes or removal so a transient registry scan cannot lose a controller.
+static CFMutableArrayRef g_hidpad_waiting;
+static void hidpad_wait(IOHIDDeviceRef hid) {
+    if(!g_hidpad_waiting) g_hidpad_waiting=CFArrayCreateMutable(kCFAllocatorDefault,0,&kCFTypeArrayCallBacks);
+    if(g_hidpad_waiting && !CFArrayContainsValue(g_hidpad_waiting,CFRangeMake(0,CFArrayGetCount(g_hidpad_waiting)),hid)) CFArrayAppendValue(g_hidpad_waiting,hid);
+}
+static void hidpad_forget(IOHIDDeviceRef hid) {
+    if(!g_hidpad_waiting) return;
+    CFIndex i=CFArrayGetFirstIndexOfValue(g_hidpad_waiting,CFRangeMake(0,CFArrayGetCount(g_hidpad_waiting)),hid);
+    if(i!=kCFNotFound) CFArrayRemoveValueAtIndex(g_hidpad_waiting,i);
+}
+static int hidpad_available(IOHIDDeviceRef hid);
 static void hidpad_attach(hid_pad *d);
 static void hidpad_detach(hid_pad *d);
 static void hidpad_read(hid_pad *d);
 static void hidpad_motion(hid_pad *d, const pro_motion_sample *s, int n);   // a twin Pro Controller's gyro
-static void hidpad_models_changed(void);   // the pads of a model changed: front_mac.m runs hidpad_twins_eval / _release / _take again
+static void hidpad_models_changed(void);   // the pads of a model changed: controllers_mac.m runs hidpad_twins_eval / _release / _take again
 
 static int hidpad_is_pro(const hid_pad *d) { return d->vid == 0x057e && d->pid == 0x2009; }
 static void hidpad_value(void *ctx, IOReturn result, void *sender, IOHIDValueRef v) {
@@ -74,6 +87,7 @@ static void hidpad_recount(void) {   // pads_changed once this report is handled
     g_hidpad_recount = 1;
     dispatch_async(dispatch_get_main_queue(), ^{ g_hidpad_recount = 0; hidpad_models_changed(); });
 }
+static void hidpad_stop(hid_pad *d);
 static void hidpad_heard(hid_pad *d, uint8_t id) {
     uint64_t now = now_ns(); int was = hidpad_live(d, now);
     if (hidpad_is_pro(d) && id == 0x30) d->streams = 1;
@@ -83,8 +97,8 @@ static void hidpad_heard(hid_pad *d, uint8_t id) {
     if (hidpad_is_pro(d)) return;
     IOHIDDeviceRef hid = d->hid;   // another model counts for good after one report: its reports are not needed any more
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (int pass = 0; pass < 2; pass++) for (hid_pad *o = pass ? g_hidpads : g_hidpads_gc; o; o = o->next)
-            if (o->hid == hid && o->heard) IOHIDDeviceRegisterInputReportCallback(hid, o->report, sizeof o->report, NULL, NULL);
+        for (hid_pad *o = g_hidpads_gc; o; o = o->next)
+            if (o->hid == hid && o->heard) hidpad_stop(o);
     });
 }
 // Its input reports: each stamps heard (hidpad_listen); a twin Pro Controller's are read: 0x30 its buttons, sticks and gyro, 0x21 the answer to its stick calibration read
@@ -119,20 +133,57 @@ static int hidpad_gc_listed(const char *name) { for (GCController *c in GCContro
 // "Wireless Controller", and combined Joy-Cons are one GCController for two HID devices, so each would also be read as HID after the wait and take a player of its own
 static int hidpad_gc_native(int vid) { return vid == 0x045e || vid == 0x054c || vid == 0x057e; }
 static int hidpad_twin_able(const hid_pad *d) { return hidpad_is_pro(d) || !hidpad_gc_native(d->vid); }
+static int hidpad_same_model(const hid_pad *a, const hid_pad *b) { return a->vid == b->vid && a->pid == b->pid; }
+static int hidpad_open(hid_pad *d) {
+    if (d->opened) return 1;
+    IOReturn r = IOHIDDeviceOpen(d->hid, kIOHIDOptionsTypeNone);
+    if (r != kIOReturnSuccess) { LOG("[RED] HID gamepad '%s': cannot open device (0x%x)", d->name, r); return 0; }
+    d->opened = 1;
+    return 1;
+}
+static void hidpad_schedule(hid_pad *d) {
+    if (d->opened == 2) return;
+    IOHIDDeviceScheduleWithRunLoop(d->hid, CFRunLoopGetMain(), kCFRunLoopCommonModes); d->opened = 2;
+}
 // Its reading stops: no callback is left with it
 static void hidpad_stop(hid_pad *d) {
+    if (!d->opened) return;
     IOHIDDeviceRegisterInputValueCallback(d->hid, NULL, NULL);
     IOHIDDeviceRegisterInputReportCallback(d->hid, d->report, sizeof d->report, NULL, NULL);
+    if (d->opened == 2) IOHIDDeviceUnscheduleFromRunLoop(d->hid, CFRunLoopGetMain(), kCFRunLoopCommonModes);
+    IOHIDDeviceClose(d->hid, kIOHIDOptionsTypeNone); d->opened = 0;
 }
-// Its reports stamp heard while it may still be counted as one of its model: always for a Pro Controller (its 0x30 says it is there), another model until its first
+static int hidpad_model_entries(const hid_pad *d) {
+    int n = 0;
+    for (int pass = 0; pass < 2; pass++) for (hid_pad *o = pass ? g_hidpads : g_hidpads_gc; o; o = o->next)
+        if ((!pass || o->twin) && hidpad_same_model(o, d)) n++;
+    return n;
+}
+// Its reports stamp heard while at least two entries of its model exist and it may still be counted as one of its model:
+// always for a Pro Controller (its 0x30 says it is there), another model until its first. A lone entry stays unopened.
 static void hidpad_listen(hid_pad *d) {
-    if (!g_twins_off && hidpad_twin_able(d) && (hidpad_is_pro(d) || !d->heard)) IOHIDDeviceRegisterInputReportCallback(d->hid, d->report, sizeof d->report, hidpad_report, d);
+    if (g_twins_off || !hidpad_twin_able(d) || !(hidpad_is_pro(d) || !d->heard) || !hidpad_available(d->hid)) { hidpad_stop(d); return; }
+    if (d->opened) return;
+    if (!hidpad_open(d)) return;
+    IOHIDDeviceRegisterInputReportCallback(d->hid, d->report, sizeof d->report, hidpad_report, d);
+    hidpad_schedule(d);
+}
+static void hidpad_sync_listeners(const hid_pad *model) {
+    int many = hidpad_model_entries(model) >= 2;
+    for (hid_pad *o = g_hidpads_gc; o; o = o->next) if (hidpad_same_model(o, model)) {
+        if (many) hidpad_listen(o); else hidpad_stop(o);
+    }
 }
 static void hidpad_drop(hid_pad *d) { hidpad_stop(d); CFRelease(d->hid); free(d); }
-static void hidpad_keep_gc(hid_pad *d) { hidpad_stop(d); d->twin = d->twin_want = 0; d->next = g_hidpads_gc; g_hidpads_gc = d; hidpad_listen(d); }
+static void hidpad_keep_gc(hid_pad *d) { hidpad_stop(d); d->twin = d->twin_want = 0; d->next = g_hidpads_gc; g_hidpads_gc = d; hidpad_sync_listeners(d); }
 static void hidpad_use(hid_pad *d) {
+    // Admission is the adapter's: a Triton sibling or a split Joy-Con must not be opened here. The device waits for the next controller change
+    if (!hidpad_available(d->hid)) { hidpad_wait(d->hid); hidpad_drop(d); return; }
+    hidpad_forget(d->hid);
+    if (!hidpad_open(d)) { hidpad_drop(d); return; }
     d->next = g_hidpads; g_hidpads = d;
     IOHIDDeviceRegisterInputValueCallback(d->hid, hidpad_value, d);
+    hidpad_schedule(d);
     hidpad_attach(d);
     // HID has no standard button numbering: the default map is 8BitDo's, so another vendor's pad may have its buttons in other places
     if (d->vid != PAD_HID_DEFAULT_VENDOR && !getenv("DM_HID_MAP"))
@@ -161,7 +212,7 @@ static void hidpad_found(void *ctx, IOReturn result, void *sender, IOHIDDeviceRe
     d->hid = (IOHIDDeviceRef)CFRetain(hid);
     d->gc_hint = [GCController supportsHIDDevice:hid];   // once per device: the call is not cheap
     if (!d->gc_hint) { hidpad_use(d); return; }
-    if (hidpad_gc_native(d->vid) || hidpad_gc_listed(d->name)) { hidpad_keep_gc(d); hidpad_models_changed(); return; }   // front_mac.m reads it through its GCController
+    if (hidpad_gc_native(d->vid) || hidpad_gc_listed(d->name)) { hidpad_keep_gc(d); hidpad_models_changed(); return; }   // controllers_mac.m reads it through its GCController
     d->next = g_hidpads_waiting; g_hidpads_waiting = d;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(HIDPAD_GC_WAIT * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         hid_pad *w = hidpad_unlink(&g_hidpads_waiting, hid); if (!w) return;   // removed meanwhile
@@ -170,15 +221,23 @@ static void hidpad_found(void *ctx, IOReturn result, void *sender, IOHIDDeviceRe
         hidpad_use(w);
     });
 }
+static void hidpad_retry(void) {
+    if(!g_hidpad_waiting || !CFArrayGetCount(g_hidpad_waiting)) return;
+    CFArrayRef pending=CFArrayCreateCopy(kCFAllocatorDefault,g_hidpad_waiting); if(!pending) return;
+    for(CFIndex i=0;i<CFArrayGetCount(pending);i++) hidpad_found(NULL,kIOReturnSuccess,NULL,(IOHIDDeviceRef)CFArrayGetValueAtIndex(pending,i));
+    CFRelease(pending);
+}
 static void hidpad_removed(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef hid) {
     (void)ctx; (void)result; (void)sender;
+    hidpad_forget(hid);
     hid_pad *d = hidpad_unlink(&g_hidpads, hid); int counted = d && d->twin;
     if (d) hidpad_detach(d); else d = hidpad_unlink(&g_hidpads_waiting, hid);
     if (!d && (d = hidpad_unlink(&g_hidpads_gc, hid))) counted = 1;
+    hid_pad model = d ? (hid_pad){.vid = d->vid, .pid = d->pid} : (hid_pad){0};
     if (d) hidpad_drop(d);
-    if (counted) hidpad_models_changed();   // one pad fewer of its model
+    if (counted) { hidpad_sync_listeners(&model); hidpad_models_changed(); }   // one pad fewer of its model
 }
-// A GCController connected (front_mac.m, before its pads_changed): a HID pad of its name that GameController had only promised is read through it from now on.
+// A GCController connected (controllers_mac.m, before its controllers_changed): a HID pad of its name that GameController had only promised is read through it from now on.
 // ponytail: matched by name, so two pads of one model that both fell back to HID are both given back when GameController lists one; a per-device link would need an API
 // GameController does not give. Twins stay: hidpad_twins_eval decides for them
 static void hidpad_gc_connected(GCController *c) {
@@ -189,9 +248,8 @@ static void hidpad_gc_connected(GCController *c) {
     }
 }
 
-// Identical pads (twins), from front_mac.m's pads_changed: hidpad_twins_eval, then hidpad_twins_release before GameController's controllers take their slots (leaving out
+// Identical pads (twins), from controllers_mac.m's controllers_changed: hidpad_twins_eval, then hidpad_twins_release before GameController's controllers take their slots (leaving out
 // those hidpad_gc_unread names), then hidpad_twins_take. gone: the controller just removed, not counted
-static int hidpad_same_model(const hid_pad *a, const hid_pad *b) { return a->vid == b->vid && a->pid == b->pid; }
 static int hidpad_gc_is_model(GCController *c, const hid_pad *d) {
     if (!c.extendedGamepad) return 0;
     if (hidpad_is_pro(d)) return [c.productCategory isEqualToString:@"Switch Pro Controller"];
@@ -237,7 +295,7 @@ static void hidpad_twins_eval(GCController *gone) {
     }
     if (wait) hidpad_twins_wait();
 }
-// Whether front_mac.m leaves a GameController controller unread, the pads of its model being read here
+// Whether controllers_mac.m leaves a GameController controller unread, the pads of its model being read here
 static int hidpad_gc_unread(GCController *c) {
     for (int pass = 0; pass < 2; pass++) for (hid_pad *d = pass ? g_hidpads : g_hidpads_gc; d; d = d->next)
         if (d->twin_want && (!pass || d->twin) && hidpad_gc_is_model(c, d)) return 1;
@@ -279,6 +337,8 @@ static void hidpad_twins_take(GCController *gone) {
         int pro = hidpad_is_pro(d);
         LOG("[hid] '%s' (%04x:%04x) at USB location 0x%lx, %s, registry entry 0x%llx: GameController lists %d of %d pads of this model: read here, from its %s", d->name, d->vid, d->pid, loc,
             hidpad_transport(d), (unsigned long long)hidpad_entry(d->hid), hidpad_gc_count(d, gone), n + 1, pro ? "report 0x30" : "HID elements");
+        hidpad_stop(d);
+        if (!hidpad_open(d)) { hidpad_drop(d); continue; }
         d->twin = 1; d->next = g_hidpads; g_hidpads = d;
         if (pro) {
             d->pro = (pad_pro){0}; d->pro_m = 0; memset(d->pro_s, 0, sizeof d->pro_s); d->motion = (pro_motion){0}; d->pro_logged = 0;
@@ -288,6 +348,7 @@ static void hidpad_twins_take(GCController *gone) {
             pad_hid_init(&d->st, getenv("DM_HID_MAP")); memcpy(d->st.has, has, sizeof has);   // nothing held from an earlier turn
             IOHIDDeviceRegisterInputValueCallback(d->hid, hidpad_value, d);
         }
+        hidpad_schedule(d);
         hidpad_attach(d);
         if (pro) hidpad_pro_cal_ask(d, 3);
     }
@@ -297,7 +358,8 @@ static void hidpad_start(void) {
     e = getenv("DM_HID_LOG"); g_hidpad_log = e && atoi(e);
     e = getenv("DM_PAD_IDENTICAL"); g_twins_off = e && !atoi(e);
     e = getenv("DM_MOTION"); const char *h = getenv("DM_MOTION_HID"); g_hidpad_motion = !(e && !atoi(e)) && !(h && !atoi(h));   // a twin's gyro is HID motion, as motion_pro_mac.h's
-    g_hidpad_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone); if (!g_hidpad_manager) return;
+    // Do not auto-open matches: the shared adapter first resolves Triton/GC ownership, and hidpad_open opens only the devices read here.
+    g_hidpad_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDManagerOptionIndependentDevices); if (!g_hidpad_manager) return;
     IOHIDManagerSetDeviceMatchingMultiple(g_hidpad_manager, (__bridge CFArrayRef)@[
         @{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_GamePad)},
         @{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Joystick)},
@@ -305,7 +367,7 @@ static void hidpad_start(void) {
     IOHIDManagerRegisterDeviceMatchingCallback(g_hidpad_manager, hidpad_found, NULL);
     IOHIDManagerRegisterDeviceRemovalCallback(g_hidpad_manager, hidpad_removed, NULL);
     IOHIDManagerScheduleWithRunLoop(g_hidpad_manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-    IOReturn r = IOHIDManagerOpen(g_hidpad_manager, kIOHIDOptionsTypeNone);   // nonexclusive: GameController and other apps keep their devices; the only output report is a twin Pro Controller's calibration read
+    IOReturn r = IOHIDManagerOpen(g_hidpad_manager, kIOHIDOptionsTypeNone);   // independent: only the devices hidpad_open accepts are opened, nonexclusively, so GameController and other apps keep theirs; the only output report is a twin Pro Controller's calibration read
     if (r != kIOReturnSuccess) {
         LOG("[RED] HID gamepads: cannot open HID (0x%x); only GameController controllers are read", r);
         IOHIDManagerUnscheduleFromRunLoop(g_hidpad_manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);

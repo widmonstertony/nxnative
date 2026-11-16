@@ -20,6 +20,7 @@
 #   b:<slot>:<size>                              the default uniform block: its buffer slot and size in bytes
 #   n:<name>=<slot>:<size>                       a named uniform block (DOOM 3's matrices_ubo): its buffer slot and size in bytes
 #   t:<name>=<slot>:<type>                       a combined sampler: texture and sampler slot
+#   s:<buffer-slot>:<hex-slot-mask>              sampler slots encoded in an argument buffer
 #   o:<name>=<location>                          a fragment output, [[color(location)]]
 # <TAB> where it came from
 # Usage: gl_shaders.py <input path>... <out dir> [--ios <dir>]   (input paths: the RomFS, the main NSO, capture folders)
@@ -71,7 +72,9 @@ def sources(roots):
                         st = 'vert' if nm.endswith('_vp.shad') else 'frag' if nm.endswith('_fp.shad') else None
                         yield text_of(a.read(nm)), st, f'/{os.path.relpath(p, r)}:{nm}'
                 elif fn.endswith(('.vert', '.frag')):
-                    with open(p, 'rb') as f: source = text_of(f.read())
+                    with open(p, 'rb') as f: data = f.read()
+                    if fn.startswith('._') and data[:8] == b'\x00\x05\x16\x07\x00\x02\x00\x00': continue
+                    source = text_of(data)
                     yield source, fn.rsplit('.', 1)[1], '/' + os.path.relpath(p, r)
 
 # NVIDIA's GLSL compiler accepts more than the GLSL ES 3.20 specification, and glslang does not; these fix-ups run on the preprocessed text (glslang -E, so macros are expanded):
@@ -126,6 +129,27 @@ def fixups(t, stage):
 def glsl_type(t, refl):
     return refl['types'][t]['name'] if t in refl.get('types', {}) else t
 
+def legacy_interface(pre, stage):
+    """Lower GLSL 1.10/1.20 interfaces to their equivalent explicit form.
+
+    A source without #version is a legacy source, not an empty string. Keep
+    the original source hash; this changes only the compiler input dialect.
+    Other unsupported legacy built-ins are left for the compiler to reject.
+    """
+    version = re.search(r'^\s*#version\s+(\d+)\b[^\n]*', pre, re.M)
+    if version and int(version[1]) > 120: return pre
+    if version: pre = pre[:version.start()] + pre[version.end():]
+    if stage == 'vert': pre = re.sub(r'\battribute\b', 'in', pre)
+    pre = re.sub(r'\bvarying\b', 'out' if stage == 'vert' else 'in', pre)
+    declaration = ''
+    if stage == 'frag' and re.search(r'\bgl_FragColor\b', pre):
+        name = 'dm_legacy_fragment_color'
+        while re.search(r'\b' + name + r'\b', pre): name += '_'
+        pre = re.sub(r'\bgl_FragColor\b', name, pre)
+        declaration = 'layout(location=0) out vec4 ' + name + ';\n'
+    return '#version 450\n' + declaration + pre
+
+
 def uni_members(refl, ms, prefix, base, f, bools):
     """Table rows for default block members. A struct's members recurse with their dotted name, which is the name the game passes to GL (u_LightEnv.m_dirLights_dir[0]); the
     reflection gives a nested member's offset relative to its parent, so the parent's offset is added"""
@@ -156,6 +180,51 @@ def es100(t, stage):
     t = re.sub(r'\bsample\b', 'gm_sample', t)   # `sample` became a reserved word after ES 1.00 (GameMaker's sprite shaders use it as a variable)
     return '#version 310 es\nprecision highp float;\nprecision highp int;\n' + t
 
+def lower_constant_sampler_arrays(src):
+    """Split constant-index sampler arrays; keep element identity for GL."""
+    aliases = {}
+    pattern = r'\b(uniform\s+(?:(?:lowp|mediump|highp)\s+)?[iu]?sampler\w*\s+)(\w+)\s*\[\s*(\d+)\s*\]\s*;'
+    for match in list(re.finditer(pattern, src)):
+        declaration, name, size = match[0], match[2], int(match[3])
+        if not 1 <= size <= 16: continue
+        use = r'\b' + re.escape(name) + r'\s*\[\s*([^\[\]]+)\s*\]'
+        body = src.replace(declaration, '', 1)
+        indices = {}
+        for m in re.finditer(use, body):
+            expr = m[1].strip()
+            literal = re.fullmatch(r'(\d+)|int\s*\(\s*(\d+)\.0*\s*\)', expr)
+            if not literal or int(literal[1] or literal[2]) >= size: break
+            indices[expr] = int(literal[1] or literal[2])
+        else:
+            prefix = 'dm_gl_sampler_' + name + '_'
+            while re.search(r'\b' + prefix, src): prefix += '_'
+            names = [prefix + str(i) for i in range(size)]
+            # Names are reserved in the original source before substitution.
+            src = src.replace(declaration, '\n'.join(match[1] + n + ';' for n in names), 1)
+            src = re.sub(use, lambda m, names=names, indices=indices: names[indices[m[1].strip()]], src)
+            aliases.update({n: (name, i, size) for i, n in enumerate(names)})
+    return src, aliases
+
+def sampler_overflow(msl, function):
+    """Move samplers beyond Metal's 16 direct slots into a sampler-only argument buffer."""
+    entry = re.search(rf'(?m)^(?:vertex|fragment)\s+\w+\s+{function}\((.*?)\)\s*\{{', msl, re.S)
+    if not entry: raise ValueError('Metal entry point not found')
+    arguments = entry[1]
+    samplers = re.compile(r'\bsampler\s+(\w+)\s+\[\[sampler\((\d+)\)\]\]')
+    overflow = {name: int(slot) for name, slot in samplers.findall(arguments) if int(slot) >= 16}
+    if not overflow: return msl, None
+    buffers = {int(slot) for slot in re.findall(r'\[\[buffer\((\d+)\)\]\]', arguments)}
+    slot = next((i for i in range(15) if i not in buffers), None)
+    if slot is None or max(overflow.values()) >= 32: raise ValueError('no room for sampler arguments')
+    arguments = samplers.sub(lambda match: '' if match[1] in overflow else match[0], arguments)
+    arguments = re.sub(r',\s*(?=,|$)', '', arguments).lstrip(' ,\n')
+    if arguments: arguments += ', '
+    arguments += f'constant nxnative_sampler_args& nxnative_samplers [[buffer({slot})]]'
+    fields = ''.join(f'    sampler {name} [[id({index})]];\n' for name, index in overflow.items())
+    head = msl[:entry.start()] + 'struct nxnative_sampler_args {\n' + fields + '};\n\n'
+    body = re.sub(r'\b(?:' + '|'.join(overflow) + r')\b', lambda match: 'nxnative_samplers.' + match[0], msl[entry.end():])
+    return head + msl[entry.start():entry.start(1)] + arguments + msl[entry.end(1):entry.end()] + body, (slot, sum(1 << i for i in overflow.values()))
+
 def translate(src, stage, key, tmp):
     """GLSL → MSL; returns (msl path, table fields) or an error string"""
     t = src.decode('latin1')
@@ -165,7 +234,18 @@ def translate(src, stage, key, tmp):
     open(g + '.in', 'wb').write(src)
     r = subprocess.run(['glslangValidator', '-E', '-S', stage, g + '.in'], capture_output=True, text=True)
     if r.returncode: return 'glslang -E: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
-    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first
+    at = r.stdout.find('#version')
+    pre = legacy_interface(r.stdout[at:] if at >= 0 else r.stdout, stage)
+    # Vulkan's SPIR-V frontend requires GLSL ES 3.10 or later. Upgrade the
+    # directive only after preprocessing with the original ES 3.00 version,
+    # so __VERSION__ branches and the original shader's lookup key stay intact.
+    pre = re.sub(r'^([ \t]*#version[ \t]+)300([ \t]+es\b)', r'\g<1>310\2', pre, count=1, flags=re.M)
+    pre, sampler_elements = lower_constant_sampler_arrays(pre)
+    texture_alias = None
+    if re.search(r'\buniform\s+(?:(?:lowp|mediump|highp)\s+)?[iu]?sampler\w*\s+texture\s*;', pre):
+        # In legacy GLSL, a sampler may be named texture. The modern sampling function has that name too.
+        texture_alias = f'nxnative_texture_{key}'
+        pre = re.sub(r'\btexture\b(?!\s*\()', texture_alias, pre)
     open(g, 'w').write(fixups(pre, stage))
     r = subprocess.run(['glslangValidator', '-V', '-R', '--aml', '--amb', '-S', stage, g, '-o', spv], capture_output=True, text=True)
     if r.returncode: return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
@@ -175,18 +255,29 @@ def translate(src, stage, key, tmp):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode: return 'spirv-cross: ' + r.stderr.strip()[:300]
     m = open(msl).read()
+    ubos = refl.get('ubos', [])
+    if len(ubos) == 1 and ubos[0]['binding'] >= 15:
+        # Vulkan auto-binding can put the sole uniform block after the textures. In Metal
+        # the block has its own namespace; keep it below the GL layer's vertex buffers.
+        binding = ubos[0]['binding']
+        m = m.replace(f'[[buffer({binding})]]', '[[buffer(0)]]')
+        ubos[0]['binding'] = 0
+    args = None
+    if any(int(x) >= 16 for x in re.findall(r'\[\[sampler\((\d+)\)\]\]', m)):
+        try: m, args = sampler_overflow(m, f'gl_{key}_{stage[0]}')
+        except ValueError as e: return str(e)
     # Varyings by name: the out struct of a vertex shader and the in struct of a fragment shader (stage_in members of a vertex shader are [[attribute(n)]])
     m = re.sub(r'(\b(\w+)\s+\[\[)user\(locn\d+\)', lambda x: f'{x.group(1)}user({x.group(2)})', m)
     m = re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', m)   # a NaN operand gives the other one, as on the Switch's GPU (vk_shaders.py PRECISE)
     open(msl, 'w').write(m)
-    f = []
+    f = [f's:{args[0]}:{args[1]:x}'] if args else []
     if stage == 'vert':
         for v in refl.get('inputs', []): f.append(f'a:{v["name"]}={v["location"]}:{v["type"]}')
     else:
         for v in refl.get('outputs', []): f.append(f'o:{v["name"]}={v["location"]}')
     # a bool uniform is a uint in the SPIR-V block (it has no bool members), but the game asks GL for its declared type: LÖVE's Shader:send takes only a boolean for a GLSL bool
     bools = {n for n in re.findall(r'\buniform\s+(?:(?:lowp|mediump|highp)\s+)?bool\s+(\w+)\s*;', pre)}
-    for u in refl.get('ubos', []):
+    for u in ubos:
         t = refl['types'][u['type']]
         if t['name'] != 'gl_DefaultUniformBlock':   # a named block: the buffer the game binds to its binding point (glUniformBlockBinding, glBindBufferRange)
             if u.get('array'): return f'uniform block {t["name"]}: arrays of blocks are not implemented'
@@ -196,7 +287,12 @@ def translate(src, stage, key, tmp):
         if e: return e
     for t in refl.get('textures', []):
         if t.get('array'): return f'sampler array {t["name"]}'
-        f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
+        if t['name'] in sampler_elements:
+            name, elem, count = sampler_elements[t['name']]
+            f.append(f't:{name}={t["binding"]}:{t["type"]}:{elem}:{count}')
+        else:
+            name = 'texture' if t['name'] == texture_alias else t['name']
+            f.append(f't:{name}={t["binding"]}:{t["type"]}')
     for k in ('separate_images', 'separate_samplers', 'images', 'ssbos', 'push_constants'):
         if refl.get(k): return f'{k} are not implemented'
     if any(int(x) > 15 for x in re.findall(r'\[\[(?:sampler|buffer)\((\d+)\)\]\]', m)): return 'a buffer or sampler slot above 15'
@@ -246,7 +342,7 @@ def main():
         for key, where, errs in failed:
             if not any(k == key for k, _ in seen): print(f'[RED] {where} ({key}) does not translate: {" / ".join(errs)}')
         tsv = ['# GL shaders (dm/gfx/tools/gl_shaders.py): key = sha256(GLSL source)[:16], Metal function gl_<key>_v / gl_<key>_f; a: vertex inputs, u: default uniform block members '
-               '(offset:type:count:stride), b: the block (slot:size), n: named blocks (name=slot:size), t: combined samplers (slot:type), o: fragment outputs',
+               '(offset:type:count:stride), b: the block (slot:size), n: named blocks (name=slot:size), t: combined samplers (slot:type), s: sampler argument buffer (buffer-slot:hex-slot-mask), o: fragment outputs',
                '# ' + ' '.join(subprocess.run(['glslangValidator', '--version'], capture_output=True, text=True).stdout.split()[:3]) + '; spirv-cross '
                + ' '.join((lambda r: r.stdout + r.stderr)(subprocess.run([SPIRV_CROSS, '--revision'], capture_output=True, text=True)).split())]
         tsv += [f'{k[0]}\t{v[0]}\t{" ".join(v[1])}\t{v[3]}' for k, v in sorted(seen.items())]

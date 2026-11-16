@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_pso_skey.h"
+#else
 #pragma once
 #include <stdint.h>
 #include <string.h>
@@ -77,3 +81,5 @@ static inline int pso_mesh_skey_parse(const char *hex, pso_skey *out) {
     memset(out->k.stream, 0, sizeof out->k.stream);
     return 0;
 }
+
+#endif

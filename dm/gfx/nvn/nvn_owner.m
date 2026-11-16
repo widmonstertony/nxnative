@@ -1,3 +1,5 @@
+#include <TargetConditionals.h>
+#if !((TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST))
 // The NVN resource owner: nvn_owner.h says what it holds, what a lookup returns and the lock order. Moved from nvn_mtl.m (the serial tables, the sharing table, the change
 // generation, retirement's eligibility).
 #import <Metal/Metal.h>
@@ -672,3 +674,5 @@ int own_check_locked(char *why, size_t n) {
     CFRelease(live); CFRelease(ghost);
     return ok;
 }
+
+#endif

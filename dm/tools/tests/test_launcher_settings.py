@@ -15,7 +15,7 @@ settings = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(settings)
 
 BOTW, WONDER = '01007EF00011E000', '010015100B514000'
-PERFORMANCE_NVN = ['DM_PRESENT_SNAP', 'DM_PSO_MTL4', 'DM_PSO_PREBUILD', 'DM_NVN_ENC_THREAD', 'DM_FPS_HOLD', 'DM_METAL_HUD']
+PERFORMANCE_NVN = ['DM_PRESENT_SNAP', 'DM_PSO_MTL4', 'DM_PSO_PREBUILD', 'DM_NVN_ENC_THREAD', 'DM_NVN_PREFETCH', 'DM_FPS_HOLD', 'DM_METAL_HUD']
 
 
 def build(gid, api, platform=None):
@@ -31,6 +31,20 @@ def rows_with_languages(listed):   # the settings rows, by variable, of a game w
 
 
 class LauncherSettingsTests(unittest.TestCase):
+    def test_derived_profile_reuses_builtin_desktop_controls(self):
+        import game
+        gid = '0400486024DEC000'
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / gid
+            directory.mkdir()
+            (directory / 'game.tsv').write_text('title_id\t' + gid + '\n')
+            profile = game.Game(directory)
+            self.assertEqual(profile.table('desktop.tsv'), ROOT / 'dm/games' / gid / 'desktop.tsv')
+            own = directory / 'desktop.tsv'
+            own.write_text('# custom controls\n')
+            self.assertEqual(profile.table('desktop.tsv'), own.resolve())
+            self.assertEqual(profile.table('shader_map.tsv'), directory.resolve() / 'shader_map.tsv')
+
     def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
         self.assertNotIn('DM_LANG', rows_with_languages(['ja']))   # one language: nothing to pick
         s = rows_with_languages(['en-US', 'ja'])['DM_LANG']
@@ -66,6 +80,32 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertNotIn('DM_FPS_HOLD', wonder)   # no frame step, as the Frame rate row
         self.assertIn('first start', botw['DM_PSO_PREBUILD']['note'])   # it runs once in the prepare step, before the first frame
 
+    def test_shader_prefetch_follows_the_profile_and_the_iphone_shows_it(self):
+        for api, gid in [('nvn', BOTW), ('vulkan', '0100535012974000'), ('', BOTW)]:
+            with self.subTest(api=api):
+                self.assertEqual('DM_NVN_PREFETCH' in build(gid, api), api == 'nvn')
+        self.assertEqual(build(BOTW, 'nvn')['DM_NVN_PREFETCH']['default'], '1')          # no key in the profile: on
+        self.assertEqual(build('01005CA01580E000', 'nvn')['DM_NVN_PREFETCH']['default'], '0')   # Persona 5 Royal: nvn_prefetch off
+        self.assertEqual(build(BOTW, 'nvn', 'mac')['DM_NVN_PREFETCH']['default'], '1')   # the Mac keeps the prefetch
+
+    def test_frame_rate_of_a_game_shown_every_display_tick(self):   # present_interval display without fps_target: 30 is the interval the game asks for
+        mt2, mhr, wonder = build('010051701FB46000', 'nvn'), build('0100B04011742000', 'nvn'), build(WONDER, 'nvn')
+        for s in (mt2['DM_PRESENT_INTERVAL'],):   # Monster Train 2
+            self.assertEqual((s['kind'], s['section'], s['default'], s['label']), ('choice', 'Game', 'display', 'Frame rate'))
+            self.assertEqual(s['options'], [['game', '30 fps'], ['display', '60 fps']])
+        self.assertNotIn('DM_FPS_TARGET', mt2)
+        self.assertEqual(('DM_FPS_TARGET' in mhr, 'DM_PRESENT_INTERVAL' in mhr), (True, False))   # Monster Hunter Rise: present_interval display with fps_target, one Frame rate row
+        self.assertFalse({'DM_FPS_TARGET', 'DM_PRESENT_INTERVAL'} & set(wonder))
+
+
+    def test_hdr_texture_downsample_is_for_games_that_decode_bc_on_the_cpu_on_the_iphone(self):   # DM_BC6H_RGB9E5, #544
+        totk = build('0100F2C0115B6000', 'nvn')   # tex_bc_cpu on in its profile
+        s = totk['DM_BC6H_RGB9E5']
+        self.assertEqual((s['kind'], s['section'], s['default'], s['label']), ('toggle', 'Performance', '0', 'Downsample HDR textures'))   # off: the tested decode stays
+        self.assertNotIn('DM_BC6H_RGB9E5', build('0100F2C0115B6000', 'nvn', 'mac'))   # a Mac GPU has BC support
+        self.assertNotIn('DM_BC6H_RGB9E5', build(BOTW, 'nvn'))   # no tex_bc_cpu in its profile
+        self.assertNotIn('DM_BC6H_RGB9E5', build('0100F2C0115B6000', 'vulkan'))
+
     def test_hold_frames_takes_on_and_off(self):   # the host reads DM_FPS_HOLD as on / off (hle_nvn.c), not 1 / 0
         s = build(BOTW, 'nvn')['DM_FPS_HOLD']
         self.assertEqual((s['on'], s['off'], s['default']), ('on', 'off', 'on'))
@@ -77,9 +117,18 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SW2'})   # the Mac window's Display mode (front_mac.m reads 1 or 0); Switch 2 controllers (pad_switch2_apple.m, wired on the Mac only)
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SW2', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
+        for key in ('DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY'):
+            self.assertEqual((mac[key]['kind'], mac[key]['default'], mac[key]['level']), ('toggle', '0', 'basic'))
         s = mac['DM_FULLSCREEN']
-        self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '0', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
+        self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '1', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
+
+    def test_desktop_rows_require_a_mac_keyboard_profile(self):
+        keys = {'DM_DESKTOP_CONTROLS', 'DM_MOUSE_LOOK', 'DM_MOUSE_SENSITIVITY', 'DM_MOUSE_INVERT_Y'}
+        gid = '0400486024DEC000'
+        self.assertTrue(keys.issubset(build(gid, 'nvn', 'mac')))
+        self.assertTrue(keys.isdisjoint(build(gid, 'nvn', 'ios')))
+        self.assertTrue(keys.isdisjoint(build(WONDER, 'nvn', 'mac')))
 
     def test_defaults_follow_each_platform_host(self):
         # nvn_mtl.m pso4_on: Mac defaults on, iOS follows the profile. nvn_rec.h rec_on: iOS on, Mac off.
@@ -131,7 +180,7 @@ class LauncherSettingsTests(unittest.TestCase):
                 self.assertIn(key, fields)
                 self.assertNotIn(key, schema['$defs']['setting']['required'], 'a meta field is optional')
                 self.assertRegex(docs, rf'- `{key}` \(optional\)')
-        self.assertEqual(schema['properties']['schema']['const'], settings.SCHEMA)
+        self.assertIn(settings.SCHEMA, schema['properties']['schema']['enum'])
 
     def test_written_lists_follow_the_schema(self):
         schema = json.loads((ROOT / 'docs/launcher.schema.json').read_text(encoding='utf-8'))

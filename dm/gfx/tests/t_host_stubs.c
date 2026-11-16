@@ -1,3 +1,4 @@
+#include <stddef.h>
 // What the tests that link (or #include) hle_nvn.c and hle_bigstack.c without the host need of it: weak definitions, so a test that defines its own keeps it. Every such test links this file, so a new host symbol is stubbed here once
 #include <stdint.h>
 __attribute__((weak)) uint64_t g_t0_ns;   // process start time (host main.c), read by hle_nvn's per-frame timing
@@ -7,3 +8,16 @@ int g_shape_w, g_shape_h; void front_picture_shape(int w, int h) { g_shape_w = w
 __attribute__((weak)) void dm_vi_layer_crop(int c[4]) { c[0] = c[1] = c[2] = c[3] = 0; }   // no vi layer crop (hle_vi.c), read by hle_nvn's present
 __attribute__((weak)) void dm_device_share(const void *p, uint64_t size, int share) { (void)p; (void)size; (void)share; }   // no SVC layer (hle_svc.c), told of each memory pool's storage by hle_nvn
 __attribute__((weak)) void dm_vi_frame_queued(uint64_t frame) { (void)frame; }   // no vi layer frame history (hle_vi.c), told of each present by hle_nvn
+
+__attribute__((weak)) void dm_cheats_present(void) {} // A graphics-only test has no cheat engine.
+
+#ifdef DM_NVN_LEGACY_RENDERER_TEST
+// GL is optional and not linked into these NVN-only test executables.
+__attribute__((weak)) void *gl_host_texture_2d(uint32_t name, void *desc) { (void)name; (void)desc; return NULL; }
+__attribute__((weak)) void *gl_host_export_nvn_fence(uint64_t serial) { (void)serial; return NULL; }
+__attribute__((weak)) void *gl_host_export_gl_fence(uint64_t serial) { (void)serial; return NULL; }
+__attribute__((weak)) int gl_host_get_fence(void *handle, uint64_t *serial, int *nvn) { (void)handle; (void)serial; (void)nvn; return 0; }
+__attribute__((weak)) int gl_host_wait_fence(uint64_t serial, uint64_t timeout) { (void)serial; (void)timeout; return 0; }
+#endif
+// The runtime profile the NVN layer reads (dm_profile in hle_profile.c): no DM_PROFILE in a test, so these are the compiled game_profile.h values
+#include "../../host/hle_profile.c"

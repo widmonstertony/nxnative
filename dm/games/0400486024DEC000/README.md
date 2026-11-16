@@ -30,6 +30,9 @@ One [NUP container](../../../docs/development.md#the-packing-script-in-detail) o
 
 ## Frame rate
 
+- The Mac launcher offers **Uncapped** when the rewritten frame ratio supports elapsed time. Gameplay has no host present interval. The ratio consumes the elapsed microseconds between presents, scaled by the game's own base rate. The host keeps the movie period and limits a single simulation step to 100 ms after a long stall.
+- In windowless 1.1.1 tests on an M5 Max with the same copied save, the bedroom rendered 98.63 fps through walking and camera input and 99.49 fps in the following steady interval. The two stable clock samples after the turn were 6.004 game seconds in 6.003 real seconds and 5.990 in 5.990. A 697.5 ms frame during the route triggered the long-step limit. The test did not measure physical display refresh.
+
 Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk.sh` in the work folder).
 
 - Current on an M5 Pro MacBook Pro (16-inch, 20-core GPU, 24 GB, macOS 27.2, 2026-11-09), `kokiri-deck` from a deck autosave with the full library of chain `dedc9391c30b`, at full resolution (Dynamic resolution off), two runs a variant: in a window a locked 60 fps (59.8–60.0, frame p99 16.8–19.4 ms, GPU p50 10.2 ms). In fullscreen on its ProMotion screen it held 40 fps (39.6–40.1) at the same GPU time, with every present a 120 Hz refresh late and every other link tick skipped: [The 60 Hz link at 40 fps in fullscreen on a ProMotion screen](../../../docs/reference/frame-rate.md#the-60-hz-link-at-40-fps-in-fullscreen-on-a-promotion-screen). With the 120 Hz link there, 58.8–59.6 fps, frame p99 25.3 ms; with the screen held at its fixed 60 Hz mode, 60.0 fps, frame p99 16.9 ms, which fullscreen now switches to. MetalFX present upscaling to the 3456-wide fullscreen cost no measurable GPU time (59.4–59.7 fps). Resident about 10 GB, GPU allocated 11.2–11.4 GB; the prepare step took 7.3 s on a first start.

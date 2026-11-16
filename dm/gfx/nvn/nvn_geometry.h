@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_geometry.h"
+#else
 // Primitive assembly for geometry compute. Values are capture-record indices;
 // restart separates runs before strips/fans are assembled. No game-specific state.
 #pragma once
@@ -111,3 +115,5 @@ typedef struct { uint64_t dst, pad; uint32_t info[4]; uint32_t stride; int16_t s
 _Static_assert(__builtin_offsetof(nvn_geo_capture, info) == 16 && __builtin_offsetof(nvn_geo_capture, stride) == 32 && __builtin_offsetof(nvn_geo_capture, slot) == 36, "dm_geometry_capture layout");
 // The job record geo_pack reads (host side): the counts / offsets buffer holds a word per group
 typedef struct { uint64_t src, dst, args; uint32_t groups, stride, topology, capacity; uint64_t cnt; } nvn_geo_pack_job;
+
+#endif

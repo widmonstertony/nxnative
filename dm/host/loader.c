@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)
+#include "loader_legacy.inc"
+#else
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
@@ -8,9 +12,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <limits.h>
-#include <mach-o/getsect.h>
-#include <mach-o/ldsyms.h>
 #include "hle.h"
+#include "host_image.h"
 #if TARGET_OS_IPHONE
 #include <mach/mach.h>
 #endif
@@ -214,7 +217,7 @@ static uint64_t resolve_sym(module_t *m, const char *name) {
 static const hle_force_ent *g_force; static unsigned g_nforce; static unsigned *g_force_hits;
 static unsigned *g_fidx, g_fmask;   // name hash over the table: force_lookup runs for every named relocation, and each lookup used to strcmp its way through all 722 entries (the swhle table's scan is hashed the same way, hle.c)
 static void force_init(void) {
-    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
+    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(DM_HOST_IMAGE, "__DATA", "swforce", &sz);
     g_nforce = g_force ? (unsigned)(sz / sizeof *g_force) : 0;
     g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
     unsigned cap = 16; while (cap < g_nforce * 2) cap <<= 1;
@@ -229,6 +232,13 @@ static void force_init(void) {
             for (unsigned j = sym_hash(g_force[i].to) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask)
                 if (!strcmp(g_force[g_fidx[j] - 1].name, g_force[i].to)) die("forced alias %s: its target %s is itself taken over", g_force[i].name, g_force[i].to);
 }
+// Build-time contract check: validates the linked table without opening game files
+// or save data. The Mac builder runs this on the exact host it will package.
+void dm_validate_forced_takeovers(void) {
+    force_init();
+    LOG("forced takeover table: %u unique entries", g_nforce);
+}
+
 static void *force_lookup(const char *name) {
     if (!g_fmask) return NULL;
     for (unsigned j = sym_hash(name) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask) {
@@ -277,6 +287,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
+        else if (!strcmp(key, "FPS_REALTIME")) m->fps_realtime = v == 1;
         else if (!strcmp(key, "RENDER_SCALE")) m->render_scale_max = (uint32_t)v;
         else if (!strcmp(key, "STEP_MAX")) m->step_max = (uint32_t)v;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
@@ -320,19 +331,32 @@ static void read_layout(module_t *m, const char *dir) {
 // target, 0 = the game's own interval logic. The profile's fps_target, overridden by DM_FPS_TARGET (0, 30 or 60); the graphics layer decides the steps and paces presents
 // (hle_nvn.c fstep_tick)
 uint8_t *dm_fps_state;
+int dm_fps_realtime;
+static int g_fps_has_realtime;
 int dm_fps_step_max;   // the largest step the stubs give the game (STEP_MAX in its fixups table; 0 = FSTEP_MAX): the frame step holds frames and pays back within it (hle_nvn.c)
 static const char *g_fps_mod;   // the module holding the state page (for the log)
 static float g_render_scale_max = 1.0f;   // the render-scale stub's largest scale (RENDER_SCALE in its fixups table; 1 for a stub that only lowers the game's size)
 static void install_fps_state(module_t *m) {
-    if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
+    uint64_t needed = m->fps_realtime ? 0xb0 : 0x40;
+    if (m->fps_state_off + needed > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
     dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name; dm_fps_step_max = (int)m->step_max;
+    g_fps_has_realtime = m->fps_realtime;
     if (m->render_scale_max > 1) g_render_scale_max = (float)m->render_scale_max;
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
 void dm_fps_state_apply(void) {
     if (!dm_fps_state) return;
-    const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
+    const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : dm_profile()->fps_target;
+    if (e && !strcmp(e, "uncapped")) {
+        dm_fps_realtime = TARGET_OS_OSX && g_fps_has_realtime;
+        t = dm_fps_realtime ? 0 : dm_profile()->fps_target;
+        if (dm_fps_realtime) {
+            uint32_t first_step_us = 16667;
+            memcpy(dm_fps_state + 0xa0, &first_step_us, sizeof first_step_us);
+            setenv("DM_PRESENT_LINK", "0", 0);
+        } else LOG("[RED] %s: this build has no real-time frame ratio, keeping the profile's frame rate", g_fps_mod);
+    }
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
     // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880, Hades II's render size): 1.0 keeps the game's own size
@@ -383,7 +407,7 @@ void dm_fps_state_apply(void) {
         }
     }
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
-    LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
+    LOG("%s: frame step %s%s (%s)", g_fps_mod, dm_fps_realtime ? "from elapsed time, gameplay uncapped" : !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }
 static void install_key_page(module_t *m) {
     if (m->key_page_off + m->key_page_size > m->size) die("%s: key page out of range", m->name);
@@ -759,8 +783,13 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
 }
 // The image the module sections are read from (front.h dm_set_game_image_header). getsectiondata takes any loaded image's header and applies its slide
 #include "front.h"
-static const struct mach_header_64 *g_game_image = &_mh_execute_header;
-void dm_set_game_image_header(const void *mh) { g_game_image = mh; }
+static const struct mach_header_64 *g_game_image = DM_HOST_IMAGE;
+int dm_set_game_image_header(const void *mh) {
+    const struct mach_header_64 *image = mh;
+    if (!image || image->magic != MH_MAGIC_64 || image->cputype != CPU_TYPE_ARM64) return 0;
+    g_game_image = image;
+    return 1;
+}
 #define IMAGE_MH g_game_image
 // The NRO modules (loader.c "NRO modules") are packed instead of getting sections of their own: a Mach-O file has at most 255 sections, and Super Smash Bros. Ultimate's 98 NROs would
 // take 294. gen_embed.py puts their pieces one after another, each 16K aligned, in __TEXT,__dm_nro_x0 / __DM_NRO_W,__img / __TEXT,__dm_nro_x1, and __DATA,__dm_nro_tab lists them:
@@ -862,6 +891,24 @@ static void map_image(module_t *m, const char *dir) {
 }
 #endif
 
+#include "resolution_levels.h"
+static void apply_resolution_levels(module_t *m, const char *dir) {
+    if (m->nro || strcmp(m->name, "main") || m->patch_off <= 0) return;
+    FILE *f = dm_resolution_contract_open(dir, getenv("DM_RESOLUTION_LEVELS_PATH"),
+                                          getenv("DM_ROMFS"));
+    if (!f) return;
+    dm_resolution_result result;
+    int status = dm_resolution_levels(f, m->build_id, m->base, m->size,
+        (m->text_end + 0x3FFF) & ~0x3FFFull, m->patch_off,
+        getenv("DM_WINDOW_SIZE"), &result);
+    fclose(f);
+    if (status == 1)
+        LOG("resolution: scene cap %ux%u, %u dynamic lists lowered; original target sizes retained", result.width, result.height, result.changed);
+    else if (status < 0)
+        LOG("[RED] resolution cap rejected: %s; game data unchanged", result.reason);
+    else LOG("resolution cap not applied: %s", result.reason);
+}
+
 static char g_module_dir[1024];   // the folder the modules were loaded from (dm_module_dir)
 const char *dm_module_dir(void) { return g_module_dir; }
 
@@ -882,6 +929,7 @@ void load_modules(const char *dir, const char **names, int n) {
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
         t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute; from here on the loader only writes data
+        apply_resolution_levels(m, dir);
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
         t = now_ns(); register_gates(m, dir); tg += now_ns() - t;
@@ -908,3 +956,5 @@ void run_module_inits(void) {
         ((void (*)(void))(m->base + m->init))();
     }
 }
+
+#endif

@@ -303,6 +303,20 @@ def romfs_nro_imports(romfs):   # the names the loose NROs in a RomFS import (th
     return out
 
 
+def gfpak_uses_oodle(path):
+    """Read only the GFPAK header and entry table, without decoding payloads."""
+    with open(path, 'rb') as f:
+        head = f.read(0x38)
+        if head[:8] != b'GFLXPACK': return False
+        if len(head) != 0x38 or head[8:12] != b'\0\x10\0\0':
+            raise ValueError(f'{path}: unsupported or truncated GFPAK header')
+        count, = struct.unpack_from('<I', head, 0x10)
+        offset, = struct.unpack_from('<Q', head, 0x18)
+        if offset < 0x38 or offset + count * 0x18 > Path(path).stat().st_size:
+            raise ValueError(f'{path}: GFPAK entry table is outside the archive')
+        f.seek(offset)
+        return any(struct.unpack('<H', f.read(0x18)[2:4])[0] == 3 for _ in range(count))
+
 UE3_TAG = bytes.fromhex('c1832a9e')   # an Unreal package's tag (shader_split.py ue3_package)
 
 
@@ -345,15 +359,7 @@ def build_sources(exefs, romfs, modules):
                     h = f.read(0x20)
                     if h[:4] == b'pkzl':
                         cnt, eo, nl = struct.unpack_from('<III', h, 0x10); f.seek(eo + 0x20 * cnt); oodle_pkz += b'OodleKraken\0' in f.read(nl)
-    oodle_gfpak = 0   # Game Freak GFPAK archives with an Oodle Kraken entry (compression 3: Pokémon Legends: Arceus; Pokémon Sword's are LZ4): decoded with the game's own decoder
-    for d, _, names in os.walk(romfs):
-        for n in names:
-            if n.endswith('.gfpak'):
-                with open(os.path.join(d, n), 'rb') as f:
-                    h = f.read(0x20)
-                    if h[:8] == b'GFLXPACK':
-                        cnt, _, tab = struct.unpack_from('<IIQ', h, 0x10); f.seek(tab); t = f.read(0x18 * cnt)   # the file table: 0x18 bytes per file, u16 compression at +2 (shader_split.py gfpak_members)
-                        oodle_gfpak += any(struct.unpack_from('<H', t, 0x18 * i + 2)[0] == 3 for i in range(len(t) // 0x18))
+    oodle_gfpak = sum(gfpak_uses_oodle(Path(d,n)) for d,_,names in os.walk(romfs) for n in names if n.endswith('.gfpak'))
     oodle_ue3 = 0   # Unreal Engine 3 packages (shader_split.py ue3_package) whose first compressed block, found within the first 4 KB, is an Oodle one (8C; Batman: Arkham Knight): decoded with the game's own decoder
     for d, _, names in os.walk(romfs):
         for n in names:

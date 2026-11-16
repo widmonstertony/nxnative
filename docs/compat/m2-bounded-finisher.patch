@@ -1,0 +1,26 @@
+--- a/compile_bounded.py
++++ b/compile_bounded.py
+@@ -106,6 +106,23 @@
+  batch_headroom=256<<20
+  assert shutil.disk_usage(D).free>=reserve+batch_headroom
+  a.batch=64
++ # Enable only the byte-identical, isolated legacy finisher benchmark.
++ proof=D.parent/'queued-shaders-internal-20261104/m2-parallel-finisher-check-220814/verified.json'
++ if proof.is_file() and shutil.disk_usage(D).free >= (36<<30)+(512<<20):
++  verified=json.loads(proof.read_text())
++  assert verified['keys']==12 and verified['equal_files']==53 and verified['production_not_restarted']
++  assert verified['elapsed']['2'] < verified['elapsed']['1']
++  a.finish_workers=2
++  a.batch=256
++  batch_headroom=512<<20
++  four=D.parent/'queued-shaders-internal-20261104/m2-four-finisher-check-223435/verified.json'
++  if four.is_file() and shutil.disk_usage(D).free >= (38<<30)+(768<<20):
++   verified_four=json.loads(four.read_text())
++   assert verified_four['keys']==12 and verified_four['equal_files']==53 and verified_four['production_not_restarted']
++   assert verified_four['elapsed']['4'] < verified_four['elapsed']['1']
++   a.finish_workers=4
++   a.batch=512
++   batch_headroom=768<<20
+ SRC=Path(c['source'])
+ script=SRC/'dm/gfx/tools/dmsh_build.py';source=script.read_text()
+ for k,v in c['environment'].items():os.environ[k]=v

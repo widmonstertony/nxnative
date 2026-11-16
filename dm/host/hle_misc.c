@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)
+#include "hle_misc_legacy.inc"
+#else
 // Miscellaneous service layer: add-on content / shop / error applet / profanity filter / server name resolution / parental controls / software keyboard.
 // On the real device each goes through IPC or a system applet; the host gives results as single-player offline. Pure-computation SDK parts (hash, util, software Opus) are not taken over, the original implementation is used directly.
 #include "hle.h"
@@ -320,3 +324,5 @@ HLE_FORCE("_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEP
           Result, h_chat_RemoteNext, void *sync, void *type, int i, void *sync2, const void *id) { (void)sync; (void)type; (void)i; (void)sync2; (void)id; return RES_FAIL; }
 HLE_FORCE("_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", "GameChat full-screen section begun: no chat to tell", Result, h_chat_FullBegin, unsigned on) { (void)on; return RES_OK; }
 HLE_FORCE("_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", "GameChat full-screen section ended", void, h_chat_FullEnd, void) {}
+
+#endif

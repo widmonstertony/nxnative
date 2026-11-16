@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)
+#include "hle_uecvar_legacy.inc"
+#else
 // Unreal console variables found by their registered names, and the texture streaming pool the profile's ue_texture_pool raises.
 // The rewriter finds each TAutoConsoleVariable the host may write in main (dm/tools/ue_cvar.py: its static constructor's registration, in any Unreal 4 / 5 build) and names it in main's
 // fixups (UE_CVAR:<name>); the object holds at +0x10 the pointer to the variable's value, the game thread's copy, then the render thread's. Called on every present (hle_nvn.c)
@@ -24,8 +28,8 @@ void dm_ue_cvar_tick(void) {
     if (state < 0) {
         state = 0;
         const char *e = getenv("DM_UE_TEXTURE_POOL");
-        target = e ? atoi(e) : TARGET_OS_IPHONE ? 0 : DM_GAME_UE_TEXTURE_POOL; src = e ? "DM_UE_TEXTURE_POOL" : "game profile ue_texture_pool";
-        if (target <= 0) { if (DM_GAME_UE_TEXTURE_POOL) LOG("main: Unreal r.Streaming.PoolSize left as the game sets it (%s)", e ? src : "iOS without DM_UE_TEXTURE_POOL"); return; }
+        target = e ? atoi(e) : TARGET_OS_IPHONE ? 0 : dm_profile()->ue_texture_pool; src = e ? "DM_UE_TEXTURE_POOL" : "game profile ue_texture_pool";
+        if (target <= 0) { if (dm_profile()->ue_texture_pool) LOG("main: Unreal r.Streaming.PoolSize left as the game sets it (%s)", e ? src : "iOS without DM_UE_TEXTURE_POOL"); return; }
         obj_off = dm_ue_cvar("r.Streaming.PoolSize");
         if (!obj_off) { LOG("[RED] main: Unreal r.Streaming.PoolSize not found in main by the rewriter (ue_cvar.py; %s %d MB not applied)", src, target); return; }
         LOG("main: Unreal r.Streaming.PoolSize at main+%#llx, raised to %d MB (%s)", (unsigned long long)obj_off, target, src);
@@ -42,3 +46,5 @@ void dm_ue_cvar_tick(void) {
         if (nlog < 8) { nlog++; LOG("main: Unreal r.Streaming.PoolSize (%s thread) %d → %d MB (%s)", c ? "render" : "game", cur, target, src); }
     }
 }
+
+#endif

@@ -73,6 +73,9 @@ typedef struct { const char *name; void *fn; const char *why; const char *to; } 
 #define HLE_FORCE_ALIAS_(mangled, target, why, n) HLE_FORCE_ALIAS__(mangled, target, why, n)
 #define HLE_FORCE_ALIAS__(mangled, target, why, n) \
     __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_alias_##n = {mangled, NULL, why, target}
+// Classic units used the explicit big-stack spelling before it became the default.
+#define HLE_FORCE_BIG HLE_FORCE
+
 // Programs that do not link hle_bigstack.c (unit tests, whose stacks are host stacks) get this pass-through: the implementation runs on the caller's stack, as dm.h's weak dm_log
 // writes there. The host's entry (hle_bigstack.c) replaces it at link time
 __attribute__((weak, naked, visibility("hidden"))) void dm_bigstack_enter(void) { __asm__ volatile("br x16"); }
@@ -83,13 +86,14 @@ void *dm_bigstack_caller(void *ra);
 __attribute__((weak, visibility("hidden"))) void *dm_bigstack_caller(void *ra) { return ra; }
 
 // Host service sessions (hle_sf.c): a request on a session the host serves, as its service sees it, and the answer it fills in. The input is the raw CMIF data after the "SFCI"
-// header; the buffers are the client's A (send), B (receive) and X (pointer) descriptors, read and written in place (one address space); the output is the raw data after "SFCO",
+// header; the buffers are the client's A (send), B (receive), X (send pointer) and C (receive pointer) descriptors, read and written in place (one address space); the output is the raw data after "SFCO",
 // zeroed beforehand. A service may copy one kernel handle to the client (an event's read end) and move one (a new session: an out object outside a domain)
 typedef struct {
     unsigned cmd, object;                              // CMIF command; domain object (0 outside a domain)
     const uint8_t *in; size_t in_len;                  // raw input data
     uint32_t copy[4], move[4]; unsigned ncopy, nmove;  // handles the client sent
-    struct { uint8_t *p; uint64_t size; } a[4], b[4], x[4]; unsigned na, nb, nx;
+    const char *name;
+    struct { uint8_t *p; uint64_t size; } a[4], b[4], x[4], c[4]; unsigned na, nb, nx, nc;
     uint8_t out[0xc0]; size_t out_len;                 // raw output data (zeroed; out_len is how much of it the service wrote)
     uint32_t out_copy, out_move;                       // handles for the client (0: none)
     void *ctx;                                         // the session's own state (sf_session)
@@ -114,6 +118,7 @@ static inline void dm_applet_leave_(const char *const *name) { (void)name; dm_ap
 #define DM_APPLET(name) const char *const dm_applet_ __attribute__((cleanup(dm_applet_leave_))) = (name); dm_applet_enter(dm_applet_)
 // Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
 extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag (dm_movie_hz() != 0, written by the host at each present: Tears of the Kingdom's step stub caps its first, undecided steps by it), +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
+extern int dm_fps_realtime;     // the selected Mac mode uses state +0xa0 for step microseconds and +0xa8 for total consumed microseconds
 extern int dm_fps_step_max;   // loader.c: the largest step the frame step stubs give the game (patch_nso.py ctx.step_max; 0 = FSTEP_MAX)
 int dm_movie_hz(void);   // hle_movie.c: the picture rate of the movie playing (the fastest video decoder that handed out a picture in the last half second), 0 when none: the frame step follows it
 void dm_movie_picture(const void *dec, const char *lib, int64_t ts_ns, int unknown_hz);   // hle_movie.c: video decoder dec (nn::movie's or nn::codec's) handed out a picture of this time; unknown_hz: its rate while the times give none

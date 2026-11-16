@@ -111,7 +111,7 @@ static void run_case(const char *save, const char *name, int open_error, int wri
     fail_open = open_error; fail_write = write_error; fail_close = close_error; fail_rename = rename_error;
     cleanup_errno = EBUSY; // Cleanup must not replace the original diagnostic.
     closes = renames = unlinks = 0; metadata_fd = -1; metadata = NULL; diagnostic[0] = 0;
-    write_base(save, new_hash);
+    write_base_at(save, "", new_hash);
     CHECK(closes == !open_error, "every opened stream is closed exactly once");
     if (!open_error) CHECK(fcntl(metadata_fd, F_GETFD) == -1 && errno == EBADF, "file descriptor is closed");
     CHECK(renames == !(open_error || write_error || close_error), "rename only follows successful write and close");
@@ -123,7 +123,7 @@ static void run_case(const char *save, const char *name, int open_error, int wri
     CHECK(access(temp, F_OK) == -1 && errno == ENOENT, "no temporary file remains");
     // Keep the failing implementation's leaked stream from affecting later cases.
     if (metadata) { fclose(metadata); metadata = NULL; }
-    read_base(save, hash);
+    read_base_at(save, "", hash);
     CHECK(!strcmp(hash, expected_errno ? old_hash : new_hash), "failed updates preserve previous metadata; success replaces it");
 }
 // Any file under dir whose contents start with text
@@ -280,6 +280,15 @@ static int holds_only(const char *dir, const char *keep) {
     if (d) closedir(d);
     return ok;
 }
+// The fork reserves a unique fetch name with mkstemp before starting the worker. A timed-out worker may own that empty reservation until its FIFO read finishes.
+static int holds_fetch_reservation(const char *dir) {
+    DIR *d=opendir(dir); struct dirent *e; int count=0,ok=d!=NULL;
+    while (d && (e=readdir(d))) if(e->d_name[0]!='.') {
+        char p[PATH_MAX]; struct stat st; snprintf(p,sizeof p,"%s/%s",dir,e->d_name);
+        ok &= !strncmp(e->d_name,"cloud.dmsync.fetch.",strlen("cloud.dmsync.fetch.")) && strlen(e->d_name)==strlen("cloud.dmsync.fetch.")+6 && !stat(p,&st) && S_ISREG(st.st_mode) && st.st_size==0; count++;
+    }
+    if(d)closedir(d); return ok && count==1;
+}
 static int file_is(const char *path, const char *text) {
     char b[64]; int fd = open(path, O_RDONLY); if (fd < 0) return 0;
     ssize_t n = read(fd, b, sizeof b - 1); close(fd);
@@ -296,7 +305,7 @@ static void fetch_cases(const char *folder) {
     CHECK(fetch_timed(src, dst, 2000) == 1 && file_is(dst, "newer") && holds_only(dir, "cloud.dmsync"), "a fetch in time: the file at its place, nothing else");
     test_unlink(dst);
     if (mkfifo(fifo, 0644)) abort();
-    CHECK(fetch_timed(fifo, dst, 100) == -1 && holds_only(dir, NULL), "a fetch that does not come in time: -1");
+    CHECK(fetch_timed(fifo, dst, 100) == -1 && holds_fetch_reservation(dir), "a fetch that does not come in time: -1");
     CHECK(fetch_timed(src, dst, 2000) == 1 && file_is(dst, "newer"), "the next attempt's fetch");
     int w = open(fifo, O_WRONLY); if (w < 0 || write(w, "older", 5) != 5) abort();
     close(w);   // the first fetch goes on now: it copies "older", finds itself dropped and removes its file

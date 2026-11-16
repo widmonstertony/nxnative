@@ -69,6 +69,8 @@ Game speed: the framework picks each frame's interval, 1 or 2 vsyncs, which the 
 
 The 0.977 window was the host holding frames 3 vsyncs while the stub stepped 2: the stub now declares its largest step, 2, and the host holds and pays back within it ([Frames held longer than the game's largest step](../../../docs/reference/frame-rate.md#frames-held-longer-than-the-games-largest-step)). On an M4 Max (issue [#1823](https://github.com/seedds/nxnative/issues/1823), 2026-11-11, the reporter's numbers) races ran at about 40 fps with the hold and 60 without it (`DM_FPS_HOLD=off`: 1,800 of 1,800 frames at hold 1 per window, 57.5–61 fps, game time 0.99–1.02, about 28% of frames late by a few ms), 6.6 ms of GPU time in the long frames: three near-miss frames in a row stepped to 30 about once a second. The hold now rises only when the frames also fall short of 60 on average ([Three late frames among frames on time raised the hold](../../../docs/reference/frame-rate.md#three-late-frames-among-frames-on-time-raised-the-hold)). The reporter's retest (2026-11-12, `8a5c5e7e`, 144 Hz screen) confirmed it: most windows at 1,800 / 0 / 0, game time 1.003–1.013. Five one-second dips to 30 were left, four of them just after a single long frame of 43–68 ms (693 first texture uploads; shader libraries and a hybrid pipeline; two with nothing listed). A stall now no longer counts toward that average ([A lone stall among near-misses raised the hold](../../../docs/reference/frame-rate.md#a-lone-stall-among-near-misses-raised-the-hold), resolved in `t_fstep` with the reporter's numbers; not retested on the M4 Max). Open: the stalls themselves. At two of the rises the logged cost was 0.42–0.48 vsyncs on the stall's own present, which suggests the time went to the acquire's wait rather than the game's work, if `[longframe]`'s frame numbers match the presents.
 
+On the M5 Max, two windowless v0 runs of Time Trials from copies of the same test save measured the actual HUD clock. The 60 FPS setting on Crown City recorded 8.533 game seconds in 8.549 wall seconds (0.998×), averaging 55.1 rendered fps during the timed segment. With the host's pacing and frame-step patch bypassed for diagnosis, the ice track recorded 12.326 game seconds in 8.523 wall seconds (1.446×), averaging 86.7 rendered fps. The tracks differed, so the driving distance is not comparable. The ratio closely follows rendered fps divided by 60. The original game advances its integer race clock at the faster frame cadence; this needs a simulation timing change before an uncapped setting can be offered.
+
 ## Terrain and movies
 
 The flat ground with blocky seams behind the title and the menu was terrain tiles the CPU wrote with no flush, read as zeros: [Uncompressed storage the CPU wrote, in a pool the GPU has not written](../../../docs/reference/nvn-objects.md#uncompressed-storage-the-cpu-wrote-in-a-pool-the-gpu-has-not-written). The title now shows real terrain, with hills, lawns and road edges.
@@ -138,3 +140,119 @@ Frame step (current): the framework's interval function is `main+0x69cbb0` on 1.
 - [A version without one of the profile's modules stops the host at boot](../../../docs/reference/packing.md#a-version-without-one-of-the-profiles-modules-stops-the-host-at-boot)
 - [The controller applet waits for players](../../../docs/reference/services.md#the-controller-applet-waits-for-players) (1.8.0, pull request #1596; GitHub issue #1640: the player screen closed when the second controller had not pressed yet)
 - 1.8.0, by pull request #1116: [The camera through the graphics system](../../../docs/reference/services.md#the-camera-through-the-graphics-system), [Layer HDR metadata](../../../docs/reference/services.md#layer-hdr-metadata), the SDK 21 forms in [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameChat at boot](../../../docs/reference/services.md#gamechat-at-boot)
+
+## TonTon iPad compatibility validation (2026-11-12)
+
+The latest verified baseline is M2 **60.96**, not the experimental 540p
+packages. It preserves the `b88c9e5f457c` libraries and adds the
+[explicit SDK graphics-tier queries](../../../docs/reference/services.md#an-explicit-graphics-tier-is-ignored-by-a-frozen-host).
+The actual Mario Bros. Circuit 50cc race used 1280x720 scene color/depth
+attachments, a 1920x1080 UI composite and MetalFX output at 2732x1536.
+Late race windows averaged **47.1–48.0 FPS**, frame p50 20.68–20.97 ms and
+GPU p50 18.23–18.24 ms, thermal state 0. A bounded three-second A hold moved
+the kart; no GPU command-buffer fault or crash occurred in the measured
+session. Audio windows through 154,000 callbacks reported no underrun.
+Cold pipeline stalls up to 3.22 seconds remain. Original save hashes matched
+after the isolated test. This is an improvement, not a 60 FPS race pass.
+
+Air **60.75** removes a shelf override that forced tier 0 after loading the
+per-game profile. Its installed configuration was read back with tier 2,
+native game timing and MetalFX retained. Actual Air race resolution and
+performance on that version still require gameplay validation.
+
+The **60.97** 540p experiment changed shared extent defaults and shrank the
+3D scene into a corner while leaving the HUD full size. It was rejected,
+replaced on M2, and never installed on Air. **60.98** preserved the layout
+defaults and probed the two current-extent stores. The race dump verified real
+960x540 color/depth, but the final copy retained a 960x540 viewport inside a
+1280x720 layout; that candidate was rejected too. **60.99** instead probes
+the computed dynamic scene dimensions, leaving every screen extent intact;
+it is pending device validation, not a released resolution patch. None of
+these candidates changes the shader chain or reuploads a game body. Fixed guest
+addresses are restricted to main build ID
+`9e244438c3d8ef1c703a6a85ef99c4f0`, with instruction and padding guards.
+
+The M2 iPadOS 16.1 test on TonTon 60.94 used the existing frozen
+`b88c9e5f457c` shader libraries and signed guest modules. A new isolated-save
+session reached the title, Single Player menus, Mushroom Cup selection and
+Mario Bros. Circuit; the large black silhouettes and the earlier GPU page
+fault did not recur in that session. This is not a 60 FPS pass: race windows
+measured frame medians of 26.70–28.14 ms, p95 55.71–94.86 ms, and average
+24.1 FPS in the last window, with cold pipeline compilation stalls up to
+5 seconds. The original save SHA-256 was unchanged after the test.
+
+The compatibility shelf read `DM_FRAME_LIMIT=game` from this title's
+configuration, then overwrote it with the global default `unlimited`.
+The new log explicitly reported uncapped presentation, and settled menu
+windows ran near 120 FPS before the device reached serious thermal state.
+The narrow [compatibility patch](../../../docs/compat/m2-library-frame-profile.patch)
+keeps an explicit per-game environment ahead of the shelf default; a saved
+per-title setting still applies afterward. It changes one menu object in the
+host, preserves all game frameworks and shader chains, and does not rebuild
+shaders. The same-team 60.95 host-only delta was installed in place; all ROM
+identities and original save hashes matched before and after installation.
+A fresh isolated-save session confirmed MetalFX spatial encoding from the
+1920x1080 final composite into the iPad's 2732x1536 viewport. This is evidence
+of actual scaler execution, not evidence that every scene intermediate is
+720p. With an explicit low graphics tier, native 60 Hz pacing and priority
+mapping (`DM_QOS_MAP=1`, `DM_QOS_EDGES=39,44`), settled menu windows measured
+59.4–60.0 FPS, frame p50 16.55–16.69 ms, and thermal state 0 instead of the
+previous uncapped menu's 120 FPS / thermal state 2. The cup movie played and the same
+50cc Mario Bros. Circuit race loaded without a GPU fault or crash; a bounded
+three-second A hold moved the kart. In the measured race windows the median
+was 22.44–23.56 ms, with GPU medians 18.48–20.35 ms; window averages ranged
+27.2–42.6 FPS because another first-use pipeline stall took 3.67 seconds.
+This improves the sampled result but still fails the approximately 60 FPS
+race target. Audio callback windows through 66,000 callbacks reported no
+underrun. Original save hashes matched again after the isolated session, and
+the shelf was reopened with temporary save/diagnostic overrides removed. The profile comparison changes multiple
+settings, so the individual contribution of priority mapping is not isolated. Air's separate buffered-present
+configuration also still needs a fresh user gameplay log; this iPad result is
+not an Air race pass.
+
+### M2 60.99 scene-only 540p candidate
+
+This candidate changes only the computed renderer-scale stores for main build
+`9e244438c3d8ef1c703a6a85ef99c4f0`, retaining the original layout/default and
+maximum extents. Pass dump F32060 in a Mario Bros. Circuit 50cc race shows
+960×540 color/depth scene attachments, full scene viewport and intact scene/HUD.
+The classic MetalFX path is active. A late race sample is 48 FPS at thermal
+level 2, so this is **not a 60 FPS performance pass**. Original saves were
+SHA-256 unchanged after the isolated test; no original body or shader-chain
+inputs changed. The candidate is installed only on M2, not Air.
+
+### Classic pacing source backport (November 12, 2026; deployment pending)
+
+The retained CPU controller now uses the upstream bounded-average lateness and
+clock-ramp recovery logic, and the classic caller passes the loaded stub's
+`STEP_MAX`. Modern and classic selections each pass 86 simulated timing checks.
+No shader ABI, chain or texture ownership layout changes. This is not part of
+the earlier 60.99 race result; a new device performance test is still required.
+
+### M2 60.101 warm-manifest control (November 13)
+
+An isolated-save run reached Mario Bros. Circuit with the full scene and HUD,
+960x540 scene attachments and active MetalFX. With the learned warm manifest
+disabled only for this diagnostic session, race windows measured 48–49 FPS,
+GPU median about 17.3 ms, frame p50 about 20.2 ms, thermal state 0 and no audio
+underrun. The prior warm-enabled run faulted near frame 176 / fence 813 in a
+128x128 pass using mesh `58d9378494e1def4` and fragment `3cc3501255bb2d74`.
+This is a useful negative control, not a root-cause fix or a 60 FPS pass. The
+persistent environment was restored and original save hashes were unchanged.
+No Air deployment or race pass is inferred from this M2 result.
+
+### M2 60.105 retained iPadOS 16.1 build (November 14)
+
+The in-place build reused the signed classic cartridge and its
+`b-b88c9e5f457c` shader chain. It checked the existing game image and
+module tables and sent only signed component changes. The original save
+hashes and configuration were unchanged after the isolated run.
+
+Mario Bros. Circuit loaded with an intact track and HUD at 50cc and the
+kart drove beyond the starting grid. Frame 21421 shows 960x540 color and
+depth attachments and a 960x540 scene viewport. The compositor still
+hands a 1920x1080 image to the active MetalFX spatial pass. Race windows
+averaged 46–50 FPS, with GPU medians around 17 ms at thermal state 0.
+The opening was visibly slower, and the race was not a stable 60 FPS.
+The learned warm manifest was disabled only for this diagnostic run;
+the shipped settings were restored. Air was not updated with this build.

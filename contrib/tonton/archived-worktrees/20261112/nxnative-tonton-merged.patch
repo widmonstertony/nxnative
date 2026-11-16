@@ -1,0 +1,921 @@
+diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
+index 63175ccc..ae8d893b 100644
+--- a/dm/gfx/nvn/hle_nvn.c
++++ b/dm/gfx/nvn/hle_nvn.c
+@@ -2249,21 +2249,21 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b)
+ }
+ NVN(nvnBufferFinalize, void, NVNbuffer *buf) { ((buf_t *)buf)->magic = 0; }
+ NVN(nvnBufferSetDebugLabel, void, NVNbuffer *buf, const char *s) { (void)buf; (void)s; }
+-NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *buf) { return (NVNbufferAddress)(BF(buf)->pool->mem + BF(buf)->off); }
++NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *buf) { return buf && BF(buf)->pool ? (NVNbufferAddress)(BF(buf)->pool->mem + BF(buf)->off) : 0; }
+ // A buffer or pool the CPU has no access to (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) maps to NULL, as in NVN, though the host's storage is CPU memory: EA SPORTS FC 27's Frostbite
+ // renderer takes a buffer's GPU address as GetAddress + (its data pointer − Map), with a null data pointer for such a buffer (OpcodeCopySubresource), so a real pointer made the
+ // copy's destination address 0 (FATAL buffer copy address is in no memory pool)
+-NVN(nvnBufferMap, void *, const NVNbuffer *buf) { return BF(buf)->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS ? NULL : BF(buf)->pool->mem + BF(buf)->off; }
+-NVN(nvnBufferGetSize, size_t, const NVNbuffer *buf) { return (size_t)BF(buf)->size; }
+-NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *buf) { return (NVNmemoryPool *)BF(buf)->pool; }
+-NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *buf) { return (ptrdiff_t)BF(buf)->off; }
++NVN(nvnBufferMap, void *, const NVNbuffer *buf) { return !buf || !BF(buf)->pool || (BF(buf)->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? NULL : BF(buf)->pool->mem + BF(buf)->off; }
++NVN(nvnBufferGetSize, size_t, const NVNbuffer *buf) { return buf ? (size_t)BF(buf)->size : 0; }
++NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *buf) { return buf ? (NVNmemoryPool *)BF(buf)->pool : NULL; }
++NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *buf) { return buf ? (ptrdiff_t)BF(buf)->off : 0; }
+ NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { (void)buf; (void)off; (void)n; }        // unified memory: nothing to flush
+ NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { (void)buf; (void)off; (void)n; }
+ 
+ // Memory pool queries
+-NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p) { return (NVNmemoryPoolFlags)((const pool_t *)p)->flags; }
+-NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p) { return ((const pool_t *)p)->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS ? NULL : ((const pool_t *)p)->mem; }   // NULL without CPU access (nvnBufferMap)
+-NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { return (size_t)((const pool_t *)p)->size; }
++NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p) { return p ? (NVNmemoryPoolFlags)((const pool_t *)p)->flags : 0; }
++NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p) { return !p || (((const pool_t *)p)->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? NULL : ((const pool_t *)p)->mem; }   // NULL without CPU access (nvnBufferMap)
++NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { return p ? (size_t)((const pool_t *)p)->size : 0; }
+ NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
+ NVN(nvnMemoryPoolSetDebugLabel, void, NVNmemoryPool *p, const char *s) { (void)p; (void)s; }
+ // Debug labels: only for NVN debugging tools, unused by the host
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index 47045cbd..ea0fb38f 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -3,6 +3,13 @@
+ #import <QuartzCore/CAMetalLayer.h>
+ #import <QuartzCore/CAMetalDisplayLink.h>
+ #import <MetalFX/MetalFX.h>
++// Xcode 26's headers do not declare these public macOS/iOS 27 setters. Calls remain under the OS 27 availability check below; this declaration only lets an older SDK build the host.
++@protocol DmTemporalScalerOffsets <NSObject>
++@property (nonatomic) NSUInteger colorContentOffsetX, colorContentOffsetY;
++@property (nonatomic) NSUInteger depthContentOffsetX, depthContentOffsetY;
++@property (nonatomic) NSUInteger motionContentOffsetX, motionContentOffsetY;
++@property (nonatomic) NSUInteger outputOffsetX, outputOffsetY;
++@end
+ #undef I   // MetalFX brings in <complex.h>, whose I (the imaginary unit) would shadow the local tables named I below
+ #import <ImageIO/ImageIO.h>
+ #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+@@ -1065,6 +1072,9 @@ static void up_owner_check(const char *where) {
+ static void treg_finish_submission(void);
+ 
+ static uint64_t g_sub_serial;   // Submission index (used by the parallel precompile's 'predict only once per submission')
++static id<MTLTexture> g_ndve_decoded;   // colour conversion and final movie scale must belong to the same submission
++static uint64_t g_ndve_sub;
++static const uint8_t *g_ndve_skip_end;
+ // The first submission: the prepare step (warm_start), before anything of it is encoded. No GPU work: the submit entry (hle_nvn.c) calls it outside the graphics gate
+ void mtl_prepare(void) {
+     if (!g_warm_started && prepare_on()) { mtl_init(); shmap_load(); }
+@@ -1073,6 +1083,7 @@ void mtl_prepare(void) {
+ static void gmem_commit_patch(void);   // the raw pool table words of the arguments encoded so far follow the pools (gmem_slot_note)
+ void mtl_sub_begin(void) {
+     mtl_init(); g_sub_serial++; g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
++    g_ndve_decoded = nil; g_ndve_skip_end = NULL;
+     sub_cut_begin();
+     defer_drain();
+     defer_reset();
+@@ -11920,7 +11931,7 @@ static int lc_keeps(uint32_t op) {
+     }
+ }
+ 
+-static void dispatch(const p_dispatch *dp);
++static void dispatch(const p_dispatch *dp, const uint8_t *next);
+ static int up_mfx_wanted(NvShader *cs); static int up_mfx_encode(NvShader *cs);   // a game's upscaler through MetalFX (see up_mfx_encode)
+ // ---------- Compute dispatches moved ahead of the render pass they would split (DM_NVN_CS_HOIST) ----------
+ // Metal cannot run a compute dispatch inside a render pass, so a dispatch between two draws of one pass ends it, and on a tile-based GPU every attachment is stored and loaded again:
+@@ -12044,7 +12055,7 @@ static void cs_hoist_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0)
+             if (csh_hit(wr, nwr, rd, nrd)) { g_csh_stop[3]++; break; }   // the draws before it read what it writes
+             if (g_csh_n >= CSH_MAX) { g_csh_stop[4]++; break; }
+             PD("H %llu dispatch %s moved ahead of the pass%s", g_stat_pass + 1, cs->key, depth ? " (samples the pass's depth, which no draw before it wrote)" : "");
+-            dispatch(dp); g_csh_op[g_csh_n++] = q; g_csh_moved++; g_csh_depth += depth; moved++;
++            dispatch(dp, NULL); g_csh_op[g_csh_n++] = q; g_csh_moved++; g_csh_depth += depth; moved++;
+             continue; }
+         if (hq.op == OP_TF_STATE) { g_csh_stop[5]++; break; }   // saves/restores counters in GPU memory
+         if (state_op(hq.op, aq)) continue;
+@@ -12521,7 +12532,100 @@ static int dispatch_own(void) {
+     args_dirty_all();
+     return e;
+ }
+-static void dispatch(const p_dispatch *dp) {
++
++// Ocarina's NDVE movie path converts NV12 to RGBA before reconstruction. The final
++// movie dispatch can scale that clean image directly into its normal output.
++static int ndve_direct_draw(NvShader *cs);
++static int ndve_scale(id<MTLTexture> in, id<MTLTexture> out, const tex_t *desc);
++static int ndve_direct_role(NvShader *cs) {
++    static int enabled = -1;
++    if (enabled < 0) {
++        const char *e = getenv("DM_NVN_NDVE_MOVIE_DIRECT");
++        enabled = e && !strcmp(e, "1");
++    }
++    if (!enabled) return 0;
++    if (!strcmp(cs->key, "49dff010b9832251_b")) return 1;
++    if (!strcmp(cs->key, "4f41ccf24f163e0d_b")) return 2;
++    return 0;
++}
++static id<MTLTexture> ndve_image(NvShader *cs, unsigned slot, uint64_t handle, tex_t *desc) {
++    int tid = (int)(handle & 0xfffff);
++    const nvn_rbind *binding = NULL;
++    for (int i = 0; i < cs->rf.nb; i++) {
++        if (cs->rf.b[i].kind == NVN_RB_IMG && cs->rf.b[i].reg == slot && cs->rf.b[i].rw) binding = &cs->rf.b[i];
++    }
++    if (!binding || !tid) return nil;
++    // The replacement writes image 1 as a render target. Requiring shader-write
++    // usage here refused the first frame and ran the whole reconstruction chain.
++    nvn_rbind intent = *binding;
++    if (slot == 1) { intent.rw = 0; intent.atom = 0; }
++    os_unfair_lock_lock(&g_rmu);
++    id<MTLTexture> result = nil;
++    if (tid < g_ntreg && g_treg[tid].ok && !g_treg[tid].gone) {
++        int real = 0;
++        uint64_t rid = 0;
++        result = img_binding(tid, &intent, &rid, &real);
++        if (!real) result = nil;
++        if (result && desc) *desc = g_treg[tid].t;
++    }
++    os_unfair_lock_unlock(&g_rmu);
++    if (result.textureType != MTLTextureType2D || result.pixelFormat != MTLPixelFormatRGBA8Unorm || result.sampleCount != 1) return nil;
++    return result;
++}
++// The observed 1080p movie has twelve reconstruction dispatches writing intermediates
++// for the final dispatch. Accept only that contiguous sequence, and encode the
++// replacement before dropping any dispatch. The loop still replays all bindings.
++static void ndve_direct_chain(const uint8_t *p) {
++    static const char *const keys[] = {
++        "ba079f68ae288dba_b", "a8b4fb48fee0ccf8_b", "e2eebd7ba18fe35f_b",
++        "e6be82d835fbe4d3_b", "9442573ee4ace011_b", "0a56002cdc7e1fce_b",
++        "0a56002cdc7e1fce_b", "d15370a382630d4e_b", "e6be82d835fbe4d3_b",
++        "7f7ff0f36b54d90f_b", "a8b4fb48fee0ccf8_b", "5a7d69b067a7f011_b",
++        "4f41ccf24f163e0d_b",
++    };
++    uint64_t dst = S.img[5][1];
++    NvShader *cs = nil;
++    unsigned index = 0;
++    for (int count = 0; count < 128; count++, p += ((const op_hdr *)p)->size) {
++        const op_hdr *h = (const op_hdr *)p;
++        const void *a = p + sizeof *h;
++        switch (h->op) {
++            case OP_BIND_PROGRAM: {
++                const p_bind_program *b = a;
++                if (b->stages != 0x20 || !b->prog) return;
++                cs = prog_get(b->prog)->sh[5];
++                break;
++            }
++            case OP_BIND_IMG: {
++                const p_bind_handles *b = a;
++                if (b->stage != 5 || b->defer || b->first < 0 || b->n <= 0 ||
++                    b->first >= 32 || b->n > 32 - b->first) return;
++                if (b->first <= 1 && b->first + b->n > 1) dst = b->h[1 - b->first];
++                break;
++            }
++            case OP_BIND_SSBO: case OP_BIND_UBO: case OP_BIND_UBO_SMALL:
++            case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP:
++            case OP_PUSH_CONST: case OP_BARRIER: break;
++            case OP_DISPATCH: {
++                const p_dispatch *d = a;
++                if (d->ind || d->x <= 0 || d->y <= 0 || d->z != 1 || !cs ||
++                    strcmp(cs->key, keys[index])) return;
++                if (++index != sizeof keys / sizeof keys[0]) break;
++                tex_t desc = {0};
++                id<MTLTexture> out = ndve_image(cs, 1, dst, &desc);
++                if (ndve_scale(g_ndve_decoded, out, &desc)) {
++                    g_ndve_decoded = nil;
++                    g_ndve_skip_end = p;
++                    static int once;
++                    if (!once++) MLOG("NDVE movie: skipped %u reconstruction dispatches", index - 1);
++                }
++                return;
++            }
++            default: return;
++        }
++    }
++}
++static void dispatch(const p_dispatch *dp, const uint8_t *next) {
+     zskip_clear();
+     g_wr_epoch++; g_mdx_epoch++;
+     if (!S.cprog) { RED_ONCE(27, "no program bound before the dispatch"); return; }
+@@ -12529,8 +12633,12 @@ static void dispatch(const p_dispatch *dp) {
+     void *ib = NULL; uint64_t io = 0, ig = 0;
+     if (dp->ind && !mtl_gpu_addr(dp->ind, 12, &ib, &io, &ig)) { RED_ONCE(94, "indirect dispatch skipped: argument address %#llx is in no memory pool", (unsigned long long)dp->ind); return; }
+     if (dp->ind) { static int once; if (!once++) MLOG("indirect dispatch: first time (the GPU reads the threadgroup counts from %#llx)", (unsigned long long)dp->ind); }
+-    NvShader *cs = prog_get(S.cprog)->sh[5];
++    NvProg *program = prog_get(S.cprog);
++    NvShader *cs = program->sh[5];
+     if (!cs) { RED_ONCE(28, "the dispatched program has no compute shader (or it is not mapped)"); return; }
++    int ndve = !dp->ind && dp->x && dp->y && dp->z == 1 ? ndve_direct_role(cs) : 0;
++    if (ndve == 1) g_ndve_decoded = nil;
++    if (ndve == 2 && g_ndve_sub == g_sub_serial && g_ndve_decoded && ndve_direct_draw(cs)) return;
+     const void *k = (__bridge const void *)cs;
+     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
+     if (!ps) {
+@@ -12565,7 +12673,7 @@ static void dispatch(const p_dispatch *dp) {
+     if (dp->ind || (dp->x && dp->y && dp->z)) for (int i = 0; i < cs->rf.nfirst; i++) { const p_bind_buf *u = &S.ssbo[5][cs->rf.first[i].reg]; if (u->addr) mtl_sub_fill(u->addr + 4ull * cs->rf.first[i].word, 4, cs->rf.first[i].value); }
+     if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
+     rp_flush();   // A full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does
+-    image_prepare(prog_get(S.cprog), 0x20);
++    image_prepare(program, 0x20);
+     if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx)
+     int own = dispatch_own();
+     if (own && g_blit) { enc_b_end(g_blit); g_blit = nil; }
+@@ -12587,6 +12695,11 @@ static void dispatch(const p_dispatch *dp) {
+         enc_c_dispatch_indirect(ce, ig, MTLSizeMake(tg[0], tg[1], tg[2]));
+     } else enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
+     if (own) enc_c_end(ce);
++    if (ndve == 1) {
++        g_ndve_decoded = ndve_image(cs, 0, S.img[5][0], NULL);
++        g_ndve_sub = g_sub_serial;
++        if (next && g_ndve_decoded && !g_csh_n) ndve_direct_chain(next);
++    }
+ }
+ // GPU: texture -> buffer (row stride taken from SetCopyRowStride, layer stride from SetCopyImageStride, 0 = tightly packed)
+ // A copy at a level the host texture lacks (more levels declared than its size holds, tex_desc) is skipped: Metal does not check the level of a blit
+@@ -12926,6 +13039,30 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
+                                                     linear && !depth ? " (bilinear)" : "", stencil ? (scopy ? " (depth + stencil)" : " (no stencil view possible, cleared to 0)") : ""); }
+     return 1;
+ }
++static int ndve_direct_draw(NvShader *cs) {
++    id<MTLTexture> in = g_ndve_decoded;
++    g_ndve_decoded = nil;
++    rp_flush();
++    image_prepare(prog_get(S.cprog), 0x20);
++    tex_t desc = {0};
++    id<MTLTexture> out = ndve_image(cs, 1, S.img[5][1], &desc);
++    return ndve_scale(in, out, &desc);
++}
++static int ndve_scale(id<MTLTexture> in, id<MTLTexture> out, const tex_t *desc) {
++    if (in.width != 1920 || in.height != 1080 || out.width != 2560 || out.height != 1440 ||
++        !(out.usage & MTLTextureUsageRenderTarget)) return 0;
++    zskip_del(desc->serial);
++    sparse_gpu_wrote(desc);
++    mtl_tex_gpu_written(desc);
++    rp_end();
++    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
++    ubd_land_compute();
++    const NVNcopyRegion src = {0, 0, 0, 1920, 1080, 1}, dst = {0, 0, 0, 2560, 1440, 1};
++    if (!copy_t2t_draw(in, out, 0, 0, 0, 0, &src, &dst, 1, 0)) return 0;
++    static int once;
++    if (!once++) MLOG("NDVE movie: scaling the decoded RGBA frame directly from 1920x1080 to 2560x1440");
++    return 1;
++}
+ // nvnCommandBufferDrawTexture: the source region of a texture (texels, through the handle's sampler) drawn into the destination region of each bound colour target (pixels in the window's
+ // coordinates, which are the targets' own rows in either window origin, since the host keeps the Switch's memory layout). Streets of Rage 4 draws each movie frame (the intro, the
+ // title's flames) into its 1920x1080 scene target this way, from a second texture pool; without it the screen stayed black. The handle's IDs are the host table's (moved to the
+@@ -13226,10 +13363,11 @@ static void dlss_eval(const p_dlss *c) {
+         sc.colorTexture = col; sc.depthTexture = dep; sc.motionTexture = mot; sc.outputTexture = out; sc.exposureTexture = expo;
+         sc.inputContentWidth = iw; sc.inputContentHeight = ih;
+         if (@available(macOS 27.0, iOS 27.0, *)) {   // the rectangles' corners: all at the origin on the game seen, so an older system loses nothing there
+-            sc.colorContentOffsetX = (NSUInteger)a.base[DLSS_COLOR][0]; sc.colorContentOffsetY = (NSUInteger)a.base[DLSS_COLOR][1];
+-            sc.depthContentOffsetX = (NSUInteger)a.base[DLSS_DEPTH][0]; sc.depthContentOffsetY = (NSUInteger)a.base[DLSS_DEPTH][1];
+-            sc.motionContentOffsetX = (NSUInteger)a.base[DLSS_MOTION][0]; sc.motionContentOffsetY = (NSUInteger)a.base[DLSS_MOTION][1];
+-            sc.outputOffsetX = (NSUInteger)a.base[DLSS_OUTPUT][0]; sc.outputOffsetY = (NSUInteger)a.base[DLSS_OUTPUT][1];
++            id<DmTemporalScalerOffsets> offsets = (id)sc;
++            offsets.colorContentOffsetX = (NSUInteger)a.base[DLSS_COLOR][0]; offsets.colorContentOffsetY = (NSUInteger)a.base[DLSS_COLOR][1];
++            offsets.depthContentOffsetX = (NSUInteger)a.base[DLSS_DEPTH][0]; offsets.depthContentOffsetY = (NSUInteger)a.base[DLSS_DEPTH][1];
++            offsets.motionContentOffsetX = (NSUInteger)a.base[DLSS_MOTION][0]; offsets.motionContentOffsetY = (NSUInteger)a.base[DLSS_MOTION][1];
++            offsets.outputOffsetX = (NSUInteger)a.base[DLSS_OUTPUT][0]; offsets.outputOffsetY = (NSUInteger)a.base[DLSS_OUTPUT][1];
+         }
+         sc.motionVectorScaleX = a.mv[0]; sc.motionVectorScaleY = a.mv[1];
+         sc.jitterOffsetX = a.jitter[0]; sc.jitterOffsetY = a.jitter[1];
+@@ -13675,8 +13813,13 @@ void mtl_exec(const uint8_t *p) {
+             case OP_DRAW_TEX: draw_tex(a); break;
+             case OP_CLEAR_TEX: clear_tex(a); break;
+             case OP_DLSS: dlss_eval(a); break;
+-            case OP_DISPATCH: if (g_csh_n && csh_take(p)) { PD("H %llu dispatch already run ahead of the pass", g_stat_pass); break; }
+-                dispatch(a); break;
++            case OP_DISPATCH:
++                if (__builtin_expect(g_ndve_skip_end != NULL, 0)) {
++                    if (p == g_ndve_skip_end) g_ndve_skip_end = NULL;
++                    break;
++                }
++                if (g_csh_n && csh_take(p)) { PD("H %llu dispatch already run ahead of the pass", g_stat_pass); break; }
++                dispatch(a, p + h.size); break;
+             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4);   // ordered at the next draw pass (barrier_game); inside a pass with shader writes, the pass ends first (swrite_note); in one without, before its next write (prog_swrites)
+                 int order = g_enc && (bits & (NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT)), split = order && g_pass_swrite;
+                 PD("I %llu barrier bits %#x%s", g_stat_pass, bits, split ? ": ends the pass (shader writes)" : order ? " (render pass open; a later shader write is ordered after its draws)" : g_enc ? " (render pass open)" : "");
+diff --git a/dm/gfx/tests/Makefile b/dm/gfx/tests/Makefile
+index a78a1fcd..0c4ed254 100644
+--- a/dm/gfx/tests/Makefile
++++ b/dm/gfx/tests/Makefile
+@@ -449,6 +449,9 @@ check_t_image_alias: t_image_alias
+ # A game's upscaler drawn by MetalFX (any profile; the profile's upscaler shaders, from its shader map, when it has some); with and without the switch, and on the encoding thread
+ t_upscaler_mfx: t_upscaler_mfx.m $(MTL_T_DEP)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_upscaler_mfx.m $(MTL_T_SRC) $(FW)
++t_ndve_movie: t_ndve_movie.m $(MTL_T_DEP)
++	clang $(CFLAGS) -fobjc-arc -o $@ t_ndve_movie.m $(MTL_T_SRC) $(FW)
++check_t_ndve_movie: RUN_ENV = MTL_DEBUG_LAYER=1
+ .PHONY: check_t_upscaler_mfx
+ # (MetalFX's Metal 4 scaler stops under Metal validation on a barrier-stage setting of its own that has no public API, "_outputTextureBarrierStages not set": its run is without it)
+ check_t_upscaler_mfx: t_upscaler_mfx
+diff --git a/dm/gfx/tests/t_ndve_movie.m b/dm/gfx/tests/t_ndve_movie.m
+new file mode 100644
+index 00000000..fa4f5003
+--- /dev/null
++++ b/dm/gfx/tests/t_ndve_movie.m
+@@ -0,0 +1,132 @@
++// A clean 1080p movie texture reaches the bound 1440p output through the native copy.
++#include "../nvn/nvn_mtl.m"
++void *front_metal_layer(void) { return NULL; }
++module_t *module_of(const void *p) { (void)p; return NULL; }
++module_t *g_mod; int g_nmod;
++void svc_thread_dump(void) {}
++uint64_t now_ns(void) { return bp_now(); }
++
++static tex_t movie_texture(uint64_t serial, unsigned w, unsigned h, unsigned flags) {
++    tex_t t = {.magic = MAGIC('T','E','X',0), .serial = serial};
++    t.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA8,
++                       .width = w, .height = h, .depth = 1, .levels = 1, .samples = 1,
++                       .flags = flags};
++    nvn_tex_layout(&t.d, &t.L);
++    mtl_tex_init(&t);
++    return t;
++}
++
++typedef struct { uint8_t bytes[16384]; size_t n; } movie_chain;
++static uint8_t *emit(movie_chain *c, unsigned op, const void *a, size_t n) {
++    size_t size = (sizeof(op_hdr) + n + 7) & ~7ull;
++    assert(c->n + size <= sizeof c->bytes);
++    uint8_t *p = c->bytes + c->n;
++    op_hdr h = {op, (uint32_t)size}; memcpy(p, &h, sizeof h);
++    if (n) memcpy(p + sizeof h, a, n);
++    c->n += size; return p;
++}
++static void chain_checks(id<MTLTexture> decoded, NvShader *output_shader) {
++    static const char *const keys[] = {
++        "ba079f68ae288dba_b", "a8b4fb48fee0ccf8_b", "e2eebd7ba18fe35f_b",
++        "e6be82d835fbe4d3_b", "9442573ee4ace011_b", "0a56002cdc7e1fce_b",
++        "0a56002cdc7e1fce_b", "d15370a382630d4e_b", "e6be82d835fbe4d3_b",
++        "7f7ff0f36b54d90f_b", "a8b4fb48fee0ccf8_b", "5a7d69b067a7f011_b", "4f41ccf24f163e0d_b",
++    };
++    prog_t programs[13] = {0}; NvShader *shaders[13];
++    movie_chain chain = {0};
++    p_bind_handles dst = {.stage=5, .first=1, .n=1, .h={102}};
++    uint8_t *dst_op = emit(&chain, OP_BIND_IMG, &dst, sizeof dst);
++    uint8_t *dispatches[13];
++    for (unsigned i = 0; i < 13; i++) {
++        programs[i].serial = 900000 + i;
++        NvProg *p = [NvProg new];
++        shaders[i] = i == 12 ? output_shader : [NvShader new];
++        strlcpy(shaders[i]->key, keys[i], sizeof shaders[i]->key);
++        shaders[i]->stage = 5; p->sh[5] = shaders[i];
++        serial_put(programs[i].serial, p);
++        p_bind_program bind = {.prog=&programs[i], .stages=0x20};
++        emit(&chain, OP_BIND_PROGRAM, &bind, sizeof bind);
++        p_dispatch dispatch = {.x=1, .y=1, .z=1};
++        dispatches[i] = emit(&chain, OP_DISPATCH, &dispatch, sizeof dispatch);
++    }
++    emit(&chain, OP_END, NULL, 0);
++    mtl_sub_begin(); state_reset(); S.img[5][1] = 0;
++    g_ndve_decoded = decoded;
++    shaders[3]->key[0] = 'x'; ndve_direct_chain(chain.bytes);
++    assert(!g_ndve_skip_end && g_ndve_decoded == decoded);
++    shaders[3]->key[0] = keys[3][0];
++    p_dispatch *indirect = (void *)(dispatches[4] + sizeof(op_hdr));
++    indirect->ind = 1; ndve_direct_chain(chain.bytes);
++    assert(!g_ndve_skip_end && g_ndve_decoded == decoded); indirect->ind = 0;
++    p_bind_handles *image = (void *)(dst_op + sizeof(op_hdr));
++    image->h[0] = 0; ndve_direct_chain(chain.bytes);
++    assert(!g_ndve_skip_end && g_ndve_decoded == decoded); image->h[0] = 102;
++    ((op_hdr *)dst_op)->op = OP_COPY_B2B; ndve_direct_chain(chain.bytes);
++    assert(!g_ndve_skip_end && g_ndve_decoded == decoded); ((op_hdr *)dst_op)->op = OP_BIND_IMG;
++    ndve_direct_chain(chain.bytes);
++    assert(g_ndve_skip_end == dispatches[12] && !g_ndve_decoded);
++    uint64_t before = g_gp_disp;
++    mtl_exec(chain.bytes);
++    assert(!g_ndve_skip_end && g_gp_disp == before);
++    assert(S.cprog == &programs[12] && S.img[5][1] == 102);
++    assert(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error());
++    puts("NDVE chain: strict matching, rejected variants, skipped dispatches and preserved bindings passed");
++}
++
++int main(void) { @autoreleasepool {
++    mtl_init();
++    tex_t src = movie_texture(101, 1920, 1080, NVN_TEXTURE_FLAGS_IMAGE), dst = movie_texture(102, 2560, 1440, 0);
++    mtl_reg_image(101, &src, NULL);
++    mtl_reg_image(102, &dst, NULL);
++    id<MTLTexture> in = tex_mtl(&src), out = tex_mtl(&dst);
++    id<MTLCommandBuffer> clear = q_cb();
++    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
++    rp.colorAttachments[0].texture = in;
++    rp.colorAttachments[0].loadAction = MTLLoadActionClear;
++    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
++    rp.colorAttachments[0].clearColor = MTLClearColorMake(0.25, 0.5, 0.75, 1);
++    [[clear renderCommandEncoderWithDescriptor:rp] endEncoding];
++    [clear commit];
++    [clear waitUntilCompleted];
++    if (clear.error) return 1;
++
++    NvShader *convert = [NvShader new], *scale = [NvShader new];
++    convert->rf.nb = scale->rf.nb = 1;
++    convert->rf.b[0] = (nvn_rbind){.kind = NVN_RB_IMG, .reg = 0, .dtt = MTLTextureType2D, .dpf = NVN_DPF_FLOAT, .rw = 1};
++    scale->rf.b[0] = convert->rf.b[0];
++    scale->rf.b[0].reg = 1;
++    S.img[5][0] = 101;
++    S.img[5][1] = 102;
++    g_ndve_decoded = in;
++    mtl_sub_begin();
++    g_ndve_decoded = ndve_image(convert, 0, S.img[5][0], NULL);
++    tex_t output_desc = {0};
++    id<MTLTexture> target = ndve_image(scale, 1, S.img[5][1], &output_desc);
++    if (!target || (target.usage & MTLTextureUsageShaderWrite)) return 1;
++    if (!ndve_scale(g_ndve_decoded, target, &output_desc)) return 1;
++    g_ndve_decoded = nil;
++    if (!mtl_wait(mtl_sub_commit(), 5000000000ull) || mtl_last_commit_error()) return 1;
++
++    chain_checks(in, scale);
++
++    id<MTLBuffer> pixels = [g_dev newBufferWithLength:256 * 3 options:MTLResourceStorageModeShared];
++    id<MTLCommandBuffer> read = q_cb();
++    id<MTLBlitCommandEncoder> blit = [read blitCommandEncoder];
++    const MTLOrigin samples[] = {MTLOriginMake(0, 0, 0), MTLOriginMake(1280, 720, 0), MTLOriginMake(2559, 1439, 0)};
++    for (unsigned i = 0; i < 3; i++)
++        [blit copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:samples[i] sourceSize:MTLSizeMake(1, 1, 1)
++                     toBuffer:pixels destinationOffset:256 * i destinationBytesPerRow:256 destinationBytesPerImage:256];
++    [blit endEncoding];
++    [read commit];
++    [read waitUntilCompleted];
++    if (read.error) return 1;
++    for (unsigned i = 0; i < 3; i++) {
++        const uint8_t *rgba = (const uint8_t *)pixels.contents + 256 * i;
++        if (abs(rgba[0] - 64) > 1 || abs(rgba[1] - 128) > 1 || abs(rgba[2] - 191) > 1 || rgba[3] != 255) {
++            fprintf(stderr, "NDVE sample %u: %u %u %u %u\n", i, rgba[0], rgba[1], rgba[2], rgba[3]);
++            return 1;
++        }
++    }
++    puts("NDVE movie: render target without shader-write usage and three output samples passed");
++    return 0;
++} }
+diff --git a/dm/host/hle.h b/dm/host/hle.h
+index a28fee03..cf5e9a62 100644
+--- a/dm/host/hle.h
++++ b/dm/host/hle.h
+@@ -27,6 +27,8 @@ uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance
+ int dm_detclock_enabled(void);
+ void dm_guest_clock_advanced(void);
+ uint64_t dm_guest_frame(void);        // Incremented each time the host presents a frame; unaffected by machine load
++int dm_focus_now(void);               // The front end's focus state: 1 in focus, 2 out of focus, 3 minimized (hle_oe.c)
++uint64_t dm_focus_in_since(void);    // now_ns() at its most recent entry into focus (hle_oe.c)
+ void guest_clock_freeze(int on);
+ void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard); see hle_os.c
+ void guest_clock_read_wait(void);     // A guest read of the system counter: waits while the app is in the background (hle_os.c)
+diff --git a/dm/host/hle_codec_video.c b/dm/host/hle_codec_video.c
+index d9a4c070..50718c52 100644
+--- a/dm/host/hle_codec_video.c
++++ b/dm/host/hle_codec_video.c
+@@ -30,6 +30,7 @@
+ #define CV_READY 4                  // decoded pictures waiting for a released buffer at which the submission-ready event goes down
+ #define CV_HOLD 12                  // and at which packets are refused. Mario Tennis Fever's player sends one packet per signal and ignores the result (nro0+0xd16130), so a signal in flight when the
+                                     // event goes down must still find room: refused at 4, a packet about 6 s into the title movie was lost, and libvpx found every frame after it corrupt
++#define CV_BURST 8                  // pictures past CV_HOLD a packet may add: dav1d's frame threads finish several frames together (packets are still refused at CV_HOLD)
+ #define CV_EVENT_OFF 0x100          // the submission-ready SystemEventType inside the decoder type
+ #define CV_R(desc) ((Result)(0x6f | ((desc) << 9)))   // nn::codec results (module 111)
+ #define CV_BUSY CV_R(3603)          // the decoder cannot take the packet now
+@@ -47,8 +48,11 @@ typedef struct {
+     struct { cv_pool *pool; uint32_t pidx; int reg, filled; uint32_t gen, filled_gen; uint16_t w, h; int64_t ts; uint8_t eos; } buf[CV_BUFS];
+     uint32_t fifo[8], fhead, fcount;          // acquirable indices
+     uint32_t pend[CV_BUFS], phead, pcount;    // released, waiting for a picture
+-    vpx_image_t *held[CV_HOLD]; int64_t held_ts[CV_HOLD]; uint8_t held_eos[CV_HOLD]; int nheld;
++    pthread_mutex_t dmu;   // AV1's decode, outside mu (lock order: dmu, then mu)
++    vpx_image_t *held[CV_HOLD + CV_BURST]; int64_t held_ts[CV_HOLD + CV_BURST]; uint8_t held_eos[CV_HOLD + CV_BURST]; int nheld;
+     int eos_pending;
++    int clk_on, catching; int64_t clk_ts0, clk_last; double clk_t0; uint64_t skipped, restarts, catchups;   // AV1's movie clock (cv_skip_late): a picture's timestamp against the guest clock
++    uint64_t take_frame, take_wall;   // the presented-frame count and now_ns() when the game last took a picture (cv_pause)
+ } cv_dec;
+ 
+ static cv_dec *g_cv[16];
+@@ -99,6 +103,48 @@ static void pool_native_write(cv_pool *p, uint32_t i, const vpx_image_t *im) {
+     for (uint32_t y = 0; y < p->h; y++) memcpy(dst + (size_t)y * stride, tmp + (size_t)y * p->w * 4, (size_t)p->w * 4);
+     free(tmp);
+ }
++// A player that shows one picture a frame plays a 60 fps movie at the game's frame rate. Ocarina of Time's AV1 movies (all 60 fps) ran at 0.44x on an M1 Max whose GPU
++// gives the title 28 frames a second, with the sound running ahead. So a picture is given by the clock, as a video player does: the movie's timestamps (ns) from its first
++// picture against the guest clock, and of the waiting pictures the newest one that is due, the late ones before it dropped. A picture is late once the next is 50 ms overdue:
++// with no slack, a game at the movie's rate a frame behind its clock after a hitch skipped every other picture from then on. A timestamp going back (a loop, a new stream)
++// starts the clock again. So does a picture over a second late when the game held the movie: it presented frames without taking a picture (a pause menu, a load screen) or
++// its window lost the focus meanwhile (cv_pause). Otherwise the whole game stood still in the host (a pipeline built on first use, a long GPU wait) while its sound went on,
++// and the late pictures are skipped until the movie is back on its clock: starting the clock again there left the picture behind the narration until the next stream (an M2
++// Pro's title movie). The clock is the guest's (guest_ns), which does not run while the Mac sleeps, while an iPhone app is in the background or under DM_DETCLOCK's replay
++// steps, so none of those makes a gap. A game that keeps up drops nothing. AV1 only (the only timestamps checked); DM_CV_LATE=1 turns it on.
++static double cv_now(void) { return (double)guest_ns() / 1e9; }
++static double (*cv_clock)(void) = cv_now;   // t_codec_video replaces it
++static int cv_late_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_CV_LATE"); v = e && !strcmp(e, "1"); } return v; }
++#define CV_PAUSE_FRAMES 6   // frames presented without a picture taken that make a gap the game's: a stall in the host presents at most the frame it held, plus the frames
++                            // a movie slower than the game skips between pictures
++static const char *cv_pause(const cv_dec *d) {
++    if (dm_guest_frame() - d->take_frame >= CV_PAUSE_FRAMES) return "the game presented frames without taking a picture";
++    if (dm_focus_now() != 1 || dm_focus_in_since() > d->take_wall) return "the window lost the focus";
++    return NULL;
++}
++static void cv_skip_late(cv_dec *d) {   // decoder lock held, at least one picture waiting
++    double now = cv_clock(); int64_t ts = d->held_ts[0];
++    double late = d->clk_on ? now - (d->clk_t0 + (double)(ts - d->clk_ts0) / 1e9) : 0;
++    const char *why = !d->clk_on ? "" : ts < d->clk_last ? "a timestamp went back (a loop or a new stream)" : late > 1.0 ? cv_pause(d) : NULL;
++    if (why) {
++        if (*why && d->restarts++ < 8) {
++            if (ts < d->clk_last) LOG("[codec] %s decoder %u: the movie clock starts again: %s", k_cv_name[d->codec], d->id, why);
++            else LOG("[codec] %s decoder %u: the movie clock starts again, %.2f s behind: %s", k_cv_name[d->codec], d->id, late, why);
++        }
++        d->clk_on = 1; d->clk_ts0 = ts; d->clk_t0 = now; d->catching = 0; return;
++    }
++    if (late <= 1.0) d->catching = 0;
++    else if (!d->catching) {
++        d->catching = 1;
++        if (d->catchups++ < 8) LOG("[codec] %s decoder %u: %.2f s behind after the game stood still: late pictures skipped to catch up with the movie's clock", k_cv_name[d->codec], d->id, late);
++    }
++    while (d->nheld > 1 && !d->held_eos[0] && d->clk_t0 + (double)(d->held_ts[1] - d->clk_ts0) / 1e9 <= now - 0.05) {   // the next one is overdue too: this one is late
++        vpx_img_free(d->held[0]); d->nheld--;
++        memmove(d->held, d->held + 1, (size_t)d->nheld * sizeof d->held[0]); memmove(d->held_ts, d->held_ts + 1, (size_t)d->nheld * sizeof d->held_ts[0]);
++        memmove(d->held_eos, d->held_eos + 1, (size_t)d->nheld * sizeof d->held_eos[0]);
++        if (!d->skipped++) LOG("[codec] %s decoder %u: late pictures skipped to keep the movie on its clock (the game shows fewer pictures a second than the movie has)", k_cv_name[d->codec], d->id);
++    }
++}
+ // Pictures and end of stream into the released buffers, in order (decoder lock held). The event says a packet can come: it rises when one was taken (took) or room came back, not at every release.
+ // Mario Tennis Fever's player counts each signal as one packet it may send: raised at every release, its count grew while a seek held back the samples (a skipped cutscene),
+ // and the packets it then sent overran CV_HOLD
+@@ -107,11 +153,12 @@ static void drain(cv_dec *d, int took) {
+     while (d->pcount && (d->nheld || d->eos_pending)) {
+         uint32_t i = d->pend[d->phead]; d->phead = (d->phead + 1) % CV_BUFS; d->pcount--;
+         typeof(d->buf[0]) *b = &d->buf[i];
++        if (d->nheld && d->codec == CV_AV1 && cv_late_on()) cv_skip_late(d);
+         if (d->nheld) {
+             vpx_image_t *im = d->held[0]; int64_t ts = d->held_ts[0]; uint8_t eos = d->held_eos[0];
+-            memmove(d->held, d->held + 1, sizeof d->held[0] * (CV_HOLD - 1)); memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (CV_HOLD - 1));
+-            memmove(d->held_eos, d->held_eos + 1, CV_HOLD - 1); d->nheld--;
+-            b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos;
++            memmove(d->held, d->held + 1, sizeof d->held[0] * (d->nheld - 1)); memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (d->nheld - 1));
++            memmove(d->held_eos, d->held_eos + 1, d->nheld - 1); d->nheld--;
++            b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos; d->clk_last = ts; d->take_frame = dm_guest_frame(); d->take_wall = now_ns();
+             if (b->pool && b->pidx < b->pool->count) { pool_native_write(b->pool, b->pidx, im); if (b->pool->img[b->pidx]) vpx_img_free(b->pool->img[b->pidx]); b->pool->img[b->pidx] = im; } else vpx_img_free(im);
+             if (!d->pictures++) LOG("[codec] %s decoder %u: first picture %ux%u into buffer %u", k_cv_name[d->codec], d->id, b->w, b->h, i);
+         } else { b->w = b->h = 0; b->ts = 0; b->eos = 1; d->eos_pending = 0; }
+@@ -250,7 +297,7 @@ static void cv_open(cv_dec *d) {   // (re)creates the codec state: a new stream
+ }
+ static Result cv_dec_init(void *t, int codec, uint16_t w, uint16_t h, uint32_t in, uint32_t out, const void *csd, uint64_t csd_n) {
+     cv_dec *d = calloc(1, sizeof *d);
+-    d->magic = CV_MAGIC; d->codec = codec; d->w = w; d->h = h; pthread_mutex_init(&d->mu, NULL);
++    d->magic = CV_MAGIC; d->codec = codec; d->w = w; d->h = h; pthread_mutex_init(&d->mu, NULL); pthread_mutex_init(&d->dmu, NULL);
+     if (csd && csd_n && csd_n < (1u << 20)) { d->csd = malloc((size_t)csd_n); memcpy(d->csd, csd, (size_t)csd_n); d->csd_n = (size_t)csd_n; }
+     cv_open(d);
+     pthread_mutex_lock(&g_cv_mu);
+@@ -265,7 +312,7 @@ static Result cv_dec_init(void *t, int codec, uint16_t w, uint16_t h, uint32_t i
+ }
+ static Result cv_dec_fin(void *t) {
+     cv_dec *d = cv_of(t); if (!d) return 0;
+-    pthread_mutex_lock(&g_cv_mu); g_cv[d->id - 1] = NULL; pthread_mutex_lock(&d->mu); pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&g_cv_mu);   // no sync handle lookup is still inside
++    pthread_mutex_lock(&g_cv_mu); g_cv[d->id - 1] = NULL; pthread_mutex_lock(&d->dmu); pthread_mutex_lock(&d->mu); pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&d->dmu); pthread_mutex_unlock(&g_cv_mu);   // no sync handle lookup is still inside
+     if (d->codec != CV_H264 && d->codec != CV_AV1 && d->vpx_ok) vpx_codec_destroy(&d->vpx);
+     if (d->avc) mavc_free(d->avc);
+     if (d->av1) mav1_free(d->av1);
+@@ -275,7 +322,7 @@ static Result cv_dec_fin(void *t) {
+     // event "bound" and was not given one: the game had cleared that memory, and nn::os aborted on the uninitialised event (Donkey Kong Bananza, its second movie)
+     static void (*destroy)(void *); if (!destroy && !(destroy = guest_sym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE"))) die("nn::os::DestroySystemEvent missing");
+     destroy(d->event);
+-    pthread_mutex_destroy(&d->mu); free(d); *(cv_dec **)t = NULL;
++    pthread_mutex_destroy(&d->mu); pthread_mutex_destroy(&d->dmu); free(d); *(cv_dec **)t = NULL;
+     return 0;
+ }
+ static Result cv_dec_reg(void *t, uint32_t i, void *pool, uint32_t pidx) {
+@@ -302,12 +349,12 @@ static Result cv_dec_unreg(void *t, uint32_t i) {   // the buffer leaves the dec
+ }
+ static Result cv_dec_reset(void *t) {   // Stop / Flush: pictures not yet given to a buffer and a pending end of stream are dropped, the decoder starts over at the next key frame
+     cv_dec *d = cv_of(t); if (!d) return 0;
+-    pthread_mutex_lock(&d->mu);
++    pthread_mutex_lock(&d->dmu); pthread_mutex_lock(&d->mu);   // after a decode in progress
+     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
+-    d->nheld = 0; d->eos_pending = 0;
++    d->nheld = 0; d->eos_pending = 0; d->clk_on = 0;
+     cv_open(d);
+     if (d->event) hle_signal_system_event(d->event);
+-    pthread_mutex_unlock(&d->mu);
++    pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&d->dmu);
+     return 0;
+ }
+ // A started decoder that has room takes packets, whatever became of the signal Initialize gave. Mario Tennis Fever's player (nro0+0xd19d18) clears that one and drops it while it is not yet started,
+@@ -321,7 +368,7 @@ static Result cv_dec_start(void *t) {
+ }
+ static Result cv_dec_event(void **out, void *t) { cv_dec *d = cv_of(t); *out = d ? d->event : NULL; return d ? 0 : CV_R(2004); }
+ static int cv_hold(cv_dec *d, vpx_image_t *c, int64_t ts) {   // a decoded picture waits for a released buffer (decoder lock held); 0 when the host holds no more
+-    if (d->nheld >= CV_HOLD) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: a packet gave more pictures than the host holds: one dropped", k_cv_name[d->codec]); vpx_img_free(c); return 0; }
++    if (d->nheld >= CV_HOLD + CV_BURST) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: a packet gave more pictures than the host holds: one dropped", k_cv_name[d->codec]); vpx_img_free(c); return 0; }
+     d->held[d->nheld] = c; d->held_ts[d->nheld] = ts; d->held_eos[d->nheld] = 0; d->nheld++; return 1;
+ }
+ static vpx_image_t *nv12_to_i420(const uint8_t *nv12, unsigned w, unsigned h) {   // VideoToolbox's NV12 as the I420 the pool keeps
+@@ -358,10 +405,16 @@ static Result cv_dec_submit(uint64_t *out, void *t, const void *data, uint64_t s
+         while (nv12 && d->nheld < CV_HOLD && mavc_take(d->avc, eos, nv12, d->w, d->h, &pts) == 1) { vpx_image_t *c = nv12_to_i420(nv12, d->w, d->h); if (c) got += cv_hold(d, c, pts * 1000); }
+         free(nv12);
+     } else if (d->codec == CV_AV1) {
+-        if (size) {
+-            mav1_picture pic;
+-            if (mav1_decode(d->av1, data, (size_t)size, &pic) == 1) { vpx_image_t *c = av1_to_i420(&pic); if (c) got += cv_hold(d, c, ts); }
+-        }
++        // Decoded without the decoder lock: dav1d's frame threads can keep a packet waiting tens of milliseconds for a free frame, and under the lock the game's Release and
++        // Acquire would wait as long. The decode lock keeps a reset or Finalize from running beside it. A packet can give more than one picture (frames finished together), and
++        // the end of the stream gives the frames still decoding
++        pthread_mutex_unlock(&d->mu); pthread_mutex_lock(&d->dmu);
++        vpx_image_t *pics[CV_BURST + 24]; int64_t pts[CV_BURST + 24]; int np = 0; mav1_picture pic;
++        if (size && mav1_decode_ts(d->av1, data, (size_t)size, ts, &pic) == 1)
++            do { vpx_image_t *c = av1_to_i420(&pic); if (c && np < (int)(sizeof pics / sizeof pics[0])) { pics[np] = c; pts[np++] = pic.ts; } else if (c) vpx_img_free(c); } while (mav1_next(d->av1, &pic));
++        if (eos) while (mav1_drain(d->av1, &pic)) { vpx_image_t *c = av1_to_i420(&pic); if (c && np < (int)(sizeof pics / sizeof pics[0])) { pics[np] = c; pts[np++] = pic.ts; } else if (c) vpx_img_free(c); }
++        pthread_mutex_lock(&d->mu); pthread_mutex_unlock(&d->dmu);
++        for (int i = 0; i < np; i++) got += cv_hold(d, pics[i], pts[i]);
+     } else if (size && d->vpx_ok) {
+         if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: %s (%s)", k_cv_name[d->codec], vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : ""); }
+         vpx_codec_iter_t it = NULL; const vpx_image_t *im;
+diff --git a/dm/host/hle_movie_av1.c b/dm/host/hle_movie_av1.c
+index d659b45e..d8c462f9 100644
+--- a/dm/host/hle_movie_av1.c
++++ b/dm/host/hle_movie_av1.c
+@@ -15,6 +15,7 @@ struct mav1 {
+     CVPixelBufferRef got, locked;
+     int soft;                     // dav1d decodes: no hardware decoder, DM_AV1_DAV1D=1, or a stream VideoToolbox refused (until mav1_reset)
+     Dav1dContext *dav1d; Dav1dPicture pic; int has_pic;
++    Dav1dPicture q[16]; int qh, qn;   // dav1d's pictures not yet given, oldest first (frame threads give them in bursts)
+     uint8_t *y8, *uv; size_t ny8, nuv;   // dav1d's picture as NV12: the chroma interleaved, and the luma of a 10- or 12-bit stream shifted to 8 bits
+     int red;
+ };
+@@ -30,7 +31,8 @@ static void av1_close(mav1 *a) {
+     if (a->fd) { CFRelease(a->fd); a->fd = NULL; }
+     if (a->got) { CVPixelBufferRelease(a->got); a->got = NULL; }
+ }
+-void mav1_reset(mav1 *a) { unlock_picture(a); av1_close(a); a->nseq = 0; if (a->dav1d) dav1d_flush(a->dav1d); a->soft = !hw_av1(); }
++static void q_clear(mav1 *a) { while (a->qn) { dav1d_picture_unref(&a->q[a->qh]); a->qh = (a->qh + 1) % 16; a->qn--; } a->qh = 0; }
++void mav1_reset(mav1 *a) { unlock_picture(a); q_clear(a); av1_close(a); a->nseq = 0; if (a->dav1d) dav1d_flush(a->dav1d); a->soft = !hw_av1(); }
+ void mav1_free(mav1 *a) { if (a) { mav1_reset(a); if (a->dav1d) dav1d_close(&a->dav1d); free(a->y8); free(a->uv); free(a); } }
+ 
+ // ---- The sequence header (AV1 5.5), read as far as the colour config ----
+@@ -176,10 +178,18 @@ static int dav1d_nv12(mav1 *a, const Dav1dPicture *p, mav1_picture *out) {
+     *out = (mav1_picture){y, a->uv, ys, (size_t)cw * 2, w, h, mc == DAV1D_MC_BT709 ? 2 : mc == DAV1D_MC_BT2020_NCL || mc == DAV1D_MC_BT2020_CL ? 5 : 1, p->seq_hdr->color_range};
+     return 1;
+ }
+-static int decode_dav1d(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
++static void q_collect(mav1 *a) {   // the picture dav1d has ready, into the queue. Once per input: a second ask with no data in between drains (waits for the frames in flight)
++    Dav1dPicture p = {0};
++    if (a->qn < 16 && !dav1d_get_picture(a->dav1d, &p)) { a->q[(a->qh + a->qn) % 16] = p; a->qn++; }
++}
++static int q_give(mav1 *a, mav1_picture *out);
++static int decode_dav1d(mav1 *a, const uint8_t *data, size_t n, int64_t ts, mav1_picture *out) {
+     if (!a->dav1d) {
+         Dav1dSettings st; dav1d_default_settings(&st);
+-        st.n_threads = 2; st.max_frame_delay = 1;   // a temporal unit's picture before its send returns: one frame at a time, two task threads decoding it while the submitting thread waits
++        // Frames in parallel: one at a time (max_frame_delay 1, 2 threads) took 9-20 ms a packet of Ocarina of Time's 1080p60 title movie on an M1 Max, past a 60 fps frame,
++        // and more threads on one frame did not help; dav1d scales by frames. A picture then comes some packets after its own, with its timestamp (Dav1dData.m), and the
++        // frames still in flight come out at the end of the stream (mav1_drain). 8 and 8: at most 26 ms a packet there
++        st.n_threads = 8; st.max_frame_delay = 8;
+         st.logger.cookie = a; st.logger.callback = d_log;
+         if (dav1d_open(&a->dav1d, &st)) { a->dav1d = NULL; if (!a->red++) LOG("[RED] movie: dav1d could not be opened"); return -1; }
+         static int once; if (!once++) LOG("[movie] AV1: dav1d %s decoding (%s)", dav1d_version(), hw_av1() ? "a stream VideoToolbox refused" : getenv("DM_AV1_DAV1D") ? "DM_AV1_DAV1D" : "no hardware AV1 decoder");
+@@ -187,25 +197,40 @@ static int decode_dav1d(mav1 *a, const uint8_t *data, size_t n, mav1_picture *ou
+     Dav1dData d = {0}; uint8_t *buf = dav1d_data_create(&d, n);
+     if (!buf) return -1;
+     memcpy(buf, data, n);
+-    Dav1dPicture p = {0}; int got = 0;
++    d.m.timestamp = ts;   // dav1d carries it to the picture of this temporal unit
+     for (int tries = 0; d.sz && tries < 64; tries++) {
+         int r = dav1d_send_data(a->dav1d, &d);
+         if (r && r != DAV1D_ERR(EAGAIN)) { dav1d_data_unref(&d); if (!a->red++) LOG("[RED] movie: dav1d refused a temporal unit (%d, first case)", r); return -1; }
+-        while (!dav1d_get_picture(a->dav1d, &p)) { if (a->has_pic) dav1d_picture_unref(&a->pic); a->pic = p; a->has_pic = 1; got = 1; }   // one shown picture a temporal unit; a later one replaces it
++        if (d.sz) q_collect(a);   // EAGAIN: the previous input is still waiting; asking for a picture moves it on
+     }
+     if (d.sz) { dav1d_data_unref(&d); if (!a->red++) LOG("[RED] movie: dav1d took no more data, a temporal unit dropped (first case)"); return -1; }
+-    if (!got) return 0;
++    q_collect(a);
++    return q_give(a, out);
++}
++static int q_give(mav1 *a, mav1_picture *out) {   // the oldest queued picture as NV12 (valid until the next call), 0 when none
++    if (!a->qn) return 0;
++    if (a->has_pic) dav1d_picture_unref(&a->pic);
++    a->pic = a->q[a->qh]; a->has_pic = 1; a->qh = (a->qh + 1) % 16; a->qn--;
+     if (!dav1d_nv12(a, &a->pic, out)) { if (!a->red++) LOG("[RED] movie: no memory for a %dx%d AV1 picture", a->pic.p.w, a->pic.p.h); return -1; }
++    out->ts = a->pic.m.timestamp;
+     return 1;
+ }
+ 
+-int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
++int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) { return mav1_decode_ts(a, data, n, 0, out); }
++int mav1_next(mav1 *a, mav1_picture *out) { if (!a->soft || !a->dav1d || !a->qn) return 0; unlock_picture(a); return q_give(a, out) == 1; }   // only what is queued: asking dav1d again would wait
++int mav1_drain(mav1 *a, mav1_picture *out) {   // dav1d gives the frames still decoding when asked with no data left
++    if (!a->soft || !a->dav1d) return 0;
++    unlock_picture(a);
++    if (!a->qn) { Dav1dPicture p = {0}; if (!dav1d_get_picture(a->dav1d, &p)) { a->q[a->qh] = p; a->qn = 1; } }
++    return q_give(a, out) == 1;
++}
++int mav1_decode_ts(mav1 *a, const uint8_t *data, size_t n, int64_t ts, mav1_picture *out) {
+     unlock_picture(a);
+-    if (a->soft) return decode_dav1d(a, data, n, out);
++    if (a->soft) return decode_dav1d(a, data, n, ts, out);
+     size_t seqn = 0; const uint8_t *seq = find_seq(data, n, &seqn);
+     if (seq && (seqn != a->nseq || memcmp(seq, a->seq, seqn) || !a->vs) && !av1_open(a, seq, seqn)) {   // a stream VideoToolbox does not take: dav1d from this temporal unit on (it holds the sequence header)
+         LOG("[movie] AV1: dav1d decodes the stream instead"); av1_close(a); a->soft = 1;
+-        return decode_dav1d(a, data, n, out);
++        return decode_dav1d(a, data, n, ts, out);
+     }
+     if (!a->vs) return 0;   // the stream's first sequence header has not come
+     CMBlockBufferRef bb = NULL; CMSampleBufferRef sb = NULL; size_t ssz = n;
+@@ -222,7 +247,7 @@ int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
+     CFStringRef m = CVBufferCopyAttachment(pb, kCVImageBufferYCbCrMatrixKey, NULL);
+     *out = (mav1_picture){CVPixelBufferGetBaseAddressOfPlane(pb, 0), CVPixelBufferGetBaseAddressOfPlane(pb, 1), CVPixelBufferGetBytesPerRowOfPlane(pb, 0), CVPixelBufferGetBytesPerRowOfPlane(pb, 1),
+                           (int)CVPixelBufferGetWidthOfPlane(pb, 0), (int)CVPixelBufferGetHeightOfPlane(pb, 0),
+-                          !m || CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_709_2) ? 2 : CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_2020) ? 5 : 1, 0};
++                          !m || CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_709_2) ? 2 : CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_2020) ? 5 : 1, 0, ts};
+     if (m) CFRelease(m);
+     return 1;
+ }
+diff --git a/dm/host/hle_movie_av1.h b/dm/host/hle_movie_av1.h
+index 84594e8b..79280f76 100644
+--- a/dm/host/hle_movie_av1.h
++++ b/dm/host/hle_movie_av1.h
+@@ -5,13 +5,18 @@
+ 
+ typedef struct mav1 mav1;
+ // What one decode gave: an NV12 picture of w x h in the decoder's memory, valid until the next call, its matrix as vpx_color_space_t's values (BT.601 = 1, BT.709 = 2, BT.2020 = 5)
+-typedef struct { const uint8_t *y, *uv; size_t ystride, uvstride; int w, h, matrix, full_range; } mav1_picture;
++typedef struct { const uint8_t *y, *uv; size_t ystride, uvstride; int w, h, matrix, full_range; int64_t ts; } mav1_picture;   // ts: the packet's (mav1_decode_ts)
+ 
+ mav1 *mav1_new(void);
+ void mav1_free(mav1 *a);
+ void mav1_reset(mav1 *a);   // a new stream starts at the next packet with a sequence header
+ // One temporal unit (OBUs with their sizes). 1 and *out set: a picture; 0: nothing to show (no sequence header seen yet, a unit without a shown frame); -1: the decoder refused it
+ int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out);
++// The same with the packet's timestamp, which its picture carries. dav1d decodes several frames at once, so a picture can come some packets after its own and one call can
++// give more than one: mav1_next gives the others (1 while there are), mav1_drain at the end of the stream those still decoding (1 a picture, then 0)
++int mav1_decode_ts(mav1 *a, const uint8_t *data, size_t n, int64_t ts, mav1_picture *out);
++int mav1_next(mav1 *a, mav1_picture *out);
++int mav1_drain(mav1 *a, mav1_picture *out);
+ const char *mav1_backend(const mav1 *a);   // "VideoToolbox" (its hardware decoder: Apple M3 and A17 Pro on) or "dav1d"
+ // Exposed for its test: fills the 4 + n bytes of an av1C record from a sequence header OBU (with its header and size); 0 when the OBU cannot be read
+ int mav1_av1c(const uint8_t *obu, size_t n, uint8_t c[4], int *w, int *h);
+diff --git a/dm/host/tests/t_codec_video.c b/dm/host/tests/t_codec_video.c
+index c73dd0f7..d9fef547 100644
+--- a/dm/host/tests/t_codec_video.c
++++ b/dm/host/tests/t_codec_video.c
+@@ -10,7 +10,12 @@
+ #include "../hle_movie_av1.c"
+ #include <assert.h>
+ 
+-uint64_t now_ns(void) { return 1; }
++static uint64_t g_test_wall = 1, g_test_frames, g_test_focus_in; static int g_test_focus = 1;
++uint64_t now_ns(void) { return g_test_wall; }
++uint64_t guest_ns(void) { return g_test_wall; }
++uint64_t dm_guest_frame(void) { return g_test_frames; }   // hle_os.c: frames presented
++int dm_focus_now(void) { return g_test_focus; }           // hle_oe.c: the window's focus
++uint64_t dm_focus_in_since(void) { return g_test_focus_in; }
+ __thread _Atomic int dm_host_work;   // hle_thread.c
+ static struct { void *ev; int bound, set; } g_ev[16];
+ static int ev_slot(void *e) { for (int i = 0; i < 16; i++) if (g_ev[i].ev == e) return i; for (int i = 0; i < 16; i++) if (!g_ev[i].ev) { g_ev[i].ev = e; return i; } abort(); }
+@@ -48,6 +53,9 @@ static const uint8_t vp9[] = {
+     0xff,0xff,0xff,0xf2,0x2a,0xc0,0x00,
+ };
+ 
++static double g_test_now;
++static double test_clock(void) { return g_test_now; }
++
+ int main(void) {
+     _Alignas(16) static uint8_t dec[0x400], pool[3][0x40], spt[0x80], mem[16 * 16 * 4];
+     uint64_t size, align, id; uint32_t idx; cv_sync sync; uint16_t w, h, cw, ch; int64_t ts; bool eos;
+@@ -195,12 +203,22 @@ int main(void) {
+         for (int soft = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) ? 0 : 1; soft < 2; soft++) {
+             setenv("DM_AV1_DAV1D", soft ? "1" : "0", 1);
+             mav1 *a = mav1_new(); assert(!strcmp(mav1_backend(a), soft ? "dav1d" : "VideoToolbox"));
+-            mav1_picture pic; assert(mav1_decode(a, av1, sizeof av1, &pic) == 1 && pic.w == 64 && pic.h == 64 && pic.matrix == 1 && !pic.full_range);   // no matrix in the stream: BT.601 at 64 lines
++            mav1_picture pic; assert((mav1_decode(a, av1, sizeof av1, &pic) == 1 || mav1_drain(a, &pic)) && pic.w == 64 && pic.h == 64 && pic.matrix == 1 && !pic.full_range);   // no matrix in the stream: BT.601 at 64 lines; dav1d's frame threads give a lone frame's picture at the end of the stream
+             for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) assert(abs(pic.y[(size_t)y * pic.ystride + x] - 81) <= 4);
+             for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x += 2) { assert(abs(pic.uv[(size_t)y * pic.uvstride + x] - 90) <= 6); assert(abs(pic.uv[(size_t)y * pic.uvstride + x + 1] - 240) <= 6); }
+             mav1_reset(a); assert(mav1_decode(a, delimiter, sizeof delimiter, &pic) == 0);   // a new stream: nothing until its sequence header
+             mav1_free(a);
+         }
++        {   // dav1d decodes frames in parallel: a picture can come some packets after its own and two can come together, the end of the stream gives the rest, and each keeps its
++            // packet's timestamp, in order
++            setenv("DM_AV1_DAV1D", "1", 1);
++            mav1 *a = mav1_new(); mav1_picture pic; int64_t seen[24]; int ns = 0;
++            for (int i = 0; i < 20; i++)
++                if (mav1_decode_ts(a, av1, sizeof av1, 1000 * (int64_t)i, &pic) == 1) do { assert(ns < 24 && pic.w == 64); seen[ns++] = pic.ts; } while (mav1_next(a, &pic));
++            while (mav1_drain(a, &pic)) { assert(ns < 24 && pic.w == 64); seen[ns++] = pic.ts; }
++            assert(ns == 20); for (int i = 0; i < 20; i++) assert(seen[i] == 1000 * (int64_t)i);
++            mav1_free(a);
++        }
+         unsetenv("DM_AV1_DAV1D");
+     }
+     {   // A native image: SDK 22's preference and pool, the handle names the pool's memory, and a picture lands there as RGBA in NVN's linear layout
+@@ -233,6 +251,39 @@ int main(void) {
+         assert(!(k[BLANK_MAX] = dm_native_image_blank(32, 32)));   // full
+         for (int i = 0; i < BLANK_MAX; i++) dm_native_image_blank_free(k[i]);
+     }
++
++    {   // AV1 pictures by the movie's clock (cv_skip_late), on a clock the test sets: 50 fps timestamps (20 ms apart), host seconds from 100
++        cv_dec *d = calloc(1, sizeof *d); d->codec = CV_AV1; double (*real)(void) = cv_clock; cv_clock = test_clock;
++        #define HOLD(n) do { d->nheld = 0; for (int i_ = 0; i_ < (n); i_++) { d->held[i_] = black_i420(16, 16); d->held_ts[i_] = 20000000LL * (i_ + d->clk_last / 20000000LL); d->held_eos[i_] = 0; } d->nheld = (n); } while (0)
++        #define CLEAR() do { for (int i_ = 0; i_ < d->nheld; i_++) vpx_img_free(d->held[i_]); d->nheld = 0; } while (0)
++        g_test_now = 100.0; HOLD(6); cv_skip_late(d); assert(d->clk_on && d->nheld == 6 && d->clk_t0 == 100.0);   // the first picture starts the clock: nothing dropped
++        g_test_now = 100.1; cv_skip_late(d);   // 100 ms on: pictures at 0..100 ms are due; the next must be 50 ms overdue for one to go
++        assert(d->nheld == 4 && d->held_ts[0] == 40000000);   // 0 and 20 ms dropped (20 and 40 ms over 50 ms overdue), 40 kept: its next (60) is only 40 ms overdue
++        assert(d->skipped == 2);
++        g_test_now = 100.1; d->held_eos[0] = 1; cv_skip_late(d); assert(d->nheld == 4);   // a picture that ends the stream is never dropped
++        d->held_eos[0] = 0; CLEAR();
++        // over a second behind while the game presented frames without taking a picture (a pause menu, a load screen): the clock starts again, nothing dropped
++        d->clk_last = 200000000; HOLD(3); d->take_frame = 10; g_test_frames = 10 + CV_PAUSE_FRAMES; g_test_now = 106.0; cv_skip_late(d);
++        assert(d->nheld == 3 && d->clk_t0 == 106.0 && d->clk_ts0 == d->held_ts[0] && d->restarts == 1 && !d->catching);
++        CLEAR();
++        // 1.5 s behind after the whole game stood still in the host (a pipeline built on first use) with its sound going on: the clock stays, the late pictures go
++        d->clk_last = 300000000; HOLD(5); d->take_frame = g_test_frames - 1; g_test_wall = 50; d->take_wall = 40; g_test_now = 107.6; cv_skip_late(d);
++        assert(d->nheld == 1 && d->held_ts[0] == 380000000 && d->clk_t0 == 106.0 && d->restarts == 1 && d->catching && d->catchups == 1);
++        g_test_now = 107.61; cv_skip_late(d); assert(d->catchups == 1);   // still behind: the same stall, noted once
++        CLEAR();
++        // over a second behind, nothing presented, but the window went out of focus and came back meanwhile (the game may have paused itself): the clock starts again
++        d->clk_last = 400000000; HOLD(3); d->take_frame = g_test_frames; d->take_wall = 60; g_test_focus_in = 70; g_test_now = 110.0; cv_skip_late(d);
++        assert(d->nheld == 3 && d->clk_t0 == 110.0 && d->restarts == 2 && !d->catching);
++        CLEAR(); g_test_focus = 2;   // and out of focus now
++        d->clk_last = 500000000; HOLD(3); d->take_wall = 80; g_test_now = 115.0; cv_skip_late(d); assert(d->nheld == 3 && d->clk_t0 == 115.0 && d->restarts == 3);
++        g_test_focus = 1;
++        CLEAR(); d->clk_last = 900000000; d->nheld = 0;
++        for (int i = 0; i < 3; i++) { d->held[i] = black_i420(16, 16); d->held_ts[i] = 20000000LL * i; d->held_eos[i] = 0; } d->nheld = 3;   // a timestamp going back (a loop)
++        g_test_now = 106.5; cv_skip_late(d); assert(d->nheld == 3 && d->clk_t0 == 106.5 && d->clk_ts0 == 0);
++        CLEAR(); cv_clock = real; free(d);
++        #undef HOLD
++        #undef CLEAR
++    }
+     printf("t_codec_video: all passed\n");
+     return 0;
+ }
+diff --git a/docs/agents/symptoms.md b/docs/agents/symptoms.md
+index c83f1d91..5e049dc5 100644
+--- a/docs/agents/symptoms.md
++++ b/docs/agents/symptoms.md
+@@ -380,6 +380,7 @@ One line per symptom in the [subsystem references](../reference/): what you see
+ - a Switch 2 game crashes when a movie starts: `nn::codec::video::Initialize` faults in the SDK (Donkey Kong Bananza: `sdk+0x2de99c`, after its first punch, when the guide movie starts), and before that `nv::InitCheck` aborts (`hle_nv.c`). Later, when a second movie starts: `game called nn::diag abort: Result 0` in `nn::os::ClearSystemEvent` or `TryWaitSystemEvent` on the decoder's event. → [`nn::codec` video decoders taken over](../reference/movies.md#nncodec-video-decoders-taken-over)
+ - a movie stays black with the game waiting behind it, the decoder made and no `first picture` line (`Submit…InputBuffer` never called). Or `[RED] nn::codec VP9: Corrupt frame detected`, then `Keyframe / intra-only frame required`, each time about 6 s into a movie or after skipping in one. → [The submission-ready event counted as packets](../reference/movies.md#the-submission-ready-event-counted-as-packets)
+ - a crash in `nn::codec::video::InitializeAv1DecoderByTransferMemory` when a movie starts. → [AV1 movies through SDK 22's decoder](../reference/movies.md#av1-movies-through-sdk-22s-decoder)
++- a 60 fps movie plays slowly in a game that shows fewer frames a second than the movie has, with its sound ahead of the picture and then silence where a scene's sound has already ended (Ocarina of Time's AV1 title movie at 0.44x on an Apple M1 Max, whose GPU gives it 28 frames a second; 22 on an M2 Pro). → [A game slower than its movie plays it by the movie's clock](../reference/movies.md#a-game-slower-than-its-movie-plays-it-by-the-movies-clock)
+ - an abort in `nn::codec` (the SDK's own decoder client, which opens a service the host does not have) when a movie starts in a game built with SDK 19 for the Switch 2. → [SDK 19's decoder forms](../reference/movies.md#sdk-19s-decoder-forms)
+ 
+ ## Audio
+@@ -718,6 +719,7 @@ One line per symptom in the [subsystem references](../reference/): what you see
+ - a Switch 2 game calls `nvnCommandBufferEvaluateDlss` and its builder functions, which the host did not have. → [NVN2's DLSS on MetalFX](../reference/rendering.md#nvn2s-dlss-on-metalfx)
+ - `[RED] NVN unimplemented function called: nvnDlssNetworkResize (x0=… x1=0x300 x2=0x1b0)` at the title. → [The DLSS network resized](../reference/rendering.md#the-dlss-network-resized)
+ - a Switch 2 game's frame in its heavy scenes is dominated by one compute dispatch between the render-resolution passes and the output-resolution ones: Donkey Kong Bananza's upscaler takes 3.5-5 ms of a 24 ms GPU frame on an M1 in handheld mode (960x540 → 1920x1080, `DM_NVN_GPUPROF`), and the game cannot reach its 60 fps interval there. → [A game's own upscaler drawn by MetalFX](../reference/rendering.md#a-games-own-upscaler-drawn-by-metalfx)
++- Ocarina of Time's title movie shows rectangular colour blocks while the logo, menu and subtitles remain legible. → [Block corruption after NDVE movie reconstruction](../reference/rendering.md#block-corruption-after-ndve-movie-reconstruction)
+ - with `DM_UPSCALER=metalfx`, a game's picture is washed out wherever it upscales: lifted shadows and low contrast, the scene only, with the UI drawn after it correct; with `DM_UPSCALER=game`, or at a size the game does not upscale, it is right. → [An upscaler's colour read from its code](../reference/rendering.md#an-upscalers-colour-read-from-its-code)
+ - tall blue / textured panels that flickered frame to frame: the fountain's vertex shader pushed the water surface to the top of the screen. → [Metal 4 does not order operations inside one encoder](../reference/rendering.md#metal-4-does-not-order-operations-inside-one-encoder)
+ - a buffer copy, inline update or fill completes, but a following copy through another Metal buffer over the same allocation reads stale bytes. → [Buffer copies through aliased Metal addresses](../reference/rendering.md#buffer-copies-through-aliased-metal-addresses)
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index 02fdbbe7..acf268ea 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -23,6 +23,7 @@ DM_COPY_GAME_RESOURCES	switch	`NO` skips the Xcode build phase that copies the g
+ DM_COPY_ROMFS	switch	`NO` keeps the game files out of the app, in the Xcode build phase (`stage_resources.sh`) and in the unsigned IPA of `build_ipa.sh` (on by default): `main.m` takes the validated `Documents/romfs.img` copied by `scripts/push_romfs.sh`, then a `Documents/romfs` folder; the build writes the image's identity as `romfs.id` into the app, and `main.m` uses only a matching image (`--romfs separate` of the NSP script sets this)
+ DM_CTL	diagnostic	`=<file>` (Mac): the host polls the file every 100 ms and runs each appended line: button presses, `shot`, `passdump`, `texdump`, `env KEY=VALUE`, `peek`, `memdump`, `drag` and more
+ DM_CTRL_PROMPT_TEXT	switch	The texts of the controller applet's prompt (a game wants more players than have joined; `ctrl_prompt.h`) in the player's language, one per line: the title, the hint, the count, the done and the cancel button, with `{min}`, `{max}` and `{joined}` replaced by the numbers; a front end sets it ([Starting a game](frontends.md#starting-a-game)), an empty or missing line keeps the English text
++DM_CV_LATE	switch	`=1` follows the AV1 movie's clock and skips overdue pictures after stalls (`hle_codec_video.c`)
+ DM_DBG	diagnostic	When set, prints the guest's `svcOutputDebugString` text to stderr as `[guest]` lines
+ DM_DBG_AU_FRAMES	diagnostic	`=<frames>` asks the Mac's Core Audio output for that many frames per callback instead of about 5 ms (1024 reproduces the iOS default that caused crackling)
+ DM_DETCLOCK	switch	`=<step ns>`: from the first present on, the guest clock advances a fixed step per present instead of following the wall clock, and the random source becomes a fixed-seed stream (replay and test runs)
+@@ -164,6 +165,7 @@ DM_NVN_LAZY_CLEAR	switch	`0` makes clears with no draw after them open a pass of
+ DM_NVN_LOADPROBE	diagnostic	`=1`, `2` or `3`: attachments whose load is skipped are cleared to a sentinel colour (`3` NaN; `1` NaN for float formats) and the sentinel pixels left at pass end are counted (should be 0)
+ DM_NVN_LOG	diagnostic	`=1` logs the creation of NVN objects
+ DM_NVN_MAGSCAN	diagnostic	`=<fs key>[:every[:phase]]`: device self-check that reads each pass's colour attachments every `every` frames (default 30) and logs `[mag]` lines for solid magenta 16×16 blocks or non-finite pixels
++DM_NVN_NDVE_MOVIE_DIRECT	switch	`=1` scales Ocarina of Time's clean 1920×1080 decoded movie frame into its 2560×1440 output with a bilinear Metal draw when the known NDVE dispatches match
+ DM_NVN_PASSDUMP	diagnostic	`=<f>`, `<f1>-<f2>` or `every:<n>`: logs every render pass of those frames (attachments, clears, shader keys, bindings, draw state, presents, and the host function and line that ended each pass) for the `tbdr_*.py` tools
+ DM_NVN_PASSDUMP_ALL	diagnostic	`=1` makes `DM_NVN_PASSDUMP` record every draw and binding change, not only the first per pass and stage, including copies and inline uniform updates
+ DM_NVN_PASSGPU	diagnostic	`=<file>` writes the GPU time of each render and compute pass from stage-boundary timestamp counters (off under Metal 4); also gives each dispatch its own encoder
+diff --git a/docs/reference/memory.md b/docs/reference/memory.md
+index 32214e0a..fb06f36d 100644
+--- a/docs/reference/memory.md
++++ b/docs/reference/memory.md
+@@ -400,6 +400,7 @@ The guest address space, heaps, pools, virtual address memory and the allocators
+ - **Cause:** games size model allocations by measuring scratch command recordings; oversized host records can exceed the budgets in their resource-size tables. In Breath of the Wild, each model's heap is its table entry + 0x1008, the file goes in 4 KB aligned, and the setup (`main+0x155a2ac`) takes the rest as a frame heap (vtable `main+0x1d4f950`, head `+0xe0`, tail `+0xe8`). Its use is the same in every run; only the file's alignment pad varies (0 to 0xff8), and the entries leave room for any pad, about 0xd00 to spare on most models. Three models were a 4 KB page short, so the loads with a large pad failed. The game sizes the model's prerecorded commands by recording each mesh's draw and each shape's per-pass state into a scratch command buffer and summing `GetCommandMemoryUsed` (`main+0xf9aeb4`, `main+0xf9bb54`), and our records were larger than the driver's (draws carried the indirect and multi-draw fields, every recording began with a BEGIN record). Super Mario Odyssey keeps its display lists in a 62 MB GPU bump heap named "DisplayList" (`main+0x5e8280`: used at `+0x68`, capacity at `+0x6c`, a null block when full), allocated while a kingdom loads; with 40-byte state binds (39% of the display-list bytes) it filled at the load and every later list got a null block.
+ - **Fix:** plain draws leave unused indirect fields out and recordings start with their first command. Uniform and single vertex-buffer bindings also use compact 24-byte records instead of 32, preserving full GPU addresses and retaining full-width fallback records for ranges above `UINT32_MAX`; multi-vertex ranges retain their array representation. State binds carry only the state object's bytes (16 bytes for color, channel mask and polygon state, 24 for blend, multisample and depth-stencil, instead of 40), and a single texture bind drops its pool bases when both are 0 (24 bytes instead of 32, the handle still 16 bytes in). Replay expands the compact forms into the same canonical binding state. The native inline uniform command takes 20 bytes and the native vertex-buffer command 24, so these small differences can accumulate into an extra 4 KB GPU-pool chunk. Report the bytes actually recorded; do not underreport usage or add a game-specific heap allowance. See [What `GetCommandMemoryUsed` counts](nvn-objects.md#what-getcommandmemoryused-counts).
+ - **Check:** for Breath of the Wild's whole scene, probe where the setup heap is cut (`main+0x155a520` with `!x21`, the resource heap) and the end of the setup (`main+0x155a5f4` with `!x2`, the frame heap), with `DM_PROBE_HEAP=28,38,40,e0,f8 DM_PROBE_HEAPFRAME=1d4f950 DM_PROBE_HEAPWORDS=1` ([05](../agents/05-debugging.md#probes-without-a-debugger-dm_probe)). A model fits any placement when entry + 0x1008 covers the resource heap's header and object (0x310), the file, the frame heap's block header and its peak use, plus 0xff8 of pad.
++- **Also:** the same two lines (`BufferInitialize: pool has no storage (pool 0x0 flags 0 offset 0 size 0x3d0)`, then a crash in `h_nvnMemoryPoolGetFlags`) came from The Legend of Zelda: Ocarina of Time on entering Hyrule Field, about 1.5 minutes after a save load, with 5,061 memory pools and the alias region at 5.25 GB (#1445). What made the game's allocator return no pool there is not known: it may be a heap that ran out, as above, or not. The NVN getters of a pool and a buffer now answer a null pool or buffer with 0 or NULL, so the host no longer dies where the game's own code would go on; this moves the failure and does not remove its cause.
+ - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md), [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md#memory) (buffer bindings; the game note records the failed allocation, measured sizes and validation), [Super Mario Odyssey](../../dm/games/0100000000010000/README.md#services) (state and single texture binds; the note has the heap's measurements).
+ 
+ ### Unity's GPU pool block allocation spins at size 0
+diff --git a/docs/reference/movies.md b/docs/reference/movies.md
+index 094866b1..41a939cc 100644
+--- a/docs/reference/movies.md
++++ b/docs/reference/movies.md
+@@ -303,6 +303,14 @@ A decoder hands out as many outputs as it has slots, and while every slot is tak
+ - **Check:** `make -C dm/host/tests GAME=<id> run` runs `t_codec_video` (AddressSanitizer and UBSan), which covers the AV1 and SDK 22 forms, native images and the av1C record, and decodes a 64x64 AV1 key frame (SVT-AV1) on each backend the Mac has, read back as NV12.
+ - **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): 82 movies in WebM at 2560x1440; the opening's 3,301 pictures play. On #957's branch, VideoToolbox and dav1d gave the same pictures, bit for bit, over the opening's first 600 (about 450 pictures a second each on an M3 Pro), and a tester's M1 Pro played the first two movies through dav1d, smooth and in sync ([seedds/nxnative#927](https://github.com/seedds/nxnative/issues/927)).
+ 
++### A game slower than its movie plays it by the movie's clock
++
++- **Symptom:** a 60 fps movie plays slowly in a game that shows fewer frames a second than the movie has, with its sound ahead of the picture and then silence where a scene's sound has already ended (Ocarina of Time's AV1 title movie at 0.44x on an Apple M1 Max, whose GPU gives it 28 frames a second; 22 on an M2 Pro).
++- **Cause:** the game's player shows one picture a frame, and the host handed the pictures out in decode order, so the movie ran at the game's frame rate.
++- **Fix:** With `DM_CV_LATE=1`, `cv_skip_late` (`hle_codec_video.c`, AV1) hands out pictures by the movie's timestamps against the guest clock: of the waiting pictures, the newest one that is due, the late ones before it dropped (a picture is late once the next is 50 ms overdue). A timestamp going back (a loop, a new stream) starts the clock again. So does a picture over a second late when the game held the movie: it presented frames without taking a picture (`CV_PAUSE_FRAMES`, a pause menu or a load screen), or its window lost the focus. After a stall in the host with no frames presented (a pipeline built on first use, a long GPU wait) the late pictures are skipped instead, so the picture catches up with the sound, which went on. The guest clock does not run while the Mac sleeps, an iPhone app is in the background or `DM_DETCLOCK` steps it, so none of those is a gap. The log says when the clock starts again and why, and when a stall is caught up.
++- **Check:** `t_codec_video` covers the slack, a picture that ends the stream, a pause, a stall, a focus change and a loop, on a clock the test sets.
++- **Found on:** The Legend of Zelda: Ocarina of Time (`0400486024DEC000`, v131072, with #1299's profile), on an M1 Max and an M2 Pro.
++
+ ### SDK 19's decoder forms
+ 
+ - **Symptom:** an abort in `nn::codec` (the SDK's own decoder client, which opens a service the host does not have) when a movie starts in a game built with SDK 19 for the Switch 2.
+diff --git a/docs/reference/rendering.md b/docs/reference/rendering.md
+index 32005ad7..8acc8c9e 100644
+--- a/docs/reference/rendering.md
++++ b/docs/reference/rendering.md
+@@ -1103,6 +1103,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
+ - **Check:** `make -C dm/gfx/tests GAME=040074A01BF12000 check_t_upscaler_mfx`: a named shader's 960x540 → 1920x1080 dispatch fills the image through MetalFX. A second dispatch converts a cropped R11G11B10F input with a highlight above 1.0 and checks every pixel inside and outside an offset output rectangle. It runs with the encoding thread off and on. Equal sizes and an unnamed shader keep the shader, and without `DM_UPSCALER=metalfx` nothing changes (Metal validation stops MetalFX's Metal 4 scaler on a barrier setting of its own with no public API, so that run is without it). `test_game_profile.py` checks the keys taken from a shader map and `test_settings.py` that the launcher offers the choice to Bananza and not to a game without the network. **Open:** a standalone Metal 4 MetalFX HDR test on M1 intermittently returned non-finite pixels at small input sizes (64x36 and 320x180). The packed-format regression also saw an intermittent colour error at handheld resolution. Check picture quality and frame time against the game's network in a heavy area. The network's own cost is the translator's LDSM / MOVM emulation, open in [Ampere HMMA through simdgroup_matrix](shaders.md#ampere-hmma-through-simdgroup_matrix).
+ - **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md): NDSR `7629d857a0a93833` in the heavy areas, 1676x943 → 2304x1296 docked (after three passes of its own at the render resolution, which stay), 960x540 → 1920x1080 handheld.
+ 
++### Block corruption after NDVE movie reconstruction
++
++- **Symptom:** Ocarina of Time's title movie shows rectangular colour blocks while the logo, menu and subtitles remain legible.
++- **Cause:** GPU readbacks on an M1 Pro show a clean 1920×1080 RGBA texture after the AV1 frame is converted. Artifacts first appear in the following NDVE intermediate and cover the picture in its 2560×1440 output. The translation error inside NDVE remains open.
++- **Fix:** `DM_NVN_NDVE_MOVIE_DIRECT=1` scales the clean frame into the movie's usual output with a bilinear Metal draw. It matches the observed conversion and final shader keys, requires both dispatches in the same submission and checks the image formats and dimensions. The known contiguous sequence of 13 reconstruction dispatches is replaced only after the native draw has been encoded successfully; image and program bindings are still replayed. An unknown shader, indirect dispatch, side-effect operation, missing destination or mismatched output falls back to the original sequence. The option trades NDVE reconstruction for standard scaling, is off by default, and does not alter gameplay reconstruction.
++- **Check:** `make -C dm/gfx/tests GAME=040074A01BF12000 check_t_ndve_movie` checks the submission lifetime and samples three points in the scaled output. The combined local Ocarina integration showed the title movie without the rectangular blocks after the switch was enabled.
++- **Found on:** The Legend of Zelda: Ocarina of Time (Switch 2), title ID `0400486024DEC000`, version 1.1.1.
++
+ ### An upscaler's colour read from its code
+ 
+ - **Symptom:** with `DM_UPSCALER=metalfx`, a game's picture is washed out wherever it upscales: lifted shadows and low contrast, the scene only, with the UI drawn after it correct; with `DM_UPSCALER=game`, or at a size the game does not upscale, it is right.

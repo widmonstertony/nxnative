@@ -10,6 +10,7 @@
 # one file it would be two copies, so bytes are stored by their hash. A file removed from the cache gives its pages back at the next prune (incremental vacuum), with no copy of the file.
 # It only saves work: a damaged file costs the work it held and is made anew, and a full drive is one [RED] line. An entry is written and read whole, so its file is never seen half written.
 # Names, as in the folder this replaces: metallib/<target>/<digest>[_x].metallib (dmsh_mtlcache.py), shader/<digest>/<mac|ios>/<output>, index/<key>.json, variant/<digest>/<file> (dmsh_build.py).
+# A separate *.zstd.db cache stores a one-byte codec before each blob. Hashes still name the original bytes.
 # Not part of the translation chain: it decides no output (dmsh_chain.py), like dmsh_mtlcache.py.
 import contextlib, fcntl, hashlib, json, multiprocessing, os, re, shutil, sqlite3, tarfile, threading, time
 from pathlib import Path
@@ -38,6 +39,29 @@ def generations(folder):
     return gens + ([os.path.join(folder, LEGACY)] if LEGACY in names else [])
 
 
+def _cache_codec(db, path):
+    if not os.fspath(path).endswith('.zstd.db'):
+        return None
+    first = db.execute('SELECT hash, data FROM blob ORDER BY id LIMIT 1').fetchone()
+    # Existing raw caches may have this extension from before codec support.
+    if first and hashlib.blake2b(first[1], digest_size=16).digest() == first[0]:
+        return None
+    try: from compression import zstd
+    except ImportError: from backports import zstd
+    return zstd
+
+
+def _decode_blob(codec, data):
+    if codec is None or data is None:
+        return bytes(data) if data is not None else None
+    if data[:1] == b'\0': return data[1:]
+    try:
+        if data[:1] == b'\1': return codec.decompress(data[1:])
+    except codec.ZstdError:
+        pass
+    return None
+
+
 class _ReadOnly:
     """Live SQLite readers of other compile cache files, asked in order: mode=ro sees a writer's committed WAL, never migrates, repairs or writes them. Mutable index/stage bookkeeping is local to each build.
     prefixes: the names they serve (an older generation serves only its Metal compiles: a per-shader entry of another chain never hits)"""
@@ -45,11 +69,16 @@ class _ReadOnly:
         self.say, self.lock, self.prefixes, self.dbs = say, threading.RLock(), prefixes, []
         for p in map(os.fspath, paths):
             if not os.path.isfile(p): continue
-            try: self.dbs.append((p, sqlite3.connect(Path(p).resolve().as_uri() + '?mode=ro', uri=True, timeout=WAIT, check_same_thread=False, isolation_level=None)))
-            except sqlite3.Error as e: self.say(f'[RED] the read-only shader cache {p} cannot be read and is ignored: {e}')
+            db = None
+            try:
+                db = sqlite3.connect(Path(p).resolve().as_uri() + '?mode=ro', uri=True, timeout=WAIT, check_same_thread=False, isolation_level=None)
+                self.dbs.append((p, db, _cache_codec(db, p)))
+            except (sqlite3.Error, ImportError) as e:
+                if db is not None: db.close()
+                self.say(f'[RED] the read-only shader cache {p} cannot be read and is ignored: {e}')
 
     def _failed(self, i, e):
-        p, db = self.dbs.pop(i)
+        p, db, _ = self.dbs.pop(i)
         self.say(f'[RED] the read-only shader cache {p} cannot be read and is ignored: {e}')
         with contextlib.suppress(sqlite3.Error): db.close()
 
@@ -61,22 +90,23 @@ class _ReadOnly:
             while i < len(self.dbs):
                 try: rows = self.dbs[i][1].execute(sql, args).fetchall()
                 except sqlite3.Error as e: self._failed(i, e); continue
-                i += 1; yield rows
+                codec = self.dbs[i][2]
+                i += 1; yield rows, codec
 
     def get(self, name):
         if self.shared(name):
-            for rows in self._each('SELECT b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name):
-                if rows: return bytes(rows[0][0])
+            for rows, codec in self._each('SELECT b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name):
+                if rows and (data := _decode_blob(codec, rows[0][0])) is not None: return data
         return None
 
-    def has(self, name): return self.shared(name) and any(rows for rows in self._each('SELECT 1 FROM entry WHERE name=?', name))
+    def has(self, name): return self.shared(name) and any(rows for rows, _ in self._each('SELECT 1 FROM entry WHERE name=?', name))
 
     def names(self, prefix):
-        return {n for rows in self._each('SELECT name FROM entry WHERE name>=? AND name<?', prefix, prefix + '\U0010ffff') for n, in rows if self.shared(n)}
+        return {n for rows, _ in self._each('SELECT name FROM entry WHERE name>=? AND name<?', prefix, prefix + '\U0010ffff') for n, in rows if self.shared(n)}
 
     def close(self):
         with self.lock:
-            for _, db in self.dbs:
+            for _, db, _ in self.dbs:
                 with contextlib.suppress(sqlite3.Error): db.close()
             self.dbs = []
 
@@ -103,8 +133,9 @@ class Store(_Files):
         older: the files of earlier generations of this one (for_chain), whose Metal compiles are copied into this file when they are read"""
         self.path, self.say = os.fspath(path), say
         self.lock = threading.RLock()   # one connection, for dmsh_build.py's threads: a read or a write of an entry takes microseconds next to a compile
-        self.full = False   # set by the first write that fails (a full drive): no later write is tried, and the batch it was part of is rolled back
-        self.outer = False   # inside the outermost batch: SQLite may end the transaction itself on a failed write, so its own flag cannot tell
+        self.full = False   # set by the first failed write; roll its whole batch back
+        self.zstd = None
+        self.outer = False   # SQLite can end its transaction on a failed write
         source = readonly if readonly is not None else READ_ONLY
         if source and os.path.realpath(source) == os.path.realpath(self.path): raise ValueError('the writable and read-only shader caches must differ')
         self.use_lock = None
@@ -138,11 +169,13 @@ class Store(_Files):
             if not self._damage(e): raise
 
     def _prepare(self):   # the file's settings and tables; each step does nothing to a file that has them, so a reopened file takes it again
-        self.db.execute('PRAGMA page_size=16384'); self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')   # both only before the first table
+        compact = self.path.endswith('.zstd.db')
+        self.db.execute(f'PRAGMA page_size={4096 if compact else 16384}'); self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')   # both only before the first table
         # WAL: a reader in another process does not wait for a writer, and a commit needs no fsync. A drive that cannot share its memory file stays on the rollback journal, unsynced: a stop costs the cache at worst
         if self.db.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal': self.db.execute('PRAGMA synchronous=NORMAL')
         else: self.db.execute('PRAGMA synchronous=OFF')
         for s in SCHEMA: self.db.execute(s)
+        self.zstd = _cache_codec(self.db, self.path)
 
     def _damage(self, e):   # True when e says the file is damaged, which is now made anew
         if not any(w in str(e) for w in _DAMAGED): return False
@@ -163,13 +196,21 @@ class Store(_Files):
     def has(self, name):
         return bool(self._run('SELECT 1 FROM entry WHERE name=?', name)) or any(r is not None and r.has(name) for r in (self.older, self.readonly))
 
-    def get(self, name):
-        """An entry's bytes, None when there is none. One an older generation holds is copied into this file first, so that it stays when that generation goes"""
-        rows = self._run('SELECT b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name)
-        if rows: return bytes(rows[0][0])
-        if self.older and (data := self.older.get(name)) is not None:
-            self.put(name, data); return data
-        return self.readonly.get(name) if self.readonly else None
+    def get(self, name):   # an entry's bytes, None when there is none
+        rows = self._run('SELECT b.id, b.data FROM entry e JOIN blob b ON b.id=e.blob WHERE e.name=?', name)
+        if not rows:
+            if self.older and (data := self.older.get(name)) is not None:
+                self.put(name, data)
+                return data
+            return self.readonly.get(name) if self.readonly else None
+        blob, data = rows[0]
+        if (decoded := _decode_blob(self.zstd, data)) is not None: return decoded
+        self.say(f'[RED] invalid compressed shader cache blob for {name}; rebuilding it')
+        with self.batch():
+            if self._run('SELECT 1 FROM blob WHERE id=? AND data=?', blob, data):
+                self._run('DELETE FROM entry WHERE blob=?', blob)
+                self._run('DELETE FROM blob WHERE id=?', blob)
+        return None
 
     def names(self, prefix):   # the set of names starting with prefix
         local = {r[0] for r in self._run('SELECT name FROM entry WHERE name>=? AND name<?', prefix, prefix + '\U0010ffff')}
@@ -185,7 +226,13 @@ class Store(_Files):
             try:
                 with self.batch():
                     row = self.db.execute('SELECT id FROM blob WHERE hash=?', (digest,)).fetchone()
-                    blob = row[0] if row else self.db.execute('INSERT INTO blob(hash, data) VALUES(?, ?)', (digest, data)).lastrowid
+                    if row:
+                        blob = row[0]
+                    else:
+                        if self.zstd is not None:
+                            packed = self.zstd.compress(data, level=1)
+                            data = b'\1' + packed if len(packed) < len(data) else b'\0' + data
+                        blob = self.db.execute('INSERT INTO blob(hash, data) VALUES(?, ?)', (digest, data)).lastrowid
                     self.db.execute('INSERT OR REPLACE INTO entry(name, blob, mtime) VALUES(?, ?, ?)', (name, blob, time.time() if when is None else when))
             except sqlite3.OperationalError as e: self._unwritable(e)
             except sqlite3.DatabaseError as e:
@@ -491,7 +538,7 @@ def drop_generations(folder, chain, say=print, remove=None):
             if store.holds(prefix): continue
             for p in others:
                 src = _ReadOnly([p], say)
-                try: has = bool(next(src._each('SELECT 1 FROM entry WHERE name>=? AND name<? LIMIT 1', prefix, prefix + '\U0010ffff'), None))
+                try: has = any(rows for rows, _ in src._each('SELECT 1 FROM entry WHERE name>=? AND name<? LIMIT 1', prefix, prefix + '\U0010ffff'))
                 finally: src.close()
                 if has:
                     n = store.take(p, prefix)

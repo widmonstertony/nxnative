@@ -5,7 +5,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Press a button to join](#press-a-button-to-join)
-- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
+- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Shader prefetch](#shader-prefetch), [Downsample HDR textures](#downsample-hdr-textures), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
 - [In-game menu](#in-game-menu)
 - [TV](#tv)
@@ -23,7 +23,7 @@ A Mac app carries the same list (`Contents/Resources/dm/launcher.json`), without
 
 ### Frame rate
 
-Games whose speed the app controls (Breath of the Wild, Tears of the Kingdom and a few others) offer **30 fps** or **60 fps**. 60 is smoother; 30 is what the Switch ran and uses less power, so the phone stays cooler and the battery lasts longer. The game runs at real speed either way.
+Games whose speed the app controls (Breath of the Wild, Tears of the Kingdom and a few others) offer **30 fps** or **60 fps**. 60 is smoother; 30 is what the Switch ran and uses less power, so the phone stays cooler and the battery lasts longer. The game runs at real speed either way. Games that reach 60 by showing a new frame at every refresh, where the Switch showed each frame for two (Monster Train 2), offer the same choice.
 
 On a Mac, a game checked at that speed (Fire Emblem Fortune's Weave, Mario & Luigi: Brothership) also offers **120 fps**. It needs a screen that shows 120 Hz, and uses more GPU and power. When frames do not fit, during movies, or on a slower screen, the game drops to 60 for a while, so it keeps its real speed. If you see the frame rate move between 60 and 120 and would rather it stayed still, choose 60.
 
@@ -107,6 +107,10 @@ The game's vibration, on the phone or on a connected controller.
 
 How strong the game's vibration is, from 0 to 300 %.
 
+### Swap A / B and Swap X / Y
+
+On the Mac, these independent switches exchange the physical controller's A and B buttons, or X and Y buttons, for this game. Both are off by default. They apply after the host maps the controller to Switch button positions and before it records press edges, for every player and for GameController and raw HID controllers. Keyboard and scripted controls keep their bindings. The settings are saved with the game's other launcher choices and take effect at the next launch. In an environment file, use `DM_PAD_SWAP_AB=1` and `DM_PAD_SWAP_XY=1`.
+
 ### Rumble cutoff
 
 A controller's vibration weaker than this stays off, and the rest is spread over the full range. Off (0 %) by default. A controller with rotating motors can rumble all the time in a game that sends a quiet texture: Mario Kart 8 Deluxe needs about 45 % to rumble only on crashes and drifts. The phone's own vibration is not affected.
@@ -189,6 +193,21 @@ The app turns the game's graphics commands into Metal commands on a thread of it
 
 - **When to change it:** leave it on unless a game misbehaves with it; turning it off is a diagnostic step.
 
+### Shader prefetch
+
+When the game makes a program, the app loads its shader libraries in the background instead of waiting for the first draw that needs them, so a new scene's first frames do not stall while each library is opened (in Donkey Kong Bananza a level's first frames loaded three to seven libraries on the submitting thread, 20-90 ms each with the drive idle). It is on by default.
+
+- **Cost:** every library of the program is opened whether a draw uses it or not. A game whose shader tree is very large fills the phone's limit on open mappings this way, and iOS ends the app after a few minutes (Persona 5 Royal: 24,826 pipelines, about ten minutes, the crash report says `vnode-limit`).
+- **When to change it:** off for a game that iOS ends after a few minutes of play. Each library is then loaded at its first draw, which costs a short stall there instead.
+- **Tests:** off, Persona 5 Royal held 30 fps for 34 minutes on an iPhone 17 Pro (61,200 frames, no crash, 1,773 MiB), against 5 minutes 33 seconds with it on.
+
+### Downsample HDR textures
+
+On an iPhone or iPad whose GPU does not read block-compressed (BC) textures itself (before the A17 Pro and the M1), a game whose profile decodes BC textures on the CPU (`tex_bc_cpu`) expands each BC6H HDR texture into 16-bit floats, 8 bytes a pixel. A scene with many of them can pass the memory the system allows and end the app. This setting decodes them into the shared-exponent format RGB9E5 instead, 4 bytes a pixel, half the memory. It is off by default and the row is only shown for such games on such devices.
+
+- **Cost:** negative values (signed BC6H) become 0 and each colour keeps 9 bits of mantissa, so HDR gradients can show slight banding.
+- **When to change it:** turn it on only for a game that the system ends for lack of memory in scenes with many HDR textures.
+
 ### Hold frames when late
 
 For games whose frame rate the app controls ([Frame rate](#frame-rate)). With 60 fps chosen, each frame is meant to stay on screen for one refresh. When a frame comes late, the app can either slow the game down to 30 fps for a while, or keep 60 and show late frames as they come.
@@ -241,6 +260,12 @@ Turn off **Show this window at launch** to start the game at once with your choi
 
 ## Cloud saves
 
+A build signed for the shared iCloud container syncs supported games automatically on iPhone, iPad, Mac and Apple TV. Sign in to the same iCloud account on each device. The game checks for your save as it starts and sends committed progress in the background. Play can continue offline; pending progress is tried again after the next save, background flush, or launch. When two devices make separate changes, both copies are kept until an explicit choice; the automatic settings row does not yet offer a conflict picker. A copy replaced by an explicit choice is backed up locally. If iCloud has a newer copy while a game is running, the game keeps the local session intact and checks again at the next launch.
+
+Automatic sync currently covers games that use the native host save mounts. Engines with separate save folders require a dedicated integration. Each title syncs its own progress; game files, shaders, and controller settings are local. An existing legacy-folder copy is not imported directly: start with the latest progress on the device that already has it.
+
+### Legacy folder sync
+
 The Mac app and the iPhone app of one game can share a save through iCloud Drive. Choose the same iCloud Drive folder on both: **Cloud saves** › **Choose a folder…** in the Mac settings window, and **Cloud saves** in the iPhone launcher (any folder, for instance one named **nxnative Saves**). Each game keeps one file there, `<title ID>/save.dmsync`, which holds the whole save.
 
 When the game starts, it brings the save from iCloud Drive in if only that one changed since the last sync; a few seconds after the game saves, it sends its save if only this one changed. The iPhone app also sends when it goes to the background, and the Mac app once the game has quit. If you played on both without the save getting across in between, **Play** asks which save to keep: each with its date and size, since the newer one is not always the one with more progress (a new game saved a minute later is newer). The one you don't pick is kept, as below. Without the settings screen (the Mac's `DM_LAUNCHER=0`), the newer save wins.
@@ -251,13 +276,13 @@ iCloud Drive takes a moment to carry a file from one device to the other. Quit t
 
 ## In-game menu
 
-On the iPhone and iPad the gear at the top centre of the touch controls opens a menu while the game runs; it stays when a controller hides the other controls. It holds **Console mode**, **Picture** and the **Frame-rate counter**, then **Controller layout** (**2D**, **3D**, and **Tap**, no controls and every touch to the game, in handheld mode), **Touch feedback** and **Game rumble**: the settings that take effect at once. A choice opens to show its options, the current one ticked. The menu's text keeps one size whatever the system text size, so it stays short over the game. A change is remembered as on the settings screen, which shows it at the next start; a setting `Documents/env.txt` fixes is shown, not changed. The other settings need the game to start again, so they are only on the settings screen: close the app fully and open it again.
+On the iPhone and iPad the gear at the top centre of the touch controls opens a menu while the game runs. With a physical controller connected on the device screen, the gear fades out after 3 idle seconds and returns for 3 seconds when you touch the screen. It holds **Console mode**, **Picture** and the **Frame-rate counter**, then **Controller layout** (**2D**, **3D**, and **Tap**, no controls and every touch to the game, in handheld mode), **Touch feedback** and **Game rumble**: the settings that take effect at once. A choice opens to show its options, the current one ticked. The menu's text keeps one size whatever the system text size, so it stays short over the game. A change is remembered as on the settings screen, which shows it at the next start; a setting `Documents/env.txt` fixes is shown, not changed. The other settings need the game to start again, so they are only on the settings screen: close the app fully and open it again.
 
 Console mode changes as on a Switch put in or taken out of its dock. While a TV shows the game it stays **Docked**, and the mode you pick applies when the TV is disconnected. **Docked** removes the Tap layout, as a docked Switch reads no touch screen.
 
 ## TV
 
-Connect a TV or monitor by cable, or start Screen Mirroring to an Apple TV or AirPlay TV. The game fills it in 16:9 at up to 1080p and switches to **Docked**; the iPhone or iPad keeps the controls. Disconnect to bring the game back to the device in its earlier mode. AirPlay adds some delay; a cable has almost none.
+Connect a TV or monitor by cable, or start Screen Mirroring to an Apple TV or AirPlay TV. The game fills it in 16:9 at up to 1080p and switches to **Docked**. The iPhone or iPad keeps its touch controls. With a physical controller connected, the touch controls and settings gear hide. Disconnect the controller to use touch again, or disconnect the TV to bring the picture and gear back to the device in its earlier mode. AirPlay adds some delay; a cable has almost none.
 
 ## Settings in a file
 
@@ -266,6 +291,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Setting | Variable | Values |
 |---|---|---|
 | Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (Mac, games with `fps_max 120`) |
+| Frame rate (a game shown at every refresh) | `DM_PRESENT_INTERVAL` | `game` 30 fps, `display` 60 fps |
 | Render scale | `DM_RENDER_SCALE` | `0.5` to `1.0` (Hades II: to `3.0`) |
 | Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
 | Game language | `DM_LANG` | a language code, such as `ja` |

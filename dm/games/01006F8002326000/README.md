@@ -65,6 +65,8 @@ Checked on a Mac (M1, macOS 27, headless, an island save) against 16:9: the 3D v
 
 ## Found on this game
 
+- [The Mac host build starts an older Python than the pipeline](../../../docs/reference/packing.md#the-mac-host-build-starts-an-older-python-than-the-pipeline): NX2Apple issue #711 reported the host shader generator starting Python 3.6 despite the bundled Python 3.13 driver. Reproduced with synthetic tools, no gameplay check.
+
 General host changes first needed here; each applies to every game:
 
 - **The host's shaders compiled when the host is built** (`dm/gfx/msl`, `host_msl_lib`): the HUD's `Compiled 2 shaders … 102.70ms` in play on an iPhone 17 Pro Max came from clear-triangle libraries compiled from source when a new room first issued a scissored clear; [The host's own shaders compiled from source at run time](../../../docs/reference/shaders.md#the-hosts-own-shaders-compiled-from-source-at-run-time).

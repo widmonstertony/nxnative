@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)
+#include "hle_oodle_legacy.inc"
+#else
 // The game's own decoder, for the offline shader tools. Unreal Engine games compress each shader in their shader code archives with Oodle (Octopath Traveler 0: every entry of the
 // two .ushaderbytecode files in pakchunk0-Switch.pak, block header 8C 0A = Mermaid), Game Freak's Trinity engine every file of its packs (Pokémon Legends: Z-A: arc/data.trpfs, compression
 // type 3), PlatinumGames' engine the entries of its PKZ archives (Bayonetta 3: OodleKraken, block header 8C 06), and DRAGON QUEST XI S (Unreal Engine 4.18) the files of its paks with LZ5 2.0
@@ -208,3 +212,5 @@ void dm_oodle_serve_maybe(int late) {
     LOG("DM_OODLE_SERVE: %llu requests, %llu failed", (unsigned long long)n, (unsigned long long)bad);
     fflush(stderr); _exit(bad ? 1 : 0);
 }
+
+#endif

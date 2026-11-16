@@ -1,3 +1,7 @@
+#include <TargetConditionals.h>
+#if (TARGET_OS_IPHONE && !defined(DM_NVN_MODERN_RENDERER)) || defined(DM_NVN_LEGACY_RENDERER_TEST)
+#include "legacy/nvn_dirty.c.inc"
+#else
 // Write-protect dirty-page tracking for guest memory: pool pages of packaged textures (CPU writes, GPU reads) are set read-only after upload, and as soon as the game writes it faults -> mark dirty, unprotect;
 // before use, check the write generation of the covered pages and re-upload if newer than at upload time. NVN semantics: a texture descriptor points to pool memory, and the GPU reads the current content every time
 // (measured: the game writes streamed assets into texture storage that is still being sampled, without re-registering).
@@ -438,3 +442,5 @@ void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     *calls = atomic_load(&g_mp_calls); *pages = atomic_load(&g_mp_pages); *ns = atomic_load(&g_mp_ticks) * tb.numer / tb.denom;
 }
+
+#endif

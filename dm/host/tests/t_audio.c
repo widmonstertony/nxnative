@@ -50,6 +50,7 @@ static int test_surround_output(void) {
         aout_buf b[2] = {{.ptr = in, .cap = SPLIT * 12, .size = SPLIT * 12}, {.ptr = in + SPLIT * 6, .cap = (FRAMES - SPLIT) * 12, .size = (FRAMES - SPLIT) * 12}};
         aout a = {.ch = 6};
         atomic_init(&a.state, STATE_STARTED); atomic_init(&a.vol, 0x3f800000u);
+        atomic_init(&a.consumer, BK_AU);
         a.q[0] = b; a.q[1] = b + 1; atomic_init(&a.q_tail, 2);
         AudioBufferList bl = {.mNumberBuffers = 1, .mBuffers = {{2, sizeof out, out}}};
         au_render(&a, NULL, NULL, 0, FRAMES, &bl);

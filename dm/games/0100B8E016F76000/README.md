@@ -28,6 +28,8 @@ The global profile's keys:
 
 ## Found on this game
 
+- Shared Mac host: [duplicate forced HID registrations](../../../docs/reference/services.md#duplicate-forced-hid-registrations-abort-a-merged-mac-host), resolved during the TonTon upstream merge. The replacement host passes the registry-only startup check; gameplay with that exact replacement remains to be accepted.
+
 - [Passthrough geometry shaders drawn by the vertex shader](../../../docs/reference/shaders.md#passthrough-geometry-shaders-drawn-by-the-vertex-shader): the lean kernels, their hoisting, and the mesh draws (Resistance Camp on an M1: 21.2 → about 17 ms a frame).
 - [Controller haptic engines without advanced players](../../../docs/reference/services.md#controller-haptic-engines-without-advanced-players): a GameSir Super Nova on the iPhone.
 
