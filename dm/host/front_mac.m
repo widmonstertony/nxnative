@@ -13,6 +13,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 #import <GameController/GameController.h>
 #include "dm.h"
 #include "dm_input.h"
@@ -29,7 +30,12 @@
 #include "desktop_input.h"
 #include <sys/stat.h>
 
+#ifndef DM_GAME_PRESENT_UPSCALE
+#define DM_GAME_PRESENT_UPSCALE "off"
+#endif
+
 static CAMetalLayer *g_layer;
+static int g_metalfx_4k;   // fixed for the lifetime of the window
 static uint64_t g_btn;
 static key_state g_key_state;
 static int g_input_on = 1;   // main thread: the game window is key, so its keyboard, mouse and controllers reach the game (input_release / input_resume)
@@ -88,7 +94,7 @@ static void screen_match_apply(void) {   // main thread: on a new frame rate, on
     NSScreen *scr = g_win.screen; int want = g_match_want, full = (g_win.styleMask & NSWindowStyleMaskFullScreen) != 0;
     CGDirectDisplayID id = scr ? [scr.deviceDescription[@"NSScreenNumber"] unsignedIntValue] : kCGNullDirectDisplay;
     if (g_match_orig && (!full || id != g_match_id)) screen_match_restore(id == g_match_id);
-    if (off || !full || want <= 0 || !scr) return;
+    if (off || g_metalfx_4k || !full || want <= 0 || !scr) return;
     CGDisplayModeRef cur = CGDisplayCopyDisplayMode(id);
     if (!cur) return;
     double hz = mode_hz(cur);
@@ -775,7 +781,16 @@ static void direct_touch_cancel(void) { [g_direct_touch cancelContacts]; }
 - (void)fitDrawable {
     CAMetalLayer *l = (CAMetalLayer *)self.layer; if (![l isKindOfClass:CAMetalLayer.class] || !self.window) return;
     l.contentsScale = self.window.backingScaleFactor;
-    NSSize px = [self convertSizeToBacking:self.bounds.size]; if (px.width < 1 || px.height < 1 || CGSizeEqualToSize(l.drawableSize, px)) return;
+    NSSize px = [self convertSizeToBacking:self.bounds.size];
+    if (px.width < 1 || px.height < 1) return;
+    if (g_metalfx_4k) {
+        // Give a 16:9 game a UHD rectangle even in a wider or taller window.
+        // The renderer fits the game into the drawable with the usual letterboxing.
+        double scale = fmax(3840.0 / px.width, 2160.0 / px.height);
+        scale = fmin(scale, 8192.0 / fmax(px.width, px.height));
+        px = NSMakeSize(fmax(1, round(px.width * scale)), fmax(1, round(px.height * scale)));
+    }
+    if (CGSizeEqualToSize(l.drawableSize, px)) return;
     l.drawableSize = px; LOG("front end: drawable %.0fx%.0f", px.width, px.height);
 }
 - (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
@@ -1676,6 +1691,13 @@ void front_run(void (*guest)(void)) {
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
         g_layer.device = MTLCreateSystemDefaultDevice();
+        const char *upscale = getenv("DM_PRESENT_UPSCALE") ?: DM_GAME_PRESENT_UPSCALE;
+        if (upscale && !strcmp(upscale, "metalfx4k")) {
+            g_metalfx_4k = [MTLFXSpatialScalerDescriptor supportsMetal4FX:g_layer.device];
+            // The existing NVN present path encodes the scaler into the UHD drawable.
+            setenv("DM_PRESENT_UPSCALE", g_metalfx_4k ? "metalfx" : "off", 1);
+            LOG("front end: 4K MetalFX %s", g_metalfx_4k ? "enabled" : "unavailable on this GPU");
+        }
         g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         g_layer.contentsScale = win.backingScaleFactor;
         // Apple's HUD over the game (frame rate, frame and GPU time, memory): front_hud_env turns it on before the first device. The layer's developerHUDProperties

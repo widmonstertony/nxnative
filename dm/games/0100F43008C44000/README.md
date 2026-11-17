@@ -88,6 +88,8 @@ This smoke test does not establish performance across the city or in combat.
 
 ## Mac routes
 
+The TonTon Mac build defaults to [4K MetalFX](../../../docs/reference/rendering.md#the-present-upscales-through-metalfx). At Lumiose Station on an M5 Max, the scaler took the 1920 × 1080 game output to 3840 × 2160. The adaptive 60 fps test on 2.0.2 presented 1,799 frames over 30 seconds, and the game clock advanced 30.000 seconds in 30.014 seconds. The display stayed at 120 Hz.
+
 - A fresh save reaches play in Lumiose City with `DM_KBD=Taylor DM_KEYS="f450:A,f1200:LRight~1,f1600:A,f1900:Down,f2000:Down,f2100:A,f2400:A*80/90"`.
 - A save made there continues with `DM_KEYS="f300:A*3/150"` (play from about frame 600), and `LUp~12` then walks along the platform.
 - A 5-minute walk: GPU about 6 ms a frame, no crash.

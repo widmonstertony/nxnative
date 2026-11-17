@@ -12,6 +12,8 @@ name	Pokémon Legends: Z-A
 ipa	PokMonLegendsZA.ipa
 app_category	public.app-category.games
 pad_layout	full
+fps_target_mac	60
+present_upscale	metalfx4k
 render_cond	on
 # the game sets the near=0 depth mode (nvnDeviceSetDepthMode): the pipeline bases made before it runs take the main0_z vertex entries
 depth_mode	zero

@@ -64,6 +64,9 @@ def build(gid, patched, control):
     if platform not in ('ios', 'mac'): sys.exit(f'SETTINGS_PLATFORM must be ios or mac: {platform}')
     g = game.load(gid)
     macros = dict(re.findall(r'^#define (DM_GAME_\w+) (.*)$', game.header_one(g), re.M))   # the host's own defaults, as it is compiled for this game
+    macros.setdefault('DM_GAME_PRESENT_UPSCALE', '"off"')
+    if platform == 'mac' and 'DM_GAME_FPS_TARGET_MAC' in macros:
+        macros['DM_GAME_FPS_TARGET'] = macros['DM_GAME_FPS_TARGET_MAC']
     keys = fixups_keys(Path(patched) / 'main.fixups.tsv')
     have = nacp.languages(control)
     langs = [(c, n) for c, n in nacp.LANGUAGES if not have or c in have]   # no list (a dump or a NUP has no control data, none of its packages may): any language may be the game's, as DM_LANG and the NSP script's check take it

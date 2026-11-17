@@ -861,6 +861,8 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [The Legend of Zelda: Breath of the Wild — upscaling and measurements](../../dm/games/01007EF00011E000/README.md#upscaling-current).
 - **Limit:** the scaler takes the presented frame, including any filtering and HUD drawing the game already performed. Feeding it an earlier scene target would mean replacing a draw of the game's own, and nothing general identifies which draw is a plain upscale. Scaler support is checked at runtime; unsupported devices, sizes and formats use standard scaling.
 
+- **Mac UHD output:** `DM_PRESENT_UPSCALE=metalfx4k` uses the same scaler and a drawable sized for a 3840 × 2160 picture in a 16:9 window. The drawable accounts for a differently shaped window so the usual present fit keeps the picture in proportion. This mode keeps the current display refresh rate in fullscreen. The Mac NVN launcher offers it alongside standard scaling and regular MetalFX. [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#mac-routes) enables it by default.
+
 ### The NVN present crops by the vi layer crop
 
 - **Symptom:** in handheld mode the picture fills only two thirds of the screen's width and height, in the bottom-left corner (the top-left with the upper-left origin), the rest black.

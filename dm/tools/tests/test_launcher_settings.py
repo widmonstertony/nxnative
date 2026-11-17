@@ -117,11 +117,25 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SW2', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SCREEN_MATCH', 'DM_SW2', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
         for key in ('DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY'):
             self.assertEqual((mac[key]['kind'], mac[key]['default'], mac[key]['level']), ('toggle', '0', 'basic'))
         s = mac['DM_FULLSCREEN']
         self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '1', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
+
+    def test_4k_metalfx_is_mac_nvn_only_with_a_za_default(self):
+        rows = build('0100F43008C44000', 'nvn', 'mac')
+        upscale = rows['DM_PRESENT_UPSCALE']
+        self.assertEqual(upscale['default'], 'metalfx4k')
+        self.assertIn(['metalfx4k', '4K MetalFX'], upscale['options'])
+        self.assertEqual(rows['DM_FPS_TARGET']['default'], '60')
+        self.assertNotIn('DM_FPS_TARGET', build('0100F43008C44000', 'nvn', 'ios'))
+        self.assertEqual(build(BOTW, 'nvn', 'mac')['DM_PRESENT_UPSCALE']['default'], 'off')
+        for api, platform in (('nvn', 'ios'), ('vulkan', 'mac'), ('gl', 'mac')):
+            with self.subTest(api=api, platform=platform):
+                setting = build('0100F43008C44000', api, platform)['DM_PRESENT_UPSCALE']
+                self.assertEqual(setting['default'], 'off')
+                self.assertNotIn('metalfx4k', {value for value, _ in setting['options']})
 
     def test_desktop_rows_require_a_mac_keyboard_profile(self):
         keys = {'DM_DESKTOP_CONTROLS', 'DM_MOUSE_LOOK', 'DM_MOUSE_SENSITIVITY', 'DM_MOUSE_INVERT_Y'}

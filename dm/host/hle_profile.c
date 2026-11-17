@@ -3,6 +3,7 @@
 #include "dm.h"
 #include "hle_profile.h"
 #include <ctype.h>
+#include <TargetConditionals.h>
 
 static struct dm_profile P;
 static int g_loaded;
@@ -144,6 +145,9 @@ static void defaults(void) {
       } }
     P.present_display = DM_GAME_PRESENT_DISPLAY; P.core_preempt = DM_GAME_CORE_PREEMPT; P.alloc_big_align = DM_GAME_ALLOC_BIG_ALIGN;
     P.fps_target = DM_GAME_FPS_TARGET; P.fps_hold = DM_GAME_FPS_HOLD; P.present_snap = DM_GAME_PRESENT_SNAP; P.pso_mtl4 = DM_GAME_PSO_MTL4;
+#if TARGET_OS_OSX && defined(DM_GAME_FPS_TARGET_MAC)
+    if (DM_GAME_FPS_TARGET_MAC) P.fps_target = DM_GAME_FPS_TARGET_MAC;
+#endif
 #ifdef DM_GAME_SHARED_FONT_TTF
     P.shared_font_ttf = DM_GAME_SHARED_FONT_TTF;
 #else
@@ -205,6 +209,9 @@ static void set_kv(const char *k, const char *v) {
     else if (!strcmp(k, "core_preempt")) P.core_preempt = truthy(v);
     else if (!strcmp(k, "alloc_big_align")) P.alloc_big_align = truthy(v);
     else if (!strcmp(k, "fps_target")) P.fps_target = (int)num(v, (uint64_t)P.fps_target);
+#if TARGET_OS_OSX
+    else if (!strcmp(k, "fps_target_mac")) P.fps_target = (int)num(v, (uint64_t)P.fps_target);
+#endif
     else if (!strcmp(k, "fps_hold")) P.fps_hold = truthy(v);
     else if (!strcmp(k, "present_snap")) P.present_snap = truthy(v);
     else if (!strcmp(k, "pso_mtl4")) P.pso_mtl4 = truthy(v);

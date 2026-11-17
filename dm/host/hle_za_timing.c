@@ -18,7 +18,7 @@
 #include "za_frame_delta.h"
 
 enum { ZA_GAME, ZA_STATIC60, ZA_ADAPTIVE60, ZA_DYNAMIC60 };
-static int g_za_diag, g_za_valid;
+static int g_za_diag, g_za_valid, g_za_interval_present;
 static _Atomic int g_za_mode, g_za_live_allowed;
 static int g_za_dynamic_hz = 60;
 static _Atomic uint64_t g_za_epoch;
@@ -154,7 +154,7 @@ static int za_reset_locked(int mode, const char *why) {
     // A diagnostic epoch in the same dynamic mode must not reseed the actual
     // game controller. Dropping two observed samples cannot change engine dt.
     memset(&g_za, 0, sizeof g_za); g_za.min_ns = UINT64_MAX;
-    g_za_interval_seen = 0; g_za_warmup = 2;
+    g_za_interval_seen = !g_za_interval_present; g_za_warmup = 2;
     atomic_store_explicit(&g_za_mode, mode, memory_order_release);
     uint64_t epoch = atomic_fetch_add_explicit(&g_za_epoch, 1, memory_order_acq_rel) + 1;
     LOG("%s timing: epoch=%llu mode=%s boundary=%s; counters reset, awaiting new-mode interval and two clock samples", g_trinity->name,
@@ -184,7 +184,9 @@ static void za_init(void) {
         LOG("[RED] Trinity timing: unsupported main build; diagnostics and experiment disabled");
         return;
     }
-    if (!gate_obs_present(OBS_ZA_CLOCK_DELTA) || !gate_obs_present(OBS_ZA_INTERVAL)) {
+    g_za_interval_present = gate_obs_present(OBS_ZA_INTERVAL);
+    // The upstream frame-step hook owns Z-A's interval site. Its native clock can still be measured without selecting another interval.
+    if (!gate_obs_present(OBS_ZA_CLOCK_DELTA) || (!g_za_interval_present && (violet || selected_mode != ZA_GAME))) {
         LOG("[RED] %s timing: rewritten main lacks the required clock/interval observation gates", g_trinity->name);
         return;
     }
@@ -195,6 +197,7 @@ static void za_init(void) {
     pthread_mutex_unlock(&g_za_mu);
     // Published only after the startup opt-in, exact build and both gates passed.
     // A DM_CTL change never initializes or arms timing on a previously off run.
+    live_optin = live_optin && g_za_interval_present;
     atomic_store_explicit(&g_za_live_allowed, live_optin, memory_order_release);
     LOG("%s timing: mode=%s, base-clock diagnostics enabled; original instructions are retained, no runtime code patch; live_switch=%d", g_trinity->name, za_mode_name(selected_mode), live_optin);
 }
