@@ -97,3 +97,41 @@ keyboard/controller presence hides touch controls. Chinese labels preserve
 underlying configuration values. Frame generation is experimental image optical
 flow, not native MetalFX frame interpolation. Game assets, extracted code,
 shader libraries, keys, saves and signing credentials are not distributed here.
+
+## M2 original-chain recovery — 2026-11-17
+
+M2 build 60.128 targets iPadOS 16.1. The device reconnect changed its network
+address; it did not justify resending existing ROMs. The refreshed shelf
+reports 26 of 28 entries ready. This is a resource preflight, not a gameplay
+pass. Emiya and Arceus remain blocked by incompatible frameworks.
+
+- **Fate/Samurai Remnant:** original chain `a3a5cfdab59c`, profile inputs
+  `27b06696f9dc`. The continuation's 10,391 queued keys are complete; this
+  excludes historically completed libraries that are not physically recovered.
+  The installed Half2 adapter and a hash-bound source companion removed the
+  observed vertex-input/source failures. Fourteen actual scene-requested groups
+  were built with the frozen chain for 16.1 and installed as 63 small files.
+  The retest reached the first assassin battle with the player, enemies and
+  terrain visible at about 30 FPS. A prior isolated run also checked movement
+  and an attack advancing the stance tutorial. Full-log review found five
+  additional cutscene keys: these were compiled and installed as 19 small
+  files, with SHA-256 readback; the subsequent visual retest is pending.
+  Buffer-texture alignment, texture-type and integer-vertex warnings remain.
+- **Tears of the Kingdom:** same original chain, profile inputs
+  `ed3afea18bbf`. Its 8,306 queued continuation keys are complete. The 60.127
+  isolated run reached the underground stairs, showing Link, Zelda and the
+  environment; controller input moved Link. Later scenes and sustained frame
+  rate have not been certified.
+- **Ocarina of Time:** the v131072 replacement reused the installed ROM, with
+  nine resource changes and an index update. Its first controllable village
+  scene still causes a GPU address fault on 60.128. Shader-validation and
+  fragment-isolation attempts did not produce a root-cause fix. See the
+  [device finding](../dm/games/0400486024DEC000/README.md#fork-m2-ipados-161-checkpoint-2026-11-17).
+
+Samurai and Tears retain conservative bindings generated from their exact
+original-profile maps: every C1 bank is exclusive/full and CB extents are not
+narrowed. Their identity stamps explicitly describe partial libraries. No
+modern-chain table or library was relabelled. All completed isolated runs
+used scratch saves with cloud sync disabled; original save fingerprints
+matched after cleanup. New scene-only deltas do not reset the primary build
+checkpoints. The Mac build page records installation and scene tests separately.

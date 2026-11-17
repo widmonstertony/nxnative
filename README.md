@@ -81,6 +81,24 @@ build is not a gameplay pass. Keep earlier observations in the
 [device history](docs/fork-status.md) and exact backports in the
 [engine notes](dm/ios/Engines/NxNative/README.md).
 
+November 17 M2 / iPadOS 16.1 verification: the original-chain continuation
+completed its queued 8,306 Tears of the Kingdom and 10,391 Fate/Samurai
+Remnant keys without replacing ROMs or original saves. Tears of the Kingdom
+reached the underground stairs with Link, Zelda and the environment visible;
+Link moved using the isolated controller. Samurai reached its first assassin
+battle at about 30 FPS after the installed Half2 adapter was enabled and 14
+missing shader groups plus one hash-bound vertex-source companion were
+supplied. Five additional cutscene groups were subsequently installed and
+read-back verified; their new scene retest is pending. Buffer-texture,
+texture-type and integer-vertex warnings remain. These are bounded scene
+checks, not full-library recovery or stable 60 FPS results. Conservative
+original-profile identities are retained for normal shelf launches, using
+full exclusive C1 banks without CB narrowing; they do not certify complete
+shader coverage. [Checkpoint details](docs/fork-status.md#m2-original-chain-recovery--2026-11-17).
+Ocarina 60.128 still faults the GPU at the first controllable village scene;
+reducing deferred-release pressure did not fix the invalid access. See the
+[open device finding](dm/games/0400486024DEC000/README.md#fork-m2-ipados-161-checkpoint-2026-11-17).
+
 Air build 60.61 defaults compatible native Switch games to handheld mode and
 MetalFX spatial upscaling, with a per-game override. Handheld mode leaves the
 render size to each game. The compatibility renderer also has a classic

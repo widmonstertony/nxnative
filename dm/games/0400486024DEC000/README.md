@@ -1,6 +1,6 @@
 # The Legend of Zelda: Ocarina of Time (`0400486024DEC000`)
 
-A Switch 2 game: update v131072, SDK 22.2.8 (`Ounce`). Nintendo EPD's engine (sead, agl, gsys, Havok, CRIWARE; project `Owl`, with Tears of the Kingdom's file layout) on NVN2. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`; the rewriter's patches are a frame-step stub and one cut ([`patches.py`](patches.py)). Status: plays on the Mac through the title, the opening, a new file's first scene, Link's house and Kokiri Forest, with saves, at about 59 fps with the picture close to console video. Mac only so far.
+A Switch 2 game: update v131072, SDK 22.2.8 (`Ounce`). Nintendo EPD's engine (sead, agl, gsys, Havok, CRIWARE; project `Owl`, with Tears of the Kingdom's file layout) on NVN2. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`; the rewriter's patches are a frame-step stub and one cut ([`patches.py`](patches.py)). Status: plays on the Mac through the title, the opening, a new file's first scene, Link's house and Kokiri Forest, with saves, at about 59 fps with the picture close to console video. Upstream Mac evidence is separate from the fork's iPadOS 16.1 checks below.
 
 ## What it needs
 
@@ -418,3 +418,27 @@ clean worktree at `47c64627`: no new findings (the full ratchet already
 fails on that base). Both Arceus settings failures also reproduce on the
 clean base. C compilation-database generation passed; clang-tidy was not
 available on this Mac, so the C lint ratchet remains unchecked.
+
+## Fork: M2 iPadOS 16.1 checkpoint, 2026-11-17
+
+Current, not passed: the verified v131072 replacement reused the installed
+ROM image, changed nine resource files and its index, and preserved the
+original save fingerprints. Classic chain `70fa6008c58d` remains pinned.
+Build 60.128 rebuilt only the renderer object; the guest-code section hashes
+match the previous framework.
+
+The opening movie and first 3D sequence render. Transitioning into the first
+controllable village scene still causes a Metal command-buffer GPU address
+fault, initially reported in pass `p283 128x128 ccfff02a d130`. Its mesh
+signposts record at most 13 groups, so this capture does not establish the
+known above-1024 mesh-grid fault. Splitting ordinary render passes at deferred
+release pressure lowered the pending-object count from 72,052 to 28 near
+the fault, but did not remove the fault. The exact bad resource access remains
+open; this is not an out-of-memory or stable-frame-rate pass.
+
+All tests used scratch saves with cloud synchronization disabled. Diagnostic
+overrides were removed afterward and the original save fingerprints matched.
+The shader-validation retry reached the same `p283` GPU address fault and
+later returned to SpringBoard. No precise shader-validation access report
+was captured, so the invalid resource access remains unidentified. A separate
+fragment-isolation run is diagnostic only and must not be presented as a fix.
