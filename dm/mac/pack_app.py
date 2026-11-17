@@ -353,7 +353,7 @@ def copy_msl(msl, msls, dst, clone, extra=()):
     dst.mkdir(parents=True); copy(msls, dst, clone)
 
 
-def selected_inputs(a):
+def selected_inputs(a, extras=()):
     """Resolve once: these same lists supply both the reuse key and the copies."""
     for name in ('patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso'):
         p = getattr(a, name)
@@ -374,7 +374,7 @@ def selected_inputs(a):
     if not any(p.name == 'desktop.tsv' for p in tables) and desktop.is_file(): tables.append(desktop)
     pairs = Path(a.pso_pairs) if a.pso_pairs and not any(p.name == 'pso_pairs.tsv' for p in tables) else None
     fonts = sorted(p for p in Path(a.font).glob('*.ttf') if not detritus(p.name))
-    files = [Path(a.host)] + mods + msls + msl_extra(a) + pso + tables + fonts + ([pairs] if pairs else [])
+    files = [Path(a.host)] + mods + msls + list(extras) + pso + tables + fonts + ([pairs] if pairs else [])
     files += [Path(p) for p in (a.env_file, a.settings, a.icon, a.control_nacp) if p]
     for p in files:
         if not p.is_file(): raise SystemExit(f'no input file at {p}')
@@ -459,7 +459,10 @@ def pack(a):
                 app_id, a.cloudkit_container, a.cloudkit_environment)
         if a.external_romfs and (a.program or not rfs.is_image(a.romfs)):
             raise SystemExit('--external-romfs requires a single-program app and a RomFS image file')
-        mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a)
+        extras = msl_extra(a)
+        if a.external_shaders and extras:
+            raise SystemExit('--msl-extra cannot be packaged with --external-shaders')
+        mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a, extras)
         if a.external_shaders and (a.program or not is_chain_library(a.msl) or len(msls) != 1 or
                                    msls[0].resolve().name != f'{shader_lib.name_of(a.msl)}.img' or not rfs.is_image(msls[0]) or
                                    (a.msl_name and a.msl_name != shader_lib.name_of(a.msl))):
@@ -517,7 +520,7 @@ def pack(a):
     sib = romfs.parent / PROGRAM_ROMFS   # the RomFS of the application's other programs, beside this one's where the host mounts them by program index (hle_fs.c; scripts/pack_nup.py)
     trees, lists = {'romfs': None if a.external_romfs else romfs, 'aoc': aoc, 'programs': sib if sib.is_dir() else None}, {'mods': mods, 'msl': [] if a.external_shaders else msls, 'pso': pso}
     clone = {k: bool(d) and can_clone(d, res) for k, d in trees.items()} | {k: bool(ps) and can_clone(ps[0], res) for k, ps in lists.items()}
-    share_msl = a.share_shader_image and is_chain_library(msl) and len(msls) == 1 and msls[0].suffix == '.img' and clone['msl']
+    share_msl = a.share_shader_image and not extras and is_chain_library(msl) and len(msls) == 1 and msls[0].suffix == '.img' and clone['msl']
     if is_chain_library(msl) and not share_msl: clone['msl'] = False   # copy_msl writes a filtered image
     need = sum(tree_bytes(d) for k, d in trees.items() if d and not clone[k]) + sum(p.stat().st_size for k, ps in lists.items() if not clone[k] for p in ps)
     if need:
@@ -553,7 +556,7 @@ def pack(a):
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
             whole = pool.submit(digest, image) if image else None
             d.mkdir(parents=True)
-            if share_msl and not extras:
+            if share_msl:
                 copy(msls, d, True)
                 if msls[0].name != f'{msl_dst.name}.img':
                     (d / msls[0].name).rename(d / f'{msl_dst.name}.img')
@@ -563,7 +566,7 @@ def pack(a):
         for n, _, pmsl, _, _, pmsls, _ in programs: (d / f'p{n}').mkdir(); copy_msl(pmsl, pmsls, d / f'p{n}' / pmsl.name, can_clone(pmsls[0], res))
     lib_code = [digest(Path(shader_lib.__file__)), digest(Path(rfs.__file__))]   # what writes a chain library's one file
     if not a.external_shaders:
-        label = 'shader libraries (APFS clone)' if share_msl and not extras else 'shader libraries'
+        label = 'shader libraries (APFS clone)' if share_msl else 'shader libraries'
         place('ShaderLibraries', 'msl', label, [lib_code, share_msl, [took[str(p)] for p in extras], msl_dst.name, [took[str(p)] for p in msls], [(x[0], x[2].name, [took[str(p)] for p in x[5]]) for x in programs]], fill_msl)
     if aoc: place('AddOnContent', 'aoc', 'add-on content', inventory(aoc), lambda d: copy([aoc], d, clone['aoc']))
     if pso: place('PipelineArchive', 'pso', 'pipeline archive', [took[str(p)] for p in pso], lambda d: (d.mkdir(parents=True), copy(pso, d, clone['pso'])))
