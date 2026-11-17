@@ -46,6 +46,24 @@ draw_barriers	game
 # Its dynamic-resolution targets are a resolution family (one storage, several sizes): uncompressed they cost the M1 about 0.85 ms of GPU time a frame at Kokiri Forest;
 # mid-game switches between 1440x810, 1366x768 and 1280x720 with compression showed no garbage (forced with DM_FPS_TARGET=60)
 family_compress	on
+# DM_UPSCALER=metalfx-temporal's colour and depth: the HDR / bloom compose, the first draw of the pass that runs the NDSR network, writes the tone-mapped scene (RG11B10F, render
+# size) before the network's own pre-stages, with the opaque scene depth (Depth32F, standard Z: GL depth mode, clear 1, LEQUAL) attached; its fragment shader is 99d1ecbf2947464b in SDR,
+# 774f2663242dbfcf with HDR output (pass dumps read by another session, 2026-11-16)
+tfx_compose	861d8656dee0f5e8,99d1ecbf2947464b,774f2663242dbfcf
+# The camera for its motion: the scene passes bind a 13,568-byte view buffer at the vertex stage's uniform slot 0, row-major GL, the view-projection at +0x30 (view at +0, projection
+# at +0x70, inverse view at +0xb0, render size at +0x120), and the previous frame's set from +0x150 (its view-projection at +0x180: byte-identical to the frame before's first set,
+# yaw 1.78 degrees a frame apart while turning). Runs A, B and B-turn2 by another session, 2026-11-16
+tfx_view	0,0,13568,0x30,row,0x180
+# The host's jitter: projection at +0x70, view at +0 (48 bytes, 3x4), render size at +0x120. Two buffers carry the main camera, A at the render size and B at 1920x1080 (half-size effect
+# passes), with the same view and projection; the shadow and capture cameras have their own projections. The game writes them by the CPU into per-frame slices of a uniform arena
+# (no inline updates), and writes the previous set (+0x150) from its own unjittered matrices (another session's reading of runs A and B, 2026-11-16)
+tfx_jitter	0x70,0x0,48,0x120
+# Cuts: the inverse view at +0xb0 (its position at +0xbc, +0xcc, +0xdc, its forward axis in the third column). The game copies its previous set from last frame's buffer, so its own
+# previous set shows no cut; a load keeps the loading scene's dummy camera there (run E3 by another session, 2026-11-16). A move of more than 100 units in a frame (50 gave no false one in
+# 18 frames of walking; Epona at full speed is not measured, so 100) or a turn of more than 25 degrees is one
+tfx_cut	0xb0,100,25
+# The compose's bloom, its fragment texture 1 (240x135 at the end of the bloom chain; run A by another session): Navi's glow is in it, not in the scene colour the mask's snapshot sees
+tfx_glow	1,1
 # As Tears of the Kingdom: the terrain's height, blend and hole maps are written by the CPU into textures after they are created. Without these keys they stay zero: holes in the ground and the wrong materials
 tex_flush_upload	on
 tex_dirty_upload	on

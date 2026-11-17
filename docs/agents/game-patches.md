@@ -44,6 +44,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `engine` | RE Engine's frame limit at a fixed pointer | frame rate | blocked: one RE Engine game here | judgement | 1 | [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md) | engine code other RE Engine games ship |
 | `build` → `engine` | Unity's constant-buffer table locked on the shared device | race | blocked: the stubs have no function-matched form yet, and no other Unity 2018.4 main on the drive shares these functions (Ori and the Blind Forest 1.0.2: no fingerprint match) | checked: probes of both threads inserting the same key and of the table API's callers by thread; Blind Forest main compared with nso_fnmap | 1 | [Ori and the Will of the Wisps](../../dm/games/01008DD013200000/README.md) | Unity 2018.4's threaded GfxDevice: the main thread registers layouts on the real device while the render thread uses the same table; any Unity 2018.4 build with this code has the race |
 | `build` → `game` | 60 fps frame step on 1.3.0 (the same stub at its known addresses) | frame rate | blocked: 1.3.0's main is on neither drive to fingerprint (v458752 is the update on them) | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the stub above, placed at 1.3.0's addresses: the matched rule would serve it once its functions are fingerprinted |
+| `build` → `game` | adaptive 30/60 fps native clock interval | frame rate | blocked: this build's clock adapter has not been validated for function matching across game builds | judgement | 1 | [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) | Trinity's clock and graphics interval selector |
 | `build` → `game` | Arceus exact-build camera, HUD, timing and task diagnostics | rendering | blocked: No reviewed function matcher for these host accesses. | judgement | 1 | [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md) | Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them. |
 | `build` → `game` | Criterion validated simulation and frame-rate writes | frame rate | blocked: No reviewed function matcher for these host accesses. | judgement | 1 | [Need For Speed™ Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md) | Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them. |
 | `build` → `game` | screen shape: the sizes, the view, the layouts' projection and their edge widgets (DM_SCREEN_ASPECT) | rendering | blocked: the stubs have no function-matched form yet | judgement | 1 | [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) | the output size is the host's, but where the game takes its sizes, its cameras and its layouts are this build's code |
@@ -76,7 +77,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Hyrule Warriors: Age of Calamity](#hyrule-warriors-age-of-calamity) | 0 | 0 | 10 | 0 | 0 | `game`, `build` → `game` |
 | [Luigi's Mansion 3](#luigis-mansion-3) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
 | [Mario + Rabbids® Sparks of Hope](#mario--rabbids-sparks-of-hope) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Mario Kart World](#mario-kart-world) | 0 | 0 | 1 | 0 | 0 | `game` |
+| [Mario Kart World](#mario-kart-world) | 0 | 0 | 1 | 0 | 0 | `game` ×2 |
 | [Monster Hunter Rise](#monster-hunter-rise) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
 | [Need For Speed™ Hot Pursuit Remastered](#need-for-speed-hot-pursuit-remastered) | 1 | 0 | 0 | 0 | 6 | `build` → `game` ×2, `build` → `engine` |
 | [NieR:Automata The End of YoRHa Edition (010056B015FE8000)](#nierautomata-the-end-of-yorha-edition-010056b015fe8000) | 8 | 0 | 0 | 0 | 1 | `build` → `game` ×2 |
@@ -84,15 +85,15 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Ori and the Will of the Wisps](#ori-and-the-will-of-the-wisps) | 0 | 0 | 10 | 0 | 0 | `build` → `engine` |
 | [Paper Mario: The Thousand-Year Door](#paper-mario-the-thousand-year-door) | 1 | 0 | 1 | 0 | 0 | `build` → `game` |
 | [Pokémon Legends: Arceus](#pokémon-legends-arceus) | 0 | 0 | 0 | 1 | 3 | `game`, `build` → `game` |
-| [Pokémon Legends: Z-A](#pokémon-legends-z-a) | 1 | 5 | 0 | 0 | 3 | `build` → unreviewed, `build` → `game` |
+| [Pokémon Legends: Z-A](#pokémon-legends-z-a) | 1 | 4 | 1 | 0 | 3 | `build` → `game` ×2, `build` → unreviewed |
 | [Pokémon Violet](#pokémon-violet) | 0 | 4 | 0 | 0 | 2 | `build` → unreviewed ×2, `build` → `game` |
 | [Super Mario 3D All-Stars: Super Mario Sunshine](#super-mario-3d-all-stars-super-mario-sunshine) | 2 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Super Smash Bros. Ultimate](#super-smash-bros-ultimate) | 11 | 0 | 0 | 1 | 0 | `game` |
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | `game` |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 2 | 3 | 0 | `game` ×5 |
-| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | `game` |
+| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 4 | 3 | 0 | `game` ×7 |
+| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 18 | 0 | 0 | `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles X: Definitive Edition](#xenoblade-chronicles-x-definitive-edition) | 6 | 0 | 1 | 1 | 0 | `game` ×2 |
 
@@ -378,9 +379,10 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 [Mario Kart World](../../dm/games/0400C3F00006E000/README.md), `0400C3F00006E000`, [patches.py](../../dm/games/0400C3F00006E000/patches.py).
 
 - **`game`**, frame rate, at goal, checked: v0 and 1.8.0 mains: one function with each fingerprint, the sites and the free registers read by disassembly (2026-11-08, 1.8.0 2026-11-12): frame interval from the host's step. The game's own interval choice, found by its function's fingerprint on any build that keeps the function
+- **`game`**, rendering, at goal, checked: 1.8.0 main: one function with this fingerprint, pacibsp at its start, its one caller and that the caller reads no result, by disassembly (2026-11-15); not run: dynamic resolution: full size unless DM_DYNAMIC_RESOLUTION. The game's own dynamic-resolution update, found by its function's fingerprint on any build that keeps it; switchable (DM_DYNAMIC_RESOLUTION)
 
 - **function-matched frame step** (`main` of builds without FRAME_STEP): frame interval from the host's step: a function of 0x290 bytes, `+0xa0` in it
-- **function-matched frame step** (`main` of builds without FRAME_STEP): frame interval from the host's step: a function of 0x28c bytes, `+0xa4` in it
+- **function-matched frame step** (`main` of builds without FRAME_STEP): frame interval from the host's step: a function of 0x28c bytes, `+0xa4` in it; dynamic resolution update, a function of 0xa58 bytes, `+0x0` in it; launcher capabilities: DYNAMIC_RESOLUTION
 
 ### Monster Hunter Rise
 
@@ -401,11 +403,13 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **1.0.3 `main`** `799d1061…` ([patches.py:7](../../dm/games/010029B0118E8000/patches.py#L7))
   - cut `+0x4835a4`: frame limiter spin: b.gt main+0x483588 → nop (the host paces the frames)
+  - launcher capabilities: NFS_TIMING
   - host [hle_fpslock.c:44](../../dm/host/hle_fpslock.c#L44): engine frame limit set to fps_target: Criterion 60 fps mode
   - host [hle_fpslock.c:45](../../dm/host/hle_fpslock.c#L45): engine frame limit set to fps_target: Criterion frame ticks
   - host [hle_fpslock.c:46](../../dm/host/hle_fpslock.c#L46): engine frame limit set to fps_target: Criterion frame ticks / 10
   - host [hle_fpslock.c:47](../../dm/host/hle_fpslock.c#L47): engine frame limit set to fps_target: Criterion 2D game step
   - host [hle_fpslock.c:48](../../dm/host/hle_fpslock.c#L48): engine frame limit set to fps_target: Criterion 3D game step
+  - host [nfs_driving_input.h:13](../../dm/host/nfs_driving_input.h#L13): build check
 
 ### NieR:Automata The End of YoRHa Edition (010056B015FE8000)
 
@@ -490,19 +494,20 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md), `0100F43008C44000`, [patches.py](../../dm/games/0100F43008C44000/patches.py).
 
+- **`build` → `game`**, frame rate, blocked: this build's clock adapter has not been validated for function matching across game builds, judgement: adaptive 30/60 fps native clock interval. Trinity's clock and graphics interval selector
 - **`build` → unreviewed**, runtime, unreviewed, judgement: Z-A startup cuts and camera, HUD and clock observations. Exact instructions and offsets are verified only for the registered builds; general matching has not been reviewed.
 - **`build` → `game`**, rendering, blocked: No reviewed function matcher for these host accesses., judgement: Z-A exact-build camera, HUD and timing. Fixed instruction layouts verified on the registered build; addresses must be discovered or matched before other updates can share them.
 
-- **2.0.2 `main`** `b1f12fd9…` ([patches.py:7](../../dm/games/0100F43008C44000/patches.py#L7))
+- **2.0.2 `main`** `b1f12fd9…` ([patches.py:52](../../dm/games/0100F43008C44000/patches.py#L52))
   - cut `+0x1b3e3e4`: StandardAllocator::Initialize(nullptr, size): address space mov x2,#0x300000000 → mov x2,#0x100000000 (12 GB → 4 GB)
   - gate 26 at `+0x1b292dc`: Trinity base-clock delta: orig ldr d0,[x0,#8]; observe game seconds versus monotonic time
-  - gate 27 at `+0x1b296f0`: Trinity interval: orig mov w1,w20; optional saved-register experiment with timing diagnostics
   - gate 28 at `+0x425c70`: Layout visibility: orig ldr x8,[x0,#0xa8]; observe the actual battle move layout, not ZL alone
   - gate 29 at `+0x2b7bfbc`: Waza layout destructor: orig stp x29,x30,[sp,#-0x20]!; expire the observed skill context
   - gate 30 at `+0x1802f50`: HUD rectangle: orig ldur q0,[x9,#4]; optional screen-aspect shadow rectangle
+  - frame step `+0x1b296d8`: native clock interval from the host frame step; target 0 preserves the original selector
   - host [hle_za_display.c:24](../../dm/host/hle_za_display.c#L24): build check
   - host [hle_za_timing.c:40](../../dm/host/hle_za_timing.c#L40): build check
-  - host [hle_za_timing.c:351](../../dm/host/hle_za_timing.c#L351): build check
+  - host [hle_za_timing.c:354](../../dm/host/hle_za_timing.c#L354): build check
 
 ### Pokémon Violet
 
@@ -644,13 +649,13 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`game`**, frame rate, at goal, checked: v131072 main: one function with each fingerprint, each with one caller, the event update that reads the frame (vtable +0x78), the timeline and sound syncs and the player's +0xc read by disassembly; the opening timed with frames forced to two vsyncs (2026-11-16): movie frame: the pictures the player has taken. The game's own movie draw functions, found by their functions' fingerprints on any build that keeps them; it is the counter the same game's player keeps, so it goes with the player's two-picture cut and has no wider binding
 - **`game`**, frame rate, at goal, checked: v131072 main: one function with this fingerprint, the site and its free registers read by disassembly (2026-11-08): frame ratio from the host's step. The game's own frame-ratio division, found by its function's fingerprint on any build that keeps the function
 - **`game`**, rendering, at goal, checked: v131072 main: one function with each fingerprint (the level function a leaf, x2..x11 / x16 / x17 / s0..s2 free), its callers, the update and the controller fields read by disassembly, the fields read in play (2026-11-08); the climb run natively against a model of the update and in play to full size (2026-11-09): dynamic resolution: full size, or a climb on the load measured at each level. The game's own dynamic-resolution level function and update, found by their functions' fingerprints on any build that keeps both; switchable (DM_DYNAMIC_RESOLUTION)
-
-- **function-matched frame step** (`main` of builds without FRAME_STEP): frame ratio from the host's step: a function of 0x9b4 bytes, `+0xe4` in it; dynamic resolution, a function of 0x294 bytes, `+0x0` in it; dynamic resolution update, a function of 0xb24 bytes,  in it; launcher capabilities: DYNAMIC_RESOLUTION, FPS_REALTIME
+- **`game`**, rendering, at goal, checked: v131072 main: one function with this fingerprint, the two words at +0x200, no x16 / x17 in nnMain, no branch to +0x204 or +0x208, not rewrite sites, by disassembly (2026-11-16); in play: boot window 3840x2160, WindowInitialize 3840x2160 (ygy-75, 2026-11-16): boot window size from the host (DM_DISPLAY_BUFFER docked), else 2560x1440. NnMain's constant window size, found by its function's fingerprint on any build that keeps the function; 0 in the state word keeps the game's
+- **`game`**, rendering, at goal, checked: v131072 main: one function with this fingerprint, pacibsp at its entry, one caller (bl, x1 = the argument), arg+8 read as a w | h pair by both consumers, no x16 / x17, no branch to +4, by disassembly (2026-11-16); not run: graphics init: 3D base and crop (arg+8) from the host (DM_DISPLAY_BUFFER docked), else the game's. A workaround at the value's consumer: the writer of the 2560x1440 at arg+8 is open; 0 in the state word keeps the game's
 
 - **function-matched** (`main` of builds without CUTS): movie pictures a frame: up to 2, the constructor's value for an argument of 2 or more, whatever its caller passes (1): 1 function, 1 cut
 - **function-matched** (`main` of builds without CUTS): movie update cap: 3 pictures a frame, the frame step's largest hold, in place of the limit (2), which also sizes the decoder pipeline: 1 function, 1 cut
 - **function-matched** (`main` of builds without CUTS): movie frame: the pictures the player has taken (its +0xc), not 1 more for each frame drawn: 2 functions, 2 cuts
-- **function-matched frame step** (`main` of builds without FRAME_STEP): frame ratio from the host's step: a function of 0x9b4 bytes, `+0xe4` in it; dynamic resolution, a function of 0x294 bytes, `+0x0` in it; dynamic resolution update, a function of 0xb24 bytes,  in it; launcher capabilities: DYNAMIC_RESOLUTION
+- **function-matched frame step** (`main` of builds without FRAME_STEP): frame ratio from the host's step: a function of 0x9b4 bytes, `+0xe4` in it; dynamic resolution, a function of 0x294 bytes, `+0x0` in it; dynamic resolution update, a function of 0xb24 bytes,  in it; window size, a function of 0x570 bytes, `+0x200` in it; gfx init, a function of 0x2fc bytes, `+0x0` in it; launcher capabilities: DYNAMIC_RESOLUTION, FPS_REALTIME, WINDOW_SIZE
 
 ### The Legend of Zelda: Tears of the Kingdom
 

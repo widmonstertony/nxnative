@@ -394,7 +394,7 @@ int main(int argc, char **argv) {
     snprintf(p, sizeof p, "%s/env.txt", sup); env_file(p);
     snprintf(p, sizeof p, "%s/env.txt", dm); env_file(p);
     setenv("DM_ENV_FILE_KEYS", g_file_keys ? g_file_keys : "", 1); setenv("DM_ENV_LAUNCH_KEYS", g_launch_keys ? g_launch_keys : "", 1);
-    free(g_file_keys); free(g_launch_keys);
+    free(g_file_keys); g_file_keys = NULL; free(g_launch_keys);
     setenv("DM_SAVE", save, 0);   // before the window: its cloud-save check compares this save with the cloud's (Launcher.swift SaveCheck)
     int window = !(getenv("DM_LAUNCHER") && !strcmp(getenv("DM_LAUNCHER"), "0"));
     for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--no-launcher")) window = 0;
@@ -402,6 +402,14 @@ int main(int argc, char **argv) {
     int shown = window ? dm_mac_launcher() : 2;
     if (!shown) return 0;   // Quit: no game
     saved_choices(shown == 1);   // the window applied its settings; the controls are not among them
+    // Verified game presets provide defaults, below player env files and choices.
+    snprintf(p, sizeof p, "%s/graphics-defaults.env", dm); env_file(p);
+    free(g_file_keys); g_file_keys = NULL;
+    const char *overlay = getenv("DM_ROMFS_OVERLAY");
+    if (overlay && !strncmp(overlay, "@R@/", 4)) {
+        snprintf(p, sizeof p, "%s/%s", res, overlay + 4);
+        setenv("DM_ROMFS_OVERLAY", p, 1);
+    }
     cloud_saves_folder();
     setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_TEMP", temp, 0);
     snprintf(p, sizeof p, "%s/Library/Application Support/nxnative/system", home); setenv("DM_SYSTEM_DIR", p, 0);   // the player's own console files, for every game

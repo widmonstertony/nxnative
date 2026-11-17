@@ -1,0 +1,33 @@
+archive_path	inner_file	field_path	original	new	effect	risk	flags
+Pack/Bootup.Nin_Ounce_NVN2.pack.zs	System/GameGraphics/ModelSceneExtensionParam/Default.game__gfx__ModelSceneExtensionParam.bgyml	DynamicResolutionParam/LevelPaletteDict/0x2ebeca77/DynamicResolutionLevelParamList/0/ResolutionReduceScale	0.75	1.0	native 2560x1440 instead of 1920x1080 (the dynamic-resolution stub holds level 0)	about 1.78x pixels, but OoT GPU time barely followed it in Hyrule Field (12.37 vs 12.44 ms); shared node: also changes DynamicResolutionParam/LevelPaletteDict/0x90e0a495/DynamicResolutionLevelParamList/0/ResolutionReduceScale	shared
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	DepthShadowTexWidth	1024	2048	sharper sun shadows	4x shadow-map memory (3 cascades: 4 -> 16 MB at 32-bit)
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	DepthShadowTexHeight	1024	2048	sharper sun shadows	as above
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	CubeMapMaxTexWidth	128	256	sharper environment reflections	4x cube-map memory (x3 maps); small GPU
+agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	-	DynamicShadowFarFadeStart	80.0	160.0	dynamic shadows start fading farther (fields; KokiriForest inherits MainField)	more casters in the cascades
+agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	-	DynamicShadowFarFadeEnd	200.0	400.0	dynamic shadows reach twice as far	more casters in the cascades
+agl/ShadowPrePassParam/Common.agl__ShadowPrePassParam.bgyml	-	DynamicShadowFarFadeStart	100.0	200.0	same for scenes on the Common pre-pass (dungeons, interiors)	as above
+agl/ShadowPrePassParam/Common.agl__ShadowPrePassParam.bgyml	-	DynamicShadowFarFadeEnd	1000.0	2000.0	same	as above
+gsys/ModelSceneShadowParam/MainField.gsys__ModelSceneShadowParam.bgyml	-	SSAO/SamplePairNum	3	6	smoother, less noisy ambient occlusion (KakarikoVillage, KokiriForest, HyruleField_Adult inherit MainField SSAO)	AO cost about x2
+System/GameGraphics/LocalDepthShadowParam/Default.game__gfx__LocalDepthShadowParam.bgyml	-	LocalDepthShadowSetting/1/ResolustionMaginify	0.3	0.6	sharper character self-shadows (settings 1 and 2 share this node)	small; shared node: also changes LocalDepthShadowSetting/2/ResolustionMaginify	shared
+gsys/ModelSceneShadowParam/MainField.gsys__ModelSceneShadowParam.bgyml	-	SSAO/BlurNum	2	3	cleaner AO	small
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	SsaoIsDepthFull	false	true	AO from full-resolution depth: crisper contact shadows	AO cost about x2 again
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	DepthShadowNear01	32.0	24.0	cascade split nearer: sharper mid-range shadows	free (re-split); check for seams
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	DepthShadowNear02	64.0	60.0	cascade split	free; check for seams
+gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	-	DepthShadowNear03	200.0	250.0	last cascade reaches farther	free; check for seams
+agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	-	StaticShadowFarFadeStart	100.0	200.0	static shadows fade farther	small
+agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	-	StaticShadowFarFadeEnd	1000.0	2000.0	static shadows reach farther	small
+System/GameGraphics/LocalDepthShadowParam/Default.game__gfx__LocalDepthShadowParam.bgyml	-	NPCFadeStart	25.0	50.0	character shadows visible farther	small
+System/GameGraphics/LocalDepthShadowParam/Default.game__gfx__LocalDepthShadowParam.bgyml	-	NPCFadeEnd	30.0	60.0	character shadows visible farther	small
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/HyruleField_Adult.game__foliage__ResFoliageScene.bgyml	TurfDensity	200.0	300.0	denser grass in HyruleField_Adult	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/HyruleField_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	200.0	300.0	denser grass in HyruleField_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/KokiriForest_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	150.0	225.0	denser grass in KokiriForest_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/LostWood_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	150.0	225.0	denser grass in LostWood_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/SacredForestMeadow_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	150.0	225.0	denser grass in SacredForestMeadow_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/Market_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	200.0	300.0	denser grass in Market_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/Graveyard_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	200.0	300.0	denser grass in Graveyard_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/ZoraRiver_Adult.game__foliage__ResFoliageScene.bgyml	TurfDensity	250.0	375.0	denser grass in ZoraRiver_Adult	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/ZoraRiver_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	250.0	375.0	denser grass in ZoraRiver_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/KakarikoVillage_Adult.game__foliage__ResFoliageScene.bgyml	TurfDensity	100.0	150.0	denser grass in KakarikoVillage_Adult	foliage cost; scenes at 1.0 (turf off by design) left alone
+Pack/Foliage.pack.zs	Foliage/ResFoliageScene/KakarikoVillage_Child.game__foliage__ResFoliageScene.bgyml	TurfDensity	100.0	150.0	denser grass in KakarikoVillage_Child	foliage cost; scenes at 1.0 (turf off by design) left alone
+System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs	-	Heaps/DynamicTextureAllocatorMem/Size	312320	476160	dynamic render-target pool sized for a native 2560x1440 scene (fixes the out-of-memory crash near water after ~15 min)	more graphics memory reserved
+System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs	-	Heaps/Graphics/Size	861184	1025024	parent heap grown by the same amount (a child cannot outgrow its parent)	as above

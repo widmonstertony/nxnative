@@ -68,6 +68,9 @@ run: $(B)/t_launcher_contract $(B)/t_profile_runtime
 	$(B)/t_nv
 	$(B)/t_objmap
 	$(B)/t_vi_history $(QUIET)
+	$(B)/t_vi_hdr
+	$(B)/t_vi_bufmax $(QUIET)
+	$(B)/t_window_size
 	$(B)/t_nfc
 	$(B)/t_motion
 	$(B)/t_motion_apple
@@ -265,6 +268,18 @@ $(B)/t_shared_font: t_shared_font.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | 
 run: $(B)/t_vi_history
 $(B)/t_vi_history: t_vi_history.c ../../gfx/hle_vi.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_vi_history.c
+# The boot window size word for WINDOW_SIZE stubs (window_size.h, written by loader.c dm_fps_state_apply)
+run: $(B)/t_window_size
+$(B)/t_window_size: t_window_size.c ../window_size.h ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_window_size.c
+# nn::vi::QueryDisplayBufferMaxResolution: the window's screen docked, 1080p handheld, DM_DISPLAY_BUFFER's fixed values and max
+run: $(B)/t_vi_bufmax
+$(B)/t_vi_bufmax: t_vi_bufmax.c t_vi_hdr_front.c ../../gfx/hle_vi.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_vi_bufmax.c t_vi_hdr_front.c
+# nn::vi's HDR answers: SDR by default, HDR10 with the HDR present (DM_HDR_PRESENT) or the format DM_HDR forces, the peak, the metadata forwarded and logged
+run: $(B)/t_vi_hdr
+$(B)/t_vi_hdr: t_vi_hdr.c t_vi_hdr_front.c ../../gfx/hle_vi.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_vi_hdr.c t_vi_hdr_front.c
 run: $(B)/t_nv
 $(B)/t_nv: t_nv.c ../../gfx/hle_nv.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_nv.c
@@ -403,6 +418,7 @@ $(B)/t_svc_memory_dirty: $(MEM_DEPS) ../../gfx/nvn/nvn_dirty.c ../../gfx/nvn/nvn
 .PHONY: memory memory-tsan memory-dirty memory-profile
 memory: $(B)/t_svc_memory $(B)/t_svc_memory_unlimited $(B)/t_svc_memory_16k
 	$(B)/t_svc_memory
+	DM_HEAP_EXTRA=8 $(B)/t_svc_memory --heap-extra-probe
 	$(B)/t_svc_memory_unlimited
 	$(B)/t_svc_memory_16k
 memory-tsan: $(B)/t_svc_memory_tsan

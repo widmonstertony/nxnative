@@ -2389,5 +2389,8 @@
   "tonton.iosGPU": "Compatibility GPU",
   "tonton.iosConservative": "Conservative (A10X)",
   "tonton.iosModernExportNote": "Exports a single-game IPA using the modern Metal 4 engine; requires iOS 26 or later.",
-  "tonton.iosTargetExport": "Build an IPA for the selected iOS or iPadOS version."
+  "tonton.iosTargetExport": "Build an IPA for the selected iOS or iPadOS version.",
+  "launch.set.DM_HDR_PRESENT": "HDR",
+  "launch.set.DM_HDR_PRESENT.note": "Requires an HDR display and HDR game content. Experimental; off by default.",
+  "launch.opt.DM_UPSCALER.metalfx-temporal": "MetalFX temporal"
 }

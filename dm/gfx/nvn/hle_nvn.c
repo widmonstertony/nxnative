@@ -1877,6 +1877,7 @@ NVN(nvnWindowGetCrop, void, const NVNwindow *w, NVNrectangle *r) {   // Bayonett
     r->x = r->y = 0; r->width = o->ntex && o->tex[0] ? (int)CTX(o->tex[0])->d.width : 0; r->height = o->ntex && o->tex[0] ? (int)CTX(o->tex[0])->d.height : 0;
 }
 static void trow(uint64_t f, const char *name, double v);
+extern void mtl_tfx_rows(uint64_t f, void (*row)(uint64_t f, const char *name, double v));   // nvn_mtl.m
 static void rt_acquire(uint64_t period_ns);
 static void rt_line(char *b, size_t n);
 static double g_rt_comp_ms;   // The computation the acquire thread declares (ms; 0 = not declared)
@@ -2730,6 +2731,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         trow(f, "@sub_wall_ms", atomic_exchange(&g_sub_wall_ns, 0) / 1e6); trow(f, "@sub_cpu_ms", atomic_exchange(&g_sub_cpu_ns, 0) / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
     } else atomic_store(&g_nvn_ns, 0);
     g_acq_wait_ns = g_pq_wait_ns = 0;
+    if (f >= 8 && g_tsv) mtl_tfx_rows(f - 8, trow);   // DM_UPSCALER=metalfx-temporal's per-frame rows (@tfx_*), also 8 frames late
     if (f >= 8) { double g = mtl_gpu_ms(f - 8); if (g >= 0) { tpush(3, g); trow(f - 8, "@gpu_ms", g); g_hr[g_hn++ % HRN] = g; }   // GPU time is taken 8 frames late (already completed)
         { lf_rec *r = &g_lf[(f - 8) % LFN]; if (g >= 0 && r->f == f - 8) mtl_ab_gpu(f - 8, g, r->fr); }   // DM_AB phases
         { lf_rec *r = &g_lf[(f - 8) % LFN];   // long-frame log (on by default, DM_LONGFRAME=0 turns it off): a line is printed only when the whole frame > 20 ms or GPU > 16.7 ms, and it is clearly above recent conditions

@@ -3,6 +3,7 @@
 #include "../host/hle.h"
 #include <stdatomic.h>
 #include <TargetConditionals.h>
+#include <stdlib.h>
 
 static struct { uint32_t magic; } g_display = {0x50534944}, g_layer = {0x5259414c};
 static struct { uint32_t magic; void *layer; } g_native = {0x4e49574e, 0};
@@ -133,9 +134,29 @@ HLE_FORCE("_ZN2nn2vi8FinalizeEv", "display service shutdown; the host has no vi 
 // The SDK's versions check the display against its own default display object and forward the layer to vi2, whose layer object the host never made (Donkey Kong Bananza: a call
 // through null from SetLayerNextHdrContentGamutMetadata, main+0x2036f4). The host's output is SDR at a fixed refresh rate: no HDR output, no VRR, and the layer metadata has
 // nothing to apply to. HdrOutputFormat 0 is SDR; paper white is the BT.2408 reference, 203 nits, read only when HDR is on
+// HDR probe (DM_HDR=<HdrOutputFormat>, experimental, off by default): answer an HDR display with that format and DM_HDR_PEAK nits (default 1000), and log the layer
+// metadata the game sends (first calls, then each change of value), to learn what the game does in HDR before the present path shows it
+int front_hdr_present(void); int front_screen_peak_nits(void); void front_hdr_content_max_nits(float nits);   // weak defaults below (front.h)
+// The HDR answer: DM_HDR=<format> forces it (the probe); otherwise HDR format 1 (HDR10) whenever the present draws into an HDR layer (DM_HDR_PRESENT)
+static int hdr_probe_fmt(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_HDR"); v = e ? atoi(e) : 0; if (v < 0) v = 0; if (!v && front_hdr_present()) v = 1; } return v; }
+// The peak reported to the game: DM_HDR_PEAK nits, else the screen's estimate (front_screen_peak_nits: EDR headroom × 100), else 1000. An estimate under 400 nits
+// is not used: an external HDR TV can report a headroom of 1.0 (100 nits, below the 203-nit paper white), and Ocarina of Time's tone curve then broke the brightest
+// pixels into black rings around the sun and clouds
+static uint16_t hdr_probe_peak(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_HDR_PEAK"); v = e ? atoi(e) : front_screen_peak_nits(); if (!e && v < 400) v = 1000; if (v <= 0 || v > 10000) v = 1000; } return (uint16_t)v; }
+static void hdr_probe_log(const char *what, double a, double b, double c) {
+    if (!hdr_probe_fmt()) return;
+    static _Atomic int lines; enum { N = 16 }; static const char *names[N]; static double last[N][3]; static int used;
+    int i = 0; for (; i < used; i++) if (names[i] == what) break;
+    if (i == used) { if (used == N) return; names[used++] = what; } else if (last[i][0] == a && last[i][1] == b && last[i][2] == c) return;
+    last[i][0] = a; last[i][1] = b; last[i][2] = c;
+    if (atomic_fetch_add(&lines, 1) < 200) LOG("[hdr] %s %g %g %g", what, a, b, c);
+}
 HLE_FORCE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", "display HDR status: SDR output (the host presents SDR)", Result, h_vi_HdrStatus,
           uint8_t *on, uint32_t *fmt, uint16_t *peak, const void *disp) {
-    (void)disp; if (on) *on = 0; if (fmt) *fmt = 0; if (peak) *peak = 0; return RES_OK; }
+    (void)disp; int f = hdr_probe_fmt();
+    if (on) *on = f > 0; if (fmt) *fmt = f > 0 ? (uint32_t)f : 0; if (peak) *peak = f > 0 ? hdr_probe_peak() : 0;
+    static atomic_int once; if (f > 0 && !atomic_exchange(&once, 1)) LOG("[hdr] QueryDisplayHdrStatus: answering HDR on, format %d, peak %u nits (%s)", f, hdr_probe_peak(), getenv("DM_HDR") && atoi(getenv("DM_HDR")) > 0 ? "DM_HDR probe" : "DM_HDR_PRESENT");
+    return RES_OK; }
 HLE_FORCE("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE", "display HDR paper white: 203 nits (BT.2408); HDR is off", Result, h_vi_PaperWhite, uint16_t *nits, const void *disp) {
     (void)disp; if (nits) *nits = 203; return RES_OK; }
 HLE_FORCE("_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE", "display VRR: not supported (fixed refresh rate)", Result, h_vi_VrrSupported, uint8_t *on, const void *disp) {
@@ -147,15 +168,35 @@ HLE_FORCE("_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb", "display VRR cap
 // told it 720p: it chose its 1280x720 DLSS network and rendered at 640x360, and the host scaled that to the window. Answered as a Switch 2 would: in handheld mode its own 1920x1080
 // screen; docked, the largest of the four the display it is shown on holds (front_display_pixels), 1920x1080 when that is not known
 __attribute__((weak)) int front_display_pixels(int *w, int *h) { (void)w; (void)h; return 0; }   // front_mac.m, front_ios.m; graphics unit tests have none
+__attribute__((weak)) int front_display_pixels_largest(int *w, int *h) { (void)w; (void)h; return 0; }   // front_mac.m (DM_DISPLAY_BUFFER=max); iOS and unit tests have none
+// DM_DISPLAY_BUFFER=720|1080|1440|2160 fixes the answer, in both modes; max answers by the largest screen attached instead of the window's (a TV beside the laptop, before the window is
+// moved there: games ask once at boot). -1 = not set (or not one of those, said once in red), 0..3 = the answer, 4 = max. Read at each call: the games seen ask once
+static int display_buffer_env(void) {
+    const char *e = getenv("DM_DISPLAY_BUFFER");
+    if (!e || !*e) return -1;
+    static const char *const v[5] = {"720", "1080", "1440", "2160", "max"};
+    for (int i = 0; i < 5; i++) if (!strcmp(e, v[i])) return i;
+    static atomic_int warned; if (!atomic_exchange(&warned, 1)) LOG("[RED] DM_DISPLAY_BUFFER=%s: 720, 1080, 1440, 2160 or max; the display's own answer stands", e);
+    return -1;
+}
+// The display's HDR (front.h; front_mac.m, DM_HDR_PRESENT): which HDR layer the present draws into, the screen's EDR headroom and its peak estimated in nits, and the HDR10 metadata's
+// content maximum, for the HDR queries and layer metadata below. iOS and graphics unit tests have none: SDR, nothing known, nothing applied
+__attribute__((weak)) int front_hdr_present(void) { return 0; }
+__attribute__((weak)) int front_screen_edr(float *potential, float *current, float *reference) { (void)potential; (void)current; (void)reference; return 0; }
+__attribute__((weak)) int front_screen_peak_nits(void) { return 0; }
+__attribute__((weak)) void front_hdr_content_max_nits(float nits) { (void)nits; }
+__attribute__((weak)) void front_hdr_content_gamut(int gamut) { (void)gamut; }
 HLE_FORCE("_ZN2nn2vi31QueryDisplayBufferMaxResolutionEPNS0_19BufferMaxResolutionEPKNS0_7DisplayE", "largest display buffer: the Switch 2's screen handheld, the host display's docked",
           Result, h_vi_BufMaxRes, uint32_t *out, const void *disp) {
     (void)disp; static const int k[4][2] = {{1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
-    uint32_t r = 1; int w = 0, h = 0;
-    if (dm_opmode() == 1 && front_display_pixels(&w, &h)) {
+    uint32_t r = 1; int w = 0, h = 0, o = display_buffer_env(); const char *why = dm_opmode() == 1 ? "docked" : "handheld";
+    if (o >= 0 && o <= 3) { r = (uint32_t)o; why = "DM_DISPLAY_BUFFER"; }
+    else if ((o == 4 && front_display_pixels_largest(&w, &h)) || (dm_opmode() == 1 && front_display_pixels(&w, &h))) {
         if (w < h) { int t = w; w = h; h = t; }
         r = 0; for (uint32_t i = 0; i < 4; i++) if (w >= k[i][0] && h >= k[i][1]) r = i;
+        if (o == 4) why = "DM_DISPLAY_BUFFER=max, the largest screen";
     }
-    static atomic_int once; if (!atomic_exchange(&once, 1)) LOG("vi::QueryDisplayBufferMaxResolution: %dx%d (%s, display %dx%d)", k[r][0], k[r][1], dm_opmode() == 1 ? "docked" : "handheld", w, h);
+    static atomic_int once; if (!atomic_exchange(&once, 1)) LOG("vi::QueryDisplayBufferMaxResolution: %dx%d (%s, display %dx%d)", k[r][0], k[r][1], why, w, h);
     if (out) *out = r; return RES_OK;
 }
 // The extended swap interval asks for a presentation rate between whole vsync intervals (VRR); without VRR the swap interval NVN sets stays in effect
@@ -164,17 +205,17 @@ HLE_FORCE("_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii", "layer exten
     (void)layer; static atomic_int once; if (!atomic_exchange(&once, 1)) LOG("vi::SetLayerExtendedSwapInterval %d %d: no VRR on the host, the NVN swap interval stays", a, b); return RES_OK; }
 HLE_FORCE("_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE", "layer extended swap interval cleared", Result, h_vi_ExtSwapClear, void *layer) { (void)layer; return RES_OK; }
 HLE_FORCE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrGamut, void *layer, int g) {
-    (void)layer; (void)g; return RES_OK; }
+    hdr_probe_log("gamut", g, 0, 0); if (hdr_probe_fmt()) front_hdr_content_gamut(g); (void)layer; return RES_OK; }   // the content's gamut inside the BT.2020 signal (front.h)
 HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrToneMap, void *layer, int m) {
-    (void)layer; (void)m; return RES_OK; }
+    hdr_probe_log("hdr-to-sdr tone mapping", m, 0, 0); (void)layer; return RES_OK; }
 HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrExtLum,
-          void *layer, uint32_t lo, uint32_t hi) { (void)layer; (void)lo; (void)hi; return RES_OK; }
+          void *layer, uint32_t lo, uint32_t hi) { hdr_probe_log("extended luminance range", lo, hi, 0); if (hdr_probe_fmt() && hi) front_hdr_content_max_nits((float)hi); (void)layer; return RES_OK; }
 HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrStdLum,
-          void *layer, uint32_t lo, uint32_t hi) { (void)layer; (void)lo; (void)hi; return RES_OK; }
+          void *layer, uint32_t lo, uint32_t hi) { hdr_probe_log("standard luminance range", lo, hi, 0); (void)layer; return RES_OK; }
 // The rest of SDK 22's layer HDR metadata calls (the Bezier tone curve and the clears): the SDK forwards them through a table its graphics system fills, which is null on the host, so
 // unanswered they call through null (Mario Kart World 1.8.0 sets the curve every frame, by pull request #1116)
 HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrBezier,
-          void *layer, float a, float b, float c) { (void)layer; (void)a; (void)b; (void)c; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrBezierClear, void *layer) { (void)layer; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi37ClearLayerNextHdrContentGamutMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrGamutClear, void *layer) { (void)layer; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrToneMapClear, void *layer) { (void)layer; return RES_OK; }
+          void *layer, float a, float b, float c) { hdr_probe_log("bezier curve", a, b, c); (void)layer; return RES_OK; }
+HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrBezierClear, void *layer) { hdr_probe_log("bezier cleared", 0, 0, 0); (void)layer; return RES_OK; }
+HLE_FORCE("_ZN2nn2vi37ClearLayerNextHdrContentGamutMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrGamutClear, void *layer) { hdr_probe_log("gamut cleared", 0, 0, 0); if (hdr_probe_fmt()) front_hdr_content_gamut(-1); (void)layer; return RES_OK; }
+HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrToneMapClear, void *layer) { hdr_probe_log("tone mapping cleared", 0, 0, 0); (void)layer; return RES_OK; }

@@ -194,6 +194,103 @@ class Registry(unittest.TestCase):
             self.assertEqual((old, new), ('88fa42b908050011', '880a40f9080d40b9'), why)
             self.assertLess(delta + 8, fn['size'])
         self.assertTrue(any(e['what'].startswith('movie frame') for e in m.BINDING))
+    def test_mario_kart_world_dynamic_resolution_holds_full_size(self):
+        # 1.8.0's rule names the controller's update (main+0x151a40) as another function: its stub branches from the update's first instruction (pacibsp) to code that returns at
+        # once while state +0x40 (DM_DYNAMIC_RESOLUTION) is 0, and otherwise runs pacibsp and goes back to the update's second instruction; it declares the capability the
+        # launcher's Dynamic resolution row needs. Without the update found, and on v0 (whose rule names none), it writes nothing there and declares nothing
+        m = MODS[REPO / 'dm/games/0400C3F00006E000/patches.py']
+        v0, v180 = m.MATCH_FRAME_STEP['main']
+        self.assertEqual(v180['others']['dynamic resolution update'], {'size': 0xa58, 'fingerprints': ['1308ff9b1c9191675d181465e855668cac0cdba33568ad7fceacb6292af912d6']})
+        self.assertNotIn('others', v0)
+
+        def run(rule, update):
+            words, sites, puts, stub = [], {}, {}, 0x8000000
+            ctx = docs_patches.types.SimpleNamespace(here=lambda: stub + 4 * len(words), emit=words.append, site=sites.__setitem__,
+                                                     put=lambda off, ws, why: puts.__setitem__(off, ws), state=0x9000000, render_scale=0, step_max=0, base=0x100000,
+                                                     others={'dynamic resolution update': update} if 'others' in rule else {}, found=None, capabilities=set(), address=lambda off: 0)
+            rule['stub'](ctx)
+            return words, sites, puts, ctx.capabilities, stub
+
+        def b_target(at, w):   # an unconditional b's destination
+            self.assertEqual(w & 0xfc000000, 0x14000000, f'{w:#x} is no b')
+            imm = w & 0x3ffffff
+            return at + 4 * (imm - (1 << 26) if imm & (1 << 25) else imm)
+
+        upd = 0x200000
+        words, sites, puts, caps, stub = run(v180, upd)
+        self.assertEqual(sites[upd], '7f2303d5')   # the original instruction asserted: pacibsp
+        self.assertEqual(len(puts[upd]), 1)
+        start = b_target(upd, puts[upd][0]); i = (start - stub) // 4
+        self.assertEqual(words[i] & 0x9f00001f, 0x90000010)   # adrp x16 (the state page)
+        self.assertEqual(words[i + 1:i + 5], [0xb9404211,     # ldr w17,[x16,#0x40]: DM_DYNAMIC_RESOLUTION
+                                              0x35000051,     # cbnz w17,+8: on, over the ret
+                                              0xd65f03c0,     # ret: off, the update skipped
+                                              0xd503237f])    # pacibsp: the instruction replaced
+        self.assertEqual(b_target(start + 20, words[i + 5]), upd + 4)   # back to the update's second instruction
+        self.assertIn('DYNAMIC_RESOLUTION', caps)
+        self.assertEqual(len(puts), 2)   # the frame interval's site and the update's
+        _, _, puts, caps, _ = run(v180, None)
+        self.assertNotIn(upd, puts); self.assertNotIn('DYNAMIC_RESOLUTION', caps); self.assertEqual(len(puts), 1)
+        _, _, puts, caps, _ = run(v0, upd)
+        self.assertNotIn('DYNAMIC_RESOLUTION', caps); self.assertEqual(len(puts), 1)
+
+    def test_ocarina_window_size_from_the_state_page(self):
+        # v131072's rule names nnMain as another function: at its +0x200 (mov x8,#0xa00; movk x8,#0x5a0,lsl#32) it branches to code that loads state +0x2c0 (the host's
+        # width | height << 32, window_size.h) and keeps it when set, else builds the game's 2560x1440, then goes back to the stur at +0x208; the movk becomes a nop. It
+        # declares WINDOW_SIZE, which the loader needs to write the word. Without nnMain found it writes nothing there and declares nothing
+        m = MODS[REPO / 'dm/games/0400486024DEC000/patches.py']
+        rule, = m.MATCH_FRAME_STEP['main']
+        self.assertEqual(rule['others']['window size'], {'size': 0x570, 'fingerprints': ['f2c5558922a471ab585d374cc9293013d48da1562d43169367efdc8ea90a3fe8']})
+
+        def run(others):
+            words, sites, puts, stub = [], {}, {}, 0x8000000
+            ctx = docs_patches.types.SimpleNamespace(here=lambda: stub + 4 * len(words), emit=words.append, site=sites.__setitem__,
+                                                     put=lambda off, ws, why: puts.__setitem__(off, ws), state=0x9000000, render_scale=0, step_max=0, base=0x100000,
+                                                     others=others, found=None, capabilities=set(), address=lambda off: 0)
+            rule['stub'](ctx)
+            return words, sites, puts, ctx.capabilities, stub
+
+        def b_target(at, w):
+            self.assertEqual(w & 0xfc000000, 0x14000000, f'{w:#x} is no b')
+            imm = w & 0x3ffffff
+            return at + 4 * (imm - (1 << 26) if imm & (1 << 25) else imm)
+
+        nn, init = 0x300000, 0x200000
+        none = {'dynamic resolution': None, 'dynamic resolution update': None, 'window size': None, 'gfx init': None}
+        self.assertEqual(set(none), set(rule['others']))
+        words, sites, puts, caps, stub = run(dict(none, **{'window size': nn}))
+        site = nn + 0x200
+        self.assertEqual(sites[site], '084081d208b4c0f2')   # the original two words asserted
+        self.assertEqual(len(puts[site]), 2)
+        self.assertEqual(puts[site][1], 0xd503201f)        # the movk becomes a nop
+        start = b_target(site, puts[site][0]); i = (start - stub) // 4
+        self.assertEqual(words[i] & 0x9f00001f, 0x90000010)   # adrp x16 (the state page)
+        self.assertEqual(words[i + 1:i + 5], [0xf9416208,     # ldr x8,[x16,#0x2c0]
+                                              0xb5000068,     # cbnz x8,+12: the host's size, on to the branch back
+                                              0xd2814008,     # mov x8,#0xa00
+                                              0xf2c0b408])    # movk x8,#0x5a0,lsl#32
+        self.assertEqual(b_target(start + 20, words[i + 5]), site + 8)   # back to stur x8,[x21,#0x14]; the cbnz at start+8 jumps +12 to this branch
+        self.assertIn('WINDOW_SIZE', caps)
+        self.assertNotIn(init, puts)
+        # The graphics init (a workaround at the consumer): at its entry (pacibsp) a branch to code that stores the host's word over arg+8 when set, runs the pacibsp it
+        # replaced and goes back to +4
+        self.assertEqual(rule['others']['gfx init'], {'size': 0x2fc, 'fingerprints': ['f102ed9f80a4fc711650f4a86d11fe36602ecb330f422af96a4bad212dab5382']})
+        words, sites, puts, caps, stub = run(dict(none, **{'gfx init': init}))
+        self.assertEqual(sites[init], '7f2303d5')   # pacibsp asserted
+        self.assertEqual(len(puts[init]), 1); self.assertNotIn(site, puts)
+        start = b_target(init, puts[init][0]); i = (start - stub) // 4
+        self.assertEqual(words[i] & 0x9f00001f, 0x90000010)   # adrp x16 (the state page)
+        self.assertEqual(words[i + 1:i + 5], [0xf9416211,     # ldr x17,[x16,#0x2c0]
+                                              0xb4000051,     # cbz x17,+8: unset, on to the pacibsp
+                                              0xf9000431,     # str x17,[x1,#8]
+                                              0xd503237f])    # pacibsp, relocated
+        self.assertEqual(b_target(start + 20, words[i + 5]), init + 4)
+        self.assertIn('WINDOW_SIZE', caps)
+        _, _, puts, caps, _ = run(dict(none, **{'window size': nn, 'gfx init': init}))
+        self.assertIn(site, puts); self.assertIn(init, puts); self.assertIn('WINDOW_SIZE', caps)
+        _, _, puts, caps, _ = run(none)
+        self.assertNotIn(site, puts); self.assertNotIn(init, puts); self.assertNotIn('WINDOW_SIZE', caps)
+        self.assertEqual(len(puts), 1)   # only the frame ratio's own site
 
     def test_sdk_wide_rules_change_what_their_names_say(self):
         # the rules were taken from registered SDK cuts, and the builds they reproduce exactly have no row any more: each cut replaces the constant its rule names (0x3fe00000, the node

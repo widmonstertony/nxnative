@@ -6,7 +6,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Press a button to join](#press-a-button-to-join)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Shader prefetch](#shader-prefetch), [Downsample HDR textures](#downsample-hdr-textures), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
-- [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
+- [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode), [HDR](#hdr)
 - [In-game menu](#in-game-menu)
 - [TV](#tv)
 - [Settings in a file](#settings-in-a-file)
@@ -29,7 +29,7 @@ On a Mac, a game checked at that speed (Fire Emblem Fortune's Weave, Mario & Lui
 
 ### Dynamic resolution
 
-Off, the default, keeps the 3D picture at full size. On lets the game lower its resolution when frames run heavy and raise it again when they fit, as on the Switch: steadier frame rate, at times a softer picture. Only games whose resolution control the app can hold offer it (NieR:Automata, Ocarina of Time).
+Off, the default, keeps the 3D picture at full size. On lets the game lower its resolution when frames run heavy and raise it again when they fit, as on the Switch: steadier frame rate, at times a softer picture. Only games whose resolution control the app can hold offer it (NieR:Automata, Ocarina of Time, Mario Kart World 1.8.0).
 
 ### Render scale
 
@@ -62,7 +62,7 @@ Breath of the Wild renders 1280x720 in handheld mode. Docked it renders its worl
 
 ### Game's upscaler
 
-Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza and Splatoon Raiders. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's.
+Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza, Splatoon Raiders and The Legend of Zelda: Ocarina of Time. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's.
 
 ```mermaid
 flowchart LR
@@ -75,6 +75,7 @@ flowchart LR
 
 - **When to change it:** when the game falls short of its frame rate in busy scenes because of GPU time: Donkey Kong Bananza's upscaler is the largest single piece of a heavy frame on an M1 (3.5-5 ms of about 24 in handheld mode). Compare the look side by side before keeping it.
 - **Cost:** none in GPU time (it saves 2.5-4 ms a frame in that case); the picture is Apple's scaler's rather than the game's. Frames where the game renders at its output size are not upscaled and keep the game's shader either way. Devices without MetalFX keep the game's upscaler.
+- **MetalFX temporal** (only for games whose profile tells the app where their scene's depth and camera are: Ocarina of Time): Apple's MetalFX temporal scaler, which also uses the scene's depth, the camera's motion and a sub-pixel camera jitter, and keeps detail from frame to frame. Steadier than the spatial scaler while still and closer to the game's full-size picture, at about 2.5 ms more than the spatial scaler at 4K (Ocarina of Time, 2560x1440 or 2880x1620 to 3840x2160). Effects that move on their own (Navi, embers) can trail slightly. Frames it cannot take (menus, loading screens) use the spatial scaler.
 - **Not the same as [Upscaling](#upscaling):** that one scales the finished picture, HUD included, to the screen; this one replaces the game's own step inside the frame. Both can be on.
 
 ### Game language
@@ -250,6 +251,10 @@ Turn off **Show this window at launch** to start the game at once with your choi
 
 **Window** or **Fullscreen**: how the game's window opens. ⌃⌘F or the green button changes it while you play. In an `env.txt`: `DM_FULLSCREEN=1` or `0`.
 
+### HDR
+
+**Off** by default; experimental. On, the game is shown in HDR on a screen with extended dynamic range (EDR), such as a MacBook Pro's Liquid Retina XDR display or a Pro Display XDR, and the game is told its display supports HDR, so a game that renders HDR does (Mario Kart World 1.8.0: [HDR](../dm/games/0400C3F00006E000/README.md#hdr-experimental)). Its menus and other SDR pictures keep the brightness of the desktop's white; highlights go brighter. A game without HDR looks the same as with the setting off. On a screen without EDR, macOS fits the HDR picture into SDR, which can look flatter than the game's own SDR picture. Screenshots stay SDR, so an HDR picture looks pale in them. In an `env.txt`: `DM_HDR_PRESENT=1`.
+
 ### Switch 2 controllers
 
 **Off** by default. On, the game takes Joy-Con 2 and Pro Controller 2 over Bluetooth: hold the small Sync button on one during the game, until its player lights sweep, to pair it with this Mac; after that a press of any of its buttons connects it ([Switch 2 controllers](playing.md#switch-2-controllers-mac)). macOS asks for Bluetooth access the first time, and again after the app is packed again. In an `env.txt`: `DM_SW2=1`.
@@ -296,6 +301,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
 | Game language | `DM_LANG` | a language code, such as `ja` |
 | Display mode (Mac) | `DM_FULLSCREEN` | `1` fullscreen, `0` a window |
+| HDR (Mac) | `DM_HDR_PRESENT` | `1`, `0` |
 | Cloud saves folder (Mac) | `DM_SAVE_SYNC` | a folder; `icloud`: iCloud Drive › nxnative Saves; `0`: off |
 | Picture (iPhone and iPad) | `DM_PICTURE_FIT` | `fit` 16:9 with black bars, `fill` covers the screen, cropped |
 | Picture shape | `DM_SCREEN_ASPECT` | `auto` the app window's own shape where it is taller than 16:9 (iPad 4:3, iPhone Duo 1.43:1), else 16:9 (iOS only); `1.43` the iPhone Duo's shape, `0` 16:9 |
@@ -306,7 +312,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
 | Press a button to join | `DM_PAD_PRESS_TO_JOIN` | `1`, `0` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
-| Game's upscaler | `DM_UPSCALER` | `game`, `metalfx` |
+| Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` (games with a temporal profile) |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
 | Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
 | Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |

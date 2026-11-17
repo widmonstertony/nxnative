@@ -40,15 +40,52 @@ def frame_step(ctx, at=0xa0):
     emit(B(here(), interval))
     emit(0xb9421268); emit(B(here(), site + 4))   # orig: ldr w8,[x19,#0x210]; back
     fs_put(site, [B(site, start)], 'frame interval: the host\'s step, at most 2, unless the game\'s 30 fps mode is set (state page target fps; 0 = the game\'s choice by CPU time)')
+    dynamic_resolution(ctx)
+
+# The game's dynamic resolution (1.8.0; static analysis by another session, mkw-dynres-analysis.md, the facts below rechecked on v917504's main). It is not Ocarina of Time's
+# DynamicResolutionParam controller but a GPU-load balancer: a sampler (main+0x4645d0) turns the GPU time between the frame's two timestamp reports into % of a 60 Hz frame, and once
+# a frame a worker thread (main+0x147040, its one call at +0xcd0, x0 = its object + 0x58, x1 a second argument, the result never read: the caller branches on to code that writes
+# x0 before reading it) runs the controller's update (main+0x151a40, 0xa58 bytes). For each of its two entries (0x588 bytes) the update compares the load with its target (92 %
+# as constructed, main+0xde58c0; the tier manager main+0x370010 rewrites it to 93 % in play, 100 % on reset), moves the entry's level [entry+0x28] by (target - load) x 0.01 x its gains, clamps it to [its floor, 1.0], and updates the entry's three
+# knobs from it. The level is 1.0 at construction and falls only when the load is over the target, so the controller at rest is the mode's full size (2560x1440 with the host's
+# graphics scale 0, 2048x1152 in the note's older runs: the game picks the size, likely from oe::GetCurrentGraphicsScale; this stub does not). With real GPU timestamps it steps the races
+# down on Macs that hold 60 fps either way (a 16 GB M6: 9-11 ms of GPU a frame, mean width 1433-1760; game note, Frame rate), and each new size is new render targets (issue
+# #1823). Whether this game's load follows the resolution on Apple GPUs, as Ocarina of Time's did not, is not measured.
+# The stub skips the update while DM_DYNAMIC_RESOLUTION is 0 (state +0x40 0): the controller stays as constructed, level 1.0 and the knobs at their first values; with 1 the game's
+# own update runs. It sits at the update's first instruction, pacibsp (no rewrite site of the rewriter: the update's are at +0x88 on): x16 and x17 are free at a function's entry
+# (AAPCS), and the ret comes before pacibsp, so x30 is returned to unsigned, as it came. What the level and the knobs drive (the follow-up of the same analysis, static): the render
+# size's one consumer (main+0x474970) is floor4(clamp(viewport x render/display scale x level, 8, 16384)), so level 1.0 is the full size and the game's floor 0.65 (written each pass by
+# its tier manager, main+0x370010) the 1328x748 the races dropped to; only the update writes the level. Knob B (entry+0x48, 1.0) feeds a fade (renderer +0xc30) and knob C
+# (entry+0x60, 0) a feature-off bit (renderer +0x3158 bit 0): both start at full quality, so holding them keeps it. The frame interval (frame_step above) reads its own GPU time
+# (display +0x128), never this controller, so the skip leaves pacing alone; the tier manager still reads the sampler and may lower its quality tier under load. Open: a run that
+# reads the render size in races, menus and cutscenes with the GPU loaded
+def dynamic_resolution(ctx):
+    here, emit, fs_site, fs_put, FS_STATE_OFF = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state
+    site = ctx.others.get('dynamic resolution update')
+    if site is None: return   # not found in this build (a red line from the locator; v0 names none): the game's own controller runs
+    fs_site(site, '7f2303d5')   # pacibsp
+    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xb9404211,   # ldr w17,[x16,#0x40]    DM_DYNAMIC_RESOLUTION
+              0x35000051,   # cbnz w17,+8            on: the game's update
+              0xd65f03c0,   # ret                    off: no update, the level stays 1.0 (full size)
+              0xd503237f):  # pacibsp                (on) the instruction replaced
+        emit(w)
+    emit(B(here(), site + 4))
+    fs_put(site, [B(site, start)], 'dynamic resolution: off holds the controller at its constructed full-size level (state +0x40, DM_DYNAMIC_RESOLUTION); on runs the game\'s update')
+    ctx.capabilities.add('DYNAMIC_RESOLUTION')
 
 MATCH_FRAME_STEP = {'main': [
     {'name': 'frame interval from the host\'s step', 'size': 0x290, 'fingerprints': ['fe68735d459ac00d848aa10c5da10964193abc0c950c35cafe5203606de3ea29'], 'stub': frame_step},   # v0 main+0x3a9e28
     {'name': 'frame interval from the host\'s step', 'size': 0x28c, 'fingerprints': ['f5ff6fbab4ddd6eb8be409727bbc0cbf68ef791aa143a1043253cdbb771cc365'],
-     'stub': lambda ctx: frame_step(ctx, 0xa4)},   # 1.8.0 (v917504) main+0x69cbb0
+     'stub': lambda ctx: frame_step(ctx, 0xa4),   # 1.8.0 (v917504) main+0x69cbb0
+     'others': {'dynamic resolution update': {'size': 0xa58, 'fingerprints': ['1308ff9b1c9191675d181465e855668cac0cdba33568ad7fceacb6292af912d6']}}},   # main+0x151a40
 ]}
 
 BINDING = [
     {'what': 'frame interval from the host\'s step', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the game's own interval choice, found by its function's fingerprint on any build that keeps the function",
      'checked': 'v0 and 1.8.0 mains: one function with each fingerprint, the sites and the free registers read by disassembly (2026-11-08, 1.8.0 2026-11-12)'},
+    {'what': 'dynamic resolution: full size unless DM_DYNAMIC_RESOLUTION', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the game's own dynamic-resolution update, found by its function's fingerprint on any build that keeps it; switchable (DM_DYNAMIC_RESOLUTION)",
+     'checked': '1.8.0 main: one function with this fingerprint, pacibsp at its start, its one caller and that the caller reads no result, by disassembly (2026-11-15); not run'},
 ]

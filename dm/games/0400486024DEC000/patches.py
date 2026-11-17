@@ -50,6 +50,7 @@ def frame_step(ctx):
     emit(0x1e201828); emit(B(here(), site + 4))   # orig: fdiv s8,s1,s0; back
     fs_put(site, [B(site, start)], 'frame ratio: the host\'s elapsed seconds or whole vsyncs scaled by the base rate (0 = the game\'s ratio)')
     dynamic_resolution(ctx)
+    window_size(ctx)
 
 # The game's dynamic resolution (game__gfx__DynamicResolutionParam: LoadThreshold, ReduceCounterMax, IncreaseCounterMax and a list of levels, each a ResolutionReduceScale and a
 # Priority; on v131072 levels 0..9 at 0.75..0.333 of 2048x1152, 1536x864 to 683x384). Its update (main+0x805aa0) reads the frame's GPU load (about 0.2 ms a unit) into +0x8, subtracts
@@ -89,10 +90,59 @@ def dynamic_resolution(ctx):
     fs_put(site, [B(site, start)], 'dynamic resolution level: 0 (full resolution), or with state +0x40 (DM_DYNAMIC_RESOLUTION) a climb on the load measured at each level')
     ctx.capabilities.add('DYNAMIC_RESOLUTION')
 
+# The boot window's size (static reading by another session, ~/Documents/ultra-mod/oot-4k-window.md, the facts below rechecked on v131072's main). nnMain (main+0x1202ce0, 0x570
+# bytes) builds the framework's CreateArg on its stack and fixes the window at 2560x1440 at +0x200: mov x8,#0xa00; movk x8,#0x5a0,lsl#32; stur x8,[x21,#0x14] (x21 = sp+0xc8). The
+# framework keeps the pair (fw+0x9c / +0xa0), its graphics init (main+0x346be50) turns it into the display buffer's floats, and main+0x527fc0 makes the swap chain of that size
+# ("WindowInitialize ... 2560x1440"), before any game file but HeapDef and the boot config is read. The size is not asked of the host (no display query, tier or mode), and the
+# same constant serves handheld. The game's own runtime limit already allows 4K docked: main+0x112c5e0 takes {640x480, ..., 2560x1440, 3840x2160}[6 - graphics tier] (main+0x3f58540),
+# so with a 3840x2160 window the scene follows its ResolutionParam (Bootup's ModelSceneExtensionParam) up to it. The stub gives the window the host's size: state +0x2c0, a u64
+# width | height << 32 the loader writes from DM_DISPLAY_BUFFER (2160, 1440, 1080) when docked and the build declares WINDOW_SIZE; 0 = the game's 2560x1440. It replaces the mov
+# (a branch to it) and the movk (a nop), and goes back to the stur. nnMain uses neither x16 nor x17, nothing branches to +0x204 or +0x208, and neither word is a rewrite site.
+# The window textures grow with it (3840x2160 RGBA8 x2 about 64 MB, from the root before HeapDef's heaps exist); the scene's own targets come out of HeapDef's
+# DynamicTextureAllocatorMem, which a 4K scene needs grown (the oot-4k overlay, with DM_HEAP_EXTRA)
+# The window alone leaves the 3D scene and its crop at 2560x1440 (ygy-75's canary: "boot window 3840x2160", WindowInitialize 3840x2160, WindowCrop and the scene passes still
+# 2560x1440). They come from a size pair at +8 of the graphics init's argument: the init (main+0x1087b70, 0x2fc bytes, one caller, bl at main+0x36aef98 with x1 = sysobj+0x708)
+# passes arg+8 to main+0x1087f40, which compares it with gfx+0x10 (crop and base) and copies it there as a u64 (ldp w8,w9,[x1]; ldr x8,[x1]; str x8,[x0,#0x10]), and to the
+# copy of the first level table at main+0x1087e70 (ldr x12,[x1] into gfx+0xf4). The runtime update's min() with the window limit (main+0x6502e0) does not run at boot.
+# WORKAROUND at the value's consumer: the second stub, at the init's entry, stores the same host word over arg+8 before the init reads it (0 leaves the game's value). Open: who
+# writes 2560x1440 there (before the init, about 0.108 s into the boot; not file data, and no constant found statically for it); a fix there would replace this stub. Another
+# reader of arg+8 before the init would keep 2560x1440 (a mismatch in the canary). The relocated pacibsp signs LR with SP as before: the branch to the stub and the stub write
+# neither, so the autibsp before the init's tail call (+0x2b0) checks the same signature. The init uses neither x16 nor x17, nothing branches to its +4, and its entry is no
+# rewrite site (checked on v131072's main, 2026-11-16)
+def window_size(ctx):
+    here, emit, fs_site, fs_put, FS_STATE_OFF = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state
+    init = ctx.others.get('gfx init')
+    if init is not None:
+        fs_site(init, '7f2303d5')   # pacibsp
+        start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+        for w in (0xf9416211,   # ldr x17,[x16,#0x2c0]   the host's size (w | h << 32), 0 = the game's
+                  0xb4000051,   # cbz x17,+8             unset: leave arg+8 alone
+                  0xf9000431,   # str x17,[x1,#8]        arg+8: the 3D base and crop the init takes
+                  0xd503237f):  # pacibsp                the instruction replaced
+            emit(w)
+        emit(B(here(), init + 4))
+        fs_put(init, [B(init, start)], 'graphics init: the 3D base and crop at arg+8 from the host (state +0x2c0, DM_DISPLAY_BUFFER docked; workaround at the consumer, the writer is open)')
+        ctx.capabilities.add('WINDOW_SIZE')
+    fn = ctx.others.get('window size')
+    if fn is None: return   # not found in this build (a red line from the locator): the game's 2560x1440
+    site = fn + 0x200
+    fs_site(site, '084081d208b4c0f2')   # mov x8,#0xa00; movk x8,#0x5a0,lsl#32
+    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xf9416208,   # ldr x8,[x16,#0x2c0]      the host's window size (w | h << 32), 0 = the game's
+              0xb5000068,   # cbnz x8,+12              set: on to the stur
+              0xd2814008,   # mov x8,#0xa00            the game's 2560
+              0xf2c0b408):  # movk x8,#0x5a0,lsl#32    and 1440
+        emit(w)
+    emit(B(here(), site + 8))   # back to stur x8,[x21,#0x14]
+    fs_put(site, [B(site, start), 0xd503201f], 'boot window: the host\'s size (state +0x2c0, DM_DISPLAY_BUFFER docked), else the game\'s 2560x1440')
+    ctx.capabilities.add('WINDOW_SIZE')
+
 MATCH_FRAME_STEP = {'main': [
     {'name': 'frame ratio from the host\'s step', 'size': 0x9b4, 'fingerprints': ['6ae2aff5344d14568e4dbaf93455e2d8278384bf892ed6c6eca87fef98fbcd1d'], 'stub': frame_step,   # v131072 main+0x6e6be0
      'others': {'dynamic resolution': {'size': 0x294, 'fingerprints': ['7af6ceb0aedf8e0c17dc08ce17fcd6a7cba6d394a0d09e3b504c6d668dc418e7']},   # v131072 main+0x8065e0
-                'dynamic resolution update': {'size': 0xb24, 'fingerprints': ['5a423697838976baf286cffa5e2ceef0d4e037abbcd9d371e90e9e702d61b3d4']}}},   # main+0x805aa0
+                'dynamic resolution update': {'size': 0xb24, 'fingerprints': ['5a423697838976baf286cffa5e2ceef0d4e037abbcd9d371e90e9e702d61b3d4']},   # main+0x805aa0
+                'window size': {'size': 0x570, 'fingerprints': ['f2c5558922a471ab585d374cc9293013d48da1562d43169367efdc8ea90a3fe8']},   # nnMain, main+0x1202ce0
+                'gfx init': {'size': 0x2fc, 'fingerprints': ['f102ed9f80a4fc711650f4a86d11fe36602ecb330f422af96a4bad212dab5382']}}},   # main+0x1087b70
 ]}
 
 # The movie player's pictures per frame. Once a frame the player's update (main+0x3b5ca60 on v131072) adds the frame's time (the time object's +0x18, the frame ratio / 60 s, times
@@ -151,4 +201,10 @@ BINDING = [
     {'what': 'dynamic resolution: full size, or a climb on the load measured at each level', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
      'why': "the game's own dynamic-resolution level function and update, found by their functions' fingerprints on any build that keeps both; switchable (DM_DYNAMIC_RESOLUTION)",
      'checked': 'v131072 main: one function with each fingerprint (the level function a leaf, x2..x11 / x16 / x17 / s0..s2 free), its callers, the update and the controller fields read by disassembly, the fields read in play (2026-11-08); the climb run natively against a model of the update and in play to full size (2026-11-09)'},
+    {'what': 'boot window size from the host (DM_DISPLAY_BUFFER docked), else 2560x1440', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+     'why': "nnMain's constant window size, found by its function's fingerprint on any build that keeps the function; 0 in the state word keeps the game's",
+     'checked': 'v131072 main: one function with this fingerprint, the two words at +0x200, no x16 / x17 in nnMain, no branch to +0x204 or +0x208, not rewrite sites, by disassembly (2026-11-16); in play: boot window 3840x2160, WindowInitialize 3840x2160 (ygy-75, 2026-11-16)'},
+    {'what': 'graphics init: 3D base and crop (arg+8) from the host (DM_DISPLAY_BUFFER docked), else the game\'s', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+     'why': "a workaround at the value's consumer: the writer of the 2560x1440 at arg+8 is open; 0 in the state word keeps the game's",
+     'checked': 'v131072 main: one function with this fingerprint, pacibsp at its entry, one caller (bl, x1 = the argument), arg+8 read as a w | h pair by both consumers, no x16 / x17, no branch to +4, by disassembly (2026-11-16); not run'},
 ]

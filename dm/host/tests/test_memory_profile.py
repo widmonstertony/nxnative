@@ -27,6 +27,11 @@ class MemoryProfileTests(unittest.TestCase):
         subprocess.run([str(HERE / os.environ.get('DM_TEST_BUILD', 'build') / 't_svc_memory'), '--alias-probe'],
                        env=dict(os.environ, DM_ALIAS_SIZE='0x10000000'), capture_output=True, check=True)
 
+    def test_heap_extra(self):   # DM_HEAP_EXTRA=8: the probe asserts GetInfo's totals, the heap region, the block, SetHeapSize's limit and MapPhysicalMemory's room all grow by 8 MB
+        result = subprocess.run([str(HERE / os.environ.get('DM_TEST_BUILD', 'build') / 't_svc_memory'), '--heap-extra-probe'],
+                                env=dict(os.environ, DM_HEAP_EXTRA='8'), capture_output=True, text=True, check=True)
+        self.assertIn('[mem] DM_HEAP_EXTRA: application pool', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

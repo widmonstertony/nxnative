@@ -117,7 +117,7 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SCREEN_MATCH', 'DM_SW2', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_HDR_PRESENT', 'DM_SCREEN_MATCH', 'DM_SW2', 'DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY', 'DM_MOUSE_CAPTURE', 'DM_PAD_MAP'})
         for key in ('DM_PAD_SWAP_AB', 'DM_PAD_SWAP_XY'):
             self.assertEqual((mac[key]['kind'], mac[key]['default'], mac[key]['level']), ('toggle', '0', 'basic'))
         s = mac['DM_FULLSCREEN']

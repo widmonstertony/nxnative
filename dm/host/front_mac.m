@@ -41,6 +41,73 @@ static key_state g_key_state;
 static int g_input_on = 1;   // main thread: the game window is key, so its keyboard, mouse and controllers reach the game (input_release / input_resume)
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
+// ---------- HDR present (front.h front_hdr_present; DM_HDR_PRESENT=1) ----------
+static _Atomic int g_hdr_kind;   // FRONT_HDR_*: set in front_run before the layer is made, never changed after
+int front_hdr_present(void) { return g_hdr_kind; }
+static int hdr_kind_env(void) {
+    const char *e = getenv("DM_HDR_PRESENT"); if (!e || !atoi(e)) return FRONT_HDR_OFF;
+    const char *k = getenv("DM_HDR_PRESENT_KIND");
+    if (!k || !*k || !strcmp(k, "pq")) return FRONT_HDR_PQ;
+    if (!strcmp(k, "scrgb")) return FRONT_HDR_SCRGB;
+    LOG("[RED] DM_HDR_PRESENT_KIND=%s: pq or scrgb; using pq", k); return FRONT_HDR_PQ;
+}
+// DM_HDR_PRESENT_FORMAT: rgba16f (the default) or rgb10a2, the PQ layer's pixel format. RGB10A2Unorm holds PQ values as they are (Mario Kart World's HDR swapchain is that format,
+// so its picture is copied bit for bit, at half the bytes of a float drawable); the scRGB layer needs float, for values above 1 and below 0
+static MTLPixelFormat hdr_layer_format(void) {
+    const char *e = getenv("DM_HDR_PRESENT_FORMAT");
+    if (!e || !*e || !strcmp(e, "rgba16f")) return MTLPixelFormatRGBA16Float;
+    if (!strcmp(e, "rgb10a2")) {
+        if (g_hdr_kind == FRONT_HDR_PQ) return MTLPixelFormatRGB10A2Unorm;
+        LOG("[RED] DM_HDR_PRESENT_FORMAT=rgb10a2 needs DM_HDR_PRESENT_KIND=pq (scRGB is float); using rgba16f"); return MTLPixelFormatRGBA16Float;
+    }
+    LOG("[RED] DM_HDR_PRESENT_FORMAT=%s: rgba16f or rgb10a2; using rgba16f", e); return MTLPixelFormatRGBA16Float;
+}
+float front_hdr_paper_white(void) {
+    static _Atomic float pw; float v = pw; if (v > 0) return v;
+    const char *e = getenv("DM_HDR_PAPER_WHITE"); v = e && atof(e) > 0 ? (float)atof(e) : 203;
+    return pw = v;
+}
+// DM_HDR_MAX_NITS: < 0 = not set (1000 until the game says otherwise), else the fixed value (0 = no metadata)
+static float hdr_max_env(void) {
+    static float v = -2; if (v == -2) { const char *e = getenv("DM_HDR_MAX_NITS"); v = e && *e ? fmaxf((float)atof(e), 0) : -1; }
+    return v;
+}
+static _Atomic float g_hdr_meta_req = -1;   // the largest luminance last asked for (front_hdr_content_max_nits), so a game that sets it every frame costs no main-thread hop
+static float g_hdr_meta_nits = -1;          // main thread: the one the layer has (-1 = none applied yet)
+static void hdr_metadata_apply(float nits) {   // main thread
+    if (g_hdr_kind != FRONT_HDR_PQ || !g_layer || nits == g_hdr_meta_nits) return;
+    g_hdr_meta_nits = nits;
+    // HDR10 static metadata. The optical output scale is the PQ luminance macOS shows at EDR 1.0 (SDR white): paper white, so the game's 203-nit UI and SDR pictures put into
+    // PQ at paper white (nvn_mtl.m present_hdr) look as bright as the desktop's white, and the range above it uses the screen's headroom
+    g_layer.EDRMetadata = nits > 0 ? [CAEDRMetadata HDR10MetadataWithMinLuminance:0 maxLuminance:nits opticalOutputScale:front_hdr_paper_white()] : nil;
+    if (nits > 0) LOG("front end: HDR10 metadata: content up to %.0f nits, %.0f nits at SDR white", nits, front_hdr_paper_white());
+    else LOG("front end: no HDR10 metadata (DM_HDR_MAX_NITS=0): macOS's default PQ mapping");
+}
+void front_hdr_content_max_nits(float nits) {
+    if (g_hdr_kind != FRONT_HDR_PQ || hdr_max_env() >= 0 || !(nits > 0) || nits == g_hdr_meta_req) return;
+    g_hdr_meta_req = nits;
+    dispatch_async(dispatch_get_main_queue(), ^{ hdr_metadata_apply(nits); });
+}
+// The game's content gamut (front.h front_hdr_content_gamut): the gamut of the content inside its BT.2020 PQ signal (agl's PQ pass applies BT.709→BT.2020 for 0 and
+// Display P3→BT.2020 for 1 before encoding, Ocarina of Time and Mario Kart World alike), so the present copies the picture into the BT.2100 PQ layer whatever it is. It is
+// logged. DM_HDR_GAMUT=709 is a diagnostic that takes the picture as BT.709 primaries and converts it in the present (fs_hdr) instead of switching the layer's colorspace
+static _Atomic int g_hdr_gamut = -1;
+void front_hdr_content_gamut(int gamut) {
+    int was = g_hdr_gamut; g_hdr_gamut = gamut;   // one caller, the game's metadata thread: a plain load and store of the atomic
+    if (was != gamut && g_hdr_kind) LOG("front end: the game's HDR content gamut %d (%s content in a BT.2020 PQ signal)", gamut, gamut == 0 ? "BT.709" : gamut == 1 ? "Display P3" : gamut < 0 ? "none sent:" : "unknown");
+}
+int front_hdr_primaries_709(void) {
+    static _Atomic int env = -1;   // DM_HDR_GAMUT: 1 = 709 (the diagnostic), 0 = auto or 2020 (the picture is BT.2020)
+    int e = env;
+    if (e < 0) {
+        const char *s = getenv("DM_HDR_GAMUT");
+        e = s && !strcmp(s, "709");
+        if (s && *s && strcmp(s, "auto") && strcmp(s, "709") && strcmp(s, "2020")) LOG("[RED] DM_HDR_GAMUT=%s: auto, 709 or 2020; using auto", s);
+        else if (e) LOG("front end: the PQ picture taken as BT.709 primaries and converted to BT.2020 (DM_HDR_GAMUT=709, a diagnostic: games send BT.2020)");
+        env = e;
+    }
+    return e;
+}
 static _Atomic int g_screen_fps;   // the window's screen's maximumFramesPerSecond, kept up to date when the window moves to another screen
 int front_screen_max_fps(void) { return g_screen_fps; }
 static _Atomic CGDirectDisplayID g_screen_id;   // the window's screen (screen_refresh); 0 until the window is up, then the main display stands in
@@ -50,10 +117,40 @@ int front_display_pixels(int *w, int *h) {
     if (a <= 0 || b <= 0) return 0;
     *w = a; *h = b; return 1;
 }
+int front_display_pixels_largest(int *w, int *h) {
+    CGDirectDisplayID ids[32]; uint32_t n = 0; long best = 0; int bw = 0, bh = 0;
+    if (CGGetActiveDisplayList(32, ids, &n) != kCGErrorSuccess) return 0;
+    for (uint32_t i = 0; i < n; i++) {
+        CGDisplayModeRef m = CGDisplayCopyDisplayMode(ids[i]); if (!m) continue;
+        int a = (int)CGDisplayModeGetPixelWidth(m), b = (int)CGDisplayModeGetPixelHeight(m); CGDisplayModeRelease(m);
+        if (a > 0 && b > 0 && (long)a * b > best) { best = (long)a * b; bw = a; bh = b; }
+    }
+    if (!best) return 0;
+    *w = bw; *h = bh; return 1;
+}
 static _Atomic int g_screen_variable_refresh;
 int front_screen_variable_refresh(void) { return g_screen_variable_refresh; }
+// The window's screen's EDR headroom (front_screen_edr), written by screen_refresh: macOS posts NSApplicationDidChangeScreenParametersNotification when it changes
+static _Atomic float g_edr_potential, g_edr_current, g_edr_reference; static _Atomic int g_edr_known;
+int front_screen_edr(float *potential, float *current, float *reference) {
+    if (!g_edr_known) return 0;
+    if (potential) *potential = g_edr_potential;
+    if (current) *current = g_edr_current;
+    if (reference) *reference = g_edr_reference;
+    return 1;
+}
+int front_screen_peak_nits(void) {
+    float pot, cur, ref; if (!front_screen_edr(&pot, &cur, &ref) || pot <= 0) return 0;
+    static float sdr = -1; if (sdr < 0) { const char *e = getenv("DM_HDR_SDR_NITS"); sdr = e && atof(e) > 0 ? (float)atof(e) : 100; }
+    return (int)lroundf(pot * (ref > 0 ? 100 : sdr));
+}
 static void screen_refresh(NSScreen *screen) {   // main thread: refresh capabilities of the current screen and mode, including a mode change without moving the window
     if (!screen) return;
+    float pot = (float)screen.maximumPotentialExtendedDynamicRangeColorComponentValue, cur = (float)screen.maximumExtendedDynamicRangeColorComponentValue,
+          ref = (float)screen.maximumReferenceExtendedDynamicRangeColorComponentValue;
+    int changed = !g_edr_known || pot != g_edr_potential || ref != g_edr_reference;
+    g_edr_potential = pot; g_edr_current = cur; g_edr_reference = ref; g_edr_known = 1;
+    if (changed) LOG("front end: screen EDR headroom %.2f potential, %.2f now, %.2f reference (peak about %d nits, front_screen_peak_nits)", pot, cur, ref, front_screen_peak_nits());
     g_screen_fps = (int)screen.maximumFramesPerSecond;
     g_screen_id = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
     g_screen_variable_refresh = screen.minimumRefreshInterval > 0 && screen.maximumRefreshInterval > screen.minimumRefreshInterval;
@@ -1698,12 +1795,37 @@ void front_run(void (*guest)(void)) {
             setenv("DM_PRESENT_UPSCALE", g_metalfx_4k ? "metalfx" : "off", 1);
             LOG("front end: 4K MetalFX %s", g_metalfx_4k ? "enabled" : "unavailable on this GPU");
         }
-        g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        g_hdr_kind = hdr_kind_env();
+        g_layer.pixelFormat = g_hdr_kind ? hdr_layer_format() : MTLPixelFormatBGRA8Unorm;
+        if (g_hdr_kind) {   // DM_HDR_PRESENT=1: an EDR layer in the colorspace of DM_HDR_PRESENT_KIND (front.h front_hdr_present)
+            g_layer.wantsExtendedDynamicRangeContent = YES;
+            CGColorSpaceRef cs = CGColorSpaceCreateWithName(g_hdr_kind == FRONT_HDR_PQ ? kCGColorSpaceITUR_2100_PQ : kCGColorSpaceExtendedLinearSRGB);
+            g_layer.colorspace = cs; CGColorSpaceRelease(cs);
+            // Opaque: the present covers every pixel (the picture, black bars around it) and writes alpha 1, so the compositor need not blend the HDR layer over the window
+            // behind it, and may show it straight on the display in fullscreen. The SDR layer keeps its default
+            g_layer.opaque = YES;
+            LOG("front end: HDR present (DM_HDR_PRESENT=1): %s EDR layer, %s, paper white %.0f nits", g_layer.pixelFormat == MTLPixelFormatRGB10A2Unorm ? "RGB10A2Unorm" : "RGBA16Float",
+                g_hdr_kind == FRONT_HDR_PQ ? "BT.2100 PQ (DM_HDR_PRESENT_KIND=pq)" : "extended linear sRGB (DM_HDR_PRESENT_KIND=scrgb)", front_hdr_paper_white());
+            hdr_metadata_apply(hdr_max_env() >= 0 ? hdr_max_env() : 1000);
+        }
         g_layer.contentsScale = win.backingScaleFactor;
         // Apple's HUD over the game (frame rate, frame and GPU time, memory): front_hud_env turns it on before the first device. The layer's developerHUDProperties
         // stay unset: mode=default forces this layer's HUD on, so the Metal HUD menu's Hide HUD left it on screen
         if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) LOG("front end: Metal performance HUD on (DM_METAL_HUD)");
         v.layer = g_layer; [(DmGameView *)v fitDrawable];
+        // HDR in fullscreen (DM_HDR_COMPOSITE, on by default with DM_HDR_PRESENT): macOS may show a lone fullscreen layer straight on the display, and there the HDR layer
+        // showed corruption that came and went (Mario Kart World 1.8.0, M4 Max, XDR display) and stopped whenever a screenshot made WindowServer composite. A 2x2-point
+        // near-transparent black sublayer in the bottom-left corner (over the black bars) keeps the window composited; 0 leaves the layer alone
+        if (g_hdr_kind) {
+            const char *e = getenv("DM_HDR_COMPOSITE"); int comp = !e || atoi(e) != 0;
+            if (comp) {
+                CALayer *keep = [CALayer layer]; keep.frame = CGRectMake(0, 0, 2, 2); keep.opaque = NO;
+                CGColorRef c = CGColorCreateGenericGray(0, 0.004); keep.backgroundColor = c; CGColorRelease(c);
+                keep.autoresizingMask = kCALayerMaxXMargin | kCALayerMaxYMargin;
+                [g_layer addSublayer:keep];
+            }
+            LOG("front end: HDR layer %s (DM_HDR_COMPOSITE=%d)", comp ? "kept composited by a 2x2 sublayer" : "may go direct to the display in fullscreen", comp);
+        }
         [win center];
         // DM_SCREEN=<NSScreenNumber>: the launcher's display. Moved before the window is shown and before any fullscreen request, so DM_FULLSCREEN enters fullscreen there
         const char *want_scr = getenv("DM_SCREEN");

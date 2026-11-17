@@ -233,6 +233,25 @@ def header_one(g):
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
     dmo = g.get('depth_mode', 'gl')   # the NVN depth mode the game sets, for the pipeline archive made offline (dm/gfx/tools/pso_offline.py; the host follows the game at run time): gl / zero
     if dmo not in ('gl', 'zero'): sys.exit(f'{g.id}: depth_mode must be gl or zero: {dmo}')
+    tfc = g.get('tfx_compose', '')   # DM_UPSCALER=metalfx-temporal's inputs (nvn_mtl.m up_tfx_capture): the draw whose colour target 0 is the scene colour to upscale and whose depth target is its depth, by its vertex shader key and its fragment shader keys (one draw at a time; a game may draw it with one of several)
+    if tfc and not re.fullmatch(r'[0-9a-f]{16}(,[0-9a-f]{16})+', tfc): sys.exit(f'{g.id}: tfx_compose must be <vertex shader key>,<fragment shader key>[,<fragment shader key>...]: {tfc}')
+    tfv = g.get('tfx_view', '')   # the camera for its motion (nvn_mtl.m up_tfx_motion): the uniform buffer the scene draws bind with the view-projection, <stage>,<slot>,<size>,<offset of the view-projection>,<row|col>[,<offset of the previous frame's>]
+    tv = re.fullmatch(r'([0-5]),(\d{1,2}),((?:0x)?[0-9a-f]+),((?:0x)?[0-9a-f]+),(row|col)(?:,((?:0x)?[0-9a-f]+))?', tfv) if tfv else None
+    if tfv and not (tv and int(tv.group(2)) < 16 and all(int(o, 0) + 64 <= int(tv.group(3), 0) for o in (tv.group(4), tv.group(6) or '0'))):
+        sys.exit(f'{g.id}: tfx_view must be <stage 0-5>,<slot 0-15>,<size>,<view-projection offset>,<row|col>[,<previous view-projection offset>], each matrix 64 bytes inside the size: {tfv}')
+    tfj = g.get('tfx_jitter', '')   # the camera's jitter on the host (nvn_mtl.m up_tfx_jitter_bind), in tfx_view's buffers: <P offset>,<view offset>,<view length>,<render size offset>
+    tj = re.fullmatch(r'((?:0x)?[0-9a-f]+),((?:0x)?[0-9a-f]+),((?:0x)?[0-9a-f]+),((?:0x)?[0-9a-f]+)', tfj) if tfj else None
+    if tfj and not (tj and tv and int(tj.group(1), 0) + 64 <= int(tv.group(3), 0) and int(tj.group(2), 0) + int(tj.group(3), 0) <= int(tv.group(3), 0) and 0 < int(tj.group(3), 0) <= 64 and int(tj.group(4), 0) + 8 <= int(tv.group(3), 0)):
+        sys.exit(f'{g.id}: tfx_jitter needs tfx_view, and is <P offset>,<view offset>,<view length 1-64>,<render size offset>, inside its buffer: {tfj}')
+    tfu = g.get('tfx_cut', '')   # camera cuts the host resets the temporal scaler's history on (nvn_mtl.m up_tfx_capture): <inverse view offset (3x4, rows)>,<distance>[,<degrees>]: the camera moved further, or turned more, in a frame
+    tc = re.fullmatch(r'((?:0x)?[0-9a-f]+),(\d+(?:\.\d+)?)(?:,(\d+(?:\.\d+)?))?', tfu) if tfu else None
+    if tfu and not (tc and tv and int(tc.group(1), 0) + 48 <= int(tv.group(3), 0) and float(tc.group(2)) > 0 and (not tc.group(3) or 0 < float(tc.group(3)) < 180)):
+        sys.exit(f'{g.id}: tfx_cut needs tfx_view, and is <inverse view offset, 48 bytes inside its buffer>,<distance above 0>[,<degrees 0-180>]: {tfu}')
+    tfg = g.get('tfx_glow', '')   # the compose's glow (bloom) texture, for the reactive mask (nvn_mtl.m up_tfx_mask): <stage>,<texture slot> of the tfx_compose draw
+    tg = re.fullmatch(r'([0-5]),(\d{1,3})', tfg) if tfg else None
+    if tfg and not (tg and tfc): sys.exit(f'{g.id}: tfx_glow needs tfx_compose, and is <stage 0-5>,<texture slot>: {tfg}')
+    tdr = g.get('tfx_depth_reversed', 'off')   # that depth is reversed (far = 0): on / off
+    if tdr not in ('on', 'off'): sys.exit(f'{g.id}: tfx_depth_reversed must be on or off: {tdr}')
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
     src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)
@@ -269,7 +288,7 @@ def header_one(g):
          f'#define DM_GAME_FPS_HOLD {int(fh == "on")}',
          f'#define DM_GAME_UE_TEXTURE_POOL {int(utp)}',
          f'#define DM_GAME_UE_FPS_CVAR {q(ufc)}',
-         f'#define DM_GAME_RENDER_COND 1',
+         '#define DM_GAME_RENDER_COND 1',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(feedback))}',
          f'#define DM_GAME_PRESENT_SNAP {int(ps == "on")}',
          f'#define DM_GAME_PSO_MTL4 {int(p4 == "on")}',
@@ -287,6 +306,14 @@ def header_one(g):
          f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
          f'#define DM_GAME_FAMILY_COMPRESS {int(fco == "on")}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
+         f'#define DM_GAME_TFX_COMPOSE {q(tfc)}', f'#define DM_GAME_TFX_DEPTH_REVERSED {int(tdr == "on")}',
+         f'#define DM_GAME_TFX_VIEW_STAGE {int(tv.group(1)) if tv else 0}', f'#define DM_GAME_TFX_VIEW_SLOT {int(tv.group(2)) if tv else 0}',
+         f'#define DM_GAME_TFX_VIEW_SIZE {int(tv.group(3), 0) if tv else 0}', f'#define DM_GAME_TFX_VIEW_VP {int(tv.group(4), 0) if tv else 0}', f'#define DM_GAME_TFX_VIEW_ROWS {int(bool(tv) and tv.group(5) == "row")}',
+         f'#define DM_GAME_TFX_VIEW_PREV {int(tv.group(6), 0) if tv and tv.group(6) else 0}',
+         f'#define DM_GAME_TFX_CUT_INV {int(tc.group(1), 0) if tc else 0}', f'#define DM_GAME_TFX_CUT_DIST {float(tc.group(2)) if tc else 0.0}f',
+         f'#define DM_GAME_TFX_CUT_DEG {float(tc.group(3)) if tc and tc.group(3) else 0.0}f',
+         f'#define DM_GAME_TFX_GLOW {int(bool(tg))}', f'#define DM_GAME_TFX_GLOW_STAGE {int(tg.group(1)) if tg else 0}', f'#define DM_GAME_TFX_GLOW_SLOT {int(tg.group(2)) if tg else 0}',
+         f'#define DM_GAME_TFX_JITTER {int(bool(tj))}', *[f'#define DM_GAME_TFX_JIT_{n} {int(tj.group(i), 0) if tj else 0}' for i, n in ((1, "P"), (2, "VIEW"), (3, "VIEW_LEN"), (4, "SIZE"))],
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          '']

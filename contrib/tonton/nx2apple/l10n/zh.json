@@ -2390,5 +2390,8 @@
   "tonton.iosGPU": "兼容 GPU",
   "tonton.iosConservative": "保守检查（A10X）",
   "tonton.iosModernExportNote": "以现代 Metal 4 引擎导出单游戏 IPA，最低要求 iOS 26。",
-  "tonton.iosTargetExport": "为所选 iOS 或 iPadOS 版本构建 IPA。"
+  "tonton.iosTargetExport": "为所选 iOS 或 iPadOS 版本构建 IPA。",
+  "launch.set.DM_HDR_PRESENT": "HDR 高动态范围",
+  "launch.set.DM_HDR_PRESENT.note": "需要支持 HDR 的屏幕；仅原生支持 HDR 的游戏有效。实验功能，默认关闭。",
+  "launch.opt.DM_UPSCALER.metalfx-temporal": "MetalFX 时域超分"
 }

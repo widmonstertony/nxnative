@@ -80,6 +80,7 @@ typedef struct {
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
     uint32_t step_max;         // the largest step the frame step stubs give the game (the fixups table's STEP_MAX, patch_nso.py ctx.step_max); 0 = FSTEP_MAX
     uint32_t render_scale_max; // a render-scale stub's largest scale (the fixups table's RENDER_SCALE, patch_nso.py): DM_RENDER_SCALE is held to it; 0 = no such stub
+    uint8_t window_size;       // the fixups table's WINDOW_SIZE: a frame-step stub takes the boot window's size from state +0x2c0 (window_size.h; Ocarina of Time's nnMain)
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len;   // front patches only: whole image (with bss and key page), length of the image part of the file
     uint64_t patch_len;        // mapped executable patch extent, for either layout

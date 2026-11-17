@@ -26,6 +26,7 @@ import romfs as rfs
 import romfs_image
 import shader_lib
 import vol_space   # the space a build may write, with what APFS frees on demand
+import graphics_preset
 MODULE_FILES = ('*.patched.bin', '*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv', '*.changed.tsv', 'nro.tsv')   # what the host reads from the module folder (build_ipa.sh copies the same tables but changed.tsv: the iPhone's cheats never write code)
 MSL_FILES = ('*.metallib', '*.json', '*.tsv')   # what the host reads from msl/ (not the Mac build's .metal sources or _b_build.json); an NVN game's b-<chain> goes in as one file of them (shader_lib.py)
 # read beside DM_NVN_SHMAP; any of them may be absent (a Vulkan or GL game has no c1_full.tsv). The shader pairs are the pipeline prebuild's (nvn_mtl.m pso_prebuild): without them the
@@ -486,6 +487,7 @@ def pack(a):
         minos = min_os(a.host)
         sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/romfs_identity.h',
                    HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_cloudkit.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/nacp.py', HERE.parent / 'tools/romfs_image.py'] + swift_sources() + launcher_localizations()
+        sources += graphics_preset.sources()
         if (HERE / 'DesktopControlsNotices.txt').is_file(): sources.append(HERE / 'DesktopControlsNotices.txt')
         large = {*msls, *pso, *(p for x in programs for p in x[5])}   # the shader libraries and pipeline archives (13.5 GB for Ocarina of Time): by stat, as the RomFS trees below
         def tree(p):   # a folder's entries; a RomFS image's one row as a large file's (as_packed)
@@ -589,9 +591,11 @@ def pack(a):
             if phtml.is_dir(): copy([phtml], res / f'p{n}/html', False)
             rows.append('\t'.join([n, 'exe=@C@/MacOS/dmhost', f'arg=@R@/dm/p{n}', 'cwd=@S@', f'DM_ROMFS=@R@/{ptop}', f'DM_MSL_DIR=@R@/msl/p{n}', f'DM_NVN_SHMAP=@R@/dm/p{n}/shader_map.tsv', f'DM_PROGRAM={n}']))
         (dm / 'programs.tsv').write_text('\n'.join(rows) + '\n')
+    graphics = graphics_preset.prepare(a.title_id, a.patched, a.romfs, dm)
     icon = bool(a.icon)
     if icon: step('icon'); make_icns(a.icon, res / 'AppIcon.icns')
     info = info_plist(a, minos, icon)
+    if graphics: info['DMGraphicsUpgradeCommit'] = '30eb9960'
     if a.external_romfs:
         info['DMExternalRomfs'] = str(romfs)
         (res / 'romfs.id').write_text(romfs_image.identity(romfs, a.title_id, a.version or '') + '\n')

@@ -13,11 +13,40 @@ static inline void front_hud_env(void) {
 void front_run(void (*guest)(void));
 // The CAMetalLayer the graphics backend presents frames to (NULL when there is no window)
 void *front_metal_layer(void);
+// HDR present (Mac front_mac.m, DM_HDR_PRESENT=1 with a window; off by default, and nothing changes when off): the layer is RGBA16Float with extended dynamic range (EDR), in
+// the colorspace DM_HDR_PRESENT_KIND names: pq (the default) BT.2100 PQ for a 10-bit HDR10 picture, scrgb extended linear sRGB for an FP16 scRGB picture. nvn_mtl.m present_now
+// draws the game's picture into it (passed through when it is in that encoding, converted when it is not, an SDR picture included). 0 = off (no window, iOS, unit tests:
+// nvn_mtl.m's weak default), FRONT_HDR_PQ, FRONT_HDR_SCRGB. Any thread, after the window is up
+enum { FRONT_HDR_OFF = 0, FRONT_HDR_PQ = 1, FRONT_HDR_SCRGB = 2 };
+int front_hdr_present(void);
+// Paper white in nits (DM_HDR_PAPER_WHITE, default 203, the BT.2408 reference vi::QueryDisplayHdrPaperWhite reports): the level an SDR or scRGB 1.0 picture is put at in PQ, and
+// the PQ level that macOS shows at SDR white (the HDR10 metadata's optical output scale). Any thread
+float front_hdr_paper_white(void);
+// The HDR10 metadata of the PQ layer (CAEDRMetadata): the content's largest luminance in nits, e.g. from the game's vi::SetLayerNextHdrExtendedContentLuminanceRangeMetadata.
+// DM_HDR_MAX_NITS sets the first value (default 1000; 0 = no metadata, macOS's default tone mapping) and, when set, wins over later calls. Only a change is applied. Any thread
+void front_hdr_content_max_nits(float nits);
+// The game's content gamut (vi::SetLayerNextHdrContentGamutMetadata; hle_vi.c forwards it while it answers HDR on): the gamut of the content inside the PQ signal, which is
+// BT.2020 either way: 0 BT.709 (Ocarina of Time), 1 Display P3 (Mario Kart World); agl's PQ pass applies the matching matrix to BT.2020 before encoding. -1 = none sent, or
+// cleared. Noted (logged) on each change; the present does not need it. Any thread
+void front_hdr_content_gamut(int gamut);
+// 1 only with DM_HDR_GAMUT=709, a diagnostic: the present then takes the PQ picture as BT.709 and converts it to BT.2020 (present.metal fs_hdr). 0 otherwise (auto, the
+// default, and 2020): the PQ picture is BT.2020 and copied as it is, whatever the content gamut. Any thread
+int front_hdr_primaries_709(void);
+// The window's screen's extended dynamic range, as NSScreen reports it (kept up to date on screen and brightness changes): potential = the most the display can ever show
+// (maximumPotentialExtendedDynamicRangeColorComponentValue), current = the most it shows now (maximumExtendedDynamicRangeColorComponentValue; it moves with brightness and
+// only rises above 1 while an EDR layer is on screen), reference = the reference preset's (maximumReferenceExtendedDynamicRangeColorComponentValue, 0 = not a reference
+// preset). 1.0 = SDR white. Returns 0 and leaves them alone when not known (no window, iOS, unit tests: hle_vi.c's weak default). Any thread
+int front_screen_edr(float *potential, float *current, float *reference);
+// The panel's peak luminance in nits estimated from the EDR headroom: potential × SDR white, with SDR white taken as 100 nits in a reference preset (Apple's reference presets
+// put EDR 1.0 at 100 nits) and DM_HDR_SDR_NITS (default 100) otherwise; 0 = not known. An estimate: macOS does not report nits. Any thread
+int front_screen_peak_nits(void);
 // The highest refresh rate of the screen the game is shown on in Hz, 0 = not known (front_mac.m: the window's screen; front_ios.m: the game view's screen, 60 in Low Power Mode). Any thread
 int front_screen_max_fps(void);
 // The pixel size of the display the game is shown on: on the Mac the window's screen in its current mode (the main display before the window is up) (a scaled Retina mode's pixels), an iPhone's or iPad's screen (nativeBounds).
 // Returns 0 and leaves w, h alone when not known (no front end: graphics unit tests). Any thread
 int front_display_pixels(int *w, int *h);
+// The pixel size of the largest screen attached, in its current mode (Mac front_mac.m: by area; DM_DISPLAY_BUFFER=max, hle_vi.c). Returns 0 and leaves w, h alone when not known. Any thread
+int front_display_pixels_largest(int *w, int *h);
 // Whether the window's current screen mode supports variable refresh (Mac front_mac.m; none on iOS). Any thread
 int front_screen_variable_refresh(void);
 // The frame rate the display link paces the game at (60, 30, 120; nvn_mtl.m link_sync): in fullscreen, a screen whose refresh rate is not a multiple of it is switched, while the game runs,

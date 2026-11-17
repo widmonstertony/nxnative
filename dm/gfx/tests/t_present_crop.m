@@ -34,9 +34,153 @@ static int check_present_resize(id<MTLTexture> src, int w, int h) {
     d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget;
     id<MTLTexture> out=[g_dev newTextureWithDescriptor:d];res_add(out);res_commit();
     id<MTL4CommandAllocator> al=[g_dev newCommandAllocator];id<MTL4CommandBuffer> cb=[g_dev newCommandBuffer];id<MTLSharedEvent> ev=[g_dev newSharedEvent];
-    [cb beginCommandBufferWithAllocator:al];int kind=present_encode_m4(cb,src,out,NULL,g_present_uv[0],&g_fx_present);[cb endCommandBuffer];
+    [cb beginCommandBufferWithAllocator:al];int kind=present_encode_m4(cb,src,out,NULL,g_present_uv[0],&g_fx_present,NULL);[cb endCommandBuffer];
     [g_q4 commit:&cb count:1];[g_q4 signalEvent:ev value:1];
     EXPECT("resize present completes",1,[ev waitUntilSignaledValue:1 timeoutMS:10000]);res_remove(out);return kind;
+}
+#endif
+
+#ifndef CROP_LEGACY_HEADER
+// ---------- The HDR present (DM_HDR_PRESENT; present_hdr, present.metal fs_hdr) into an RGBA16Float canvas, without a window ----------
+// CPU references of fs_hdr's curves (SMPTE ST 2084, IEC 61966-2-1, BT.2087), in double
+static double ref_pq_encode(double nits) { const double m1=0.1593017578125,m2=78.84375,c1=0.8359375,c2=18.8515625,c3=18.6875; double p=pow(fmax(fmin(nits/10000,1),0),m1); return pow((c1+c2*p)/(1+c3*p),m2); }
+static double ref_srgb_linear(double c) { return c<=0.04045?c/12.92:pow((c+0.055)/1.055,2.4); }
+static void ref_709_to_2020(const double l[3], double o[3]) {
+    o[0]=0.627404*l[0]+0.329283*l[1]+0.043313*l[2]; o[1]=0.069097*l[0]+0.919540*l[1]+0.011362*l[2]; o[2]=0.016391*l[0]+0.088013*l[1]+0.895595*l[2]; }
+static void ref_2020_to_709(const double l[3], double o[3]) {
+    o[0]=1.660491*l[0]-0.587641*l[1]-0.072850*l[2]; o[1]=-0.124550*l[0]+1.132900*l[1]-0.008349*l[2]; o[2]=-0.018151*l[0]-0.100579*l[1]+1.118730*l[2]; }
+static double ref_pq_nits(double e) { const double m1=0.1593017578125,m2=78.84375,c1=0.8359375,c2=18.8515625,c3=18.6875; double p=pow(e,1/m2); return pow(fmax(p-c1,0)/(c2-c3*p),1/m1)*10000; }
+// A uniform N x N source of format pf filled with px (bytes of one texel), presented with the HDR constants of kind into an N*up x N*up RGBA16Float canvas (usage: its texture usage),
+// through MetalFX when fx is non-NULL. Returns the encoding kind (PRESENT_*) and the canvas's centre texel in out[4]
+static int t_p709;   // present_hdr's p709: the PQ picture taken as BT.709 primaries (DM_HDR_GAMUT=709, a diagnostic)
+static int hdr_present_fmt(MTLPixelFormat cpf, MTLPixelFormat pf, const void *px, size_t bpp, int kind, int up, MTLTextureUsage usage, fx_state *fx, double out[4]) {
+    const int N=8, W=N*up;
+    MTLTextureDescriptor *sd=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:N height:N mipmapped:NO];sd.storageMode=MTLStorageModeShared;sd.usage=MTLTextureUsageShaderRead;
+    id<MTLTexture> src=[g_dev newTextureWithDescriptor:sd];uint8_t buf[8*8*16];
+    for(int i=0;i<N*N;i++)memcpy(buf+i*bpp,px,bpp);
+    [src replaceRegion:MTLRegionMake2D(0,0,N,N) mipmapLevel:0 withBytes:buf bytesPerRow:N*bpp];
+    MTLTextureDescriptor *od=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:cpf width:W height:W mipmapped:NO];od.storageMode=MTLStorageModeShared;od.usage=usage;
+    id<MTLTexture> dst=[g_dev newTextureWithDescriptor:od];res_add(src);res_add(dst);res_commit();
+    float h[4];present_hdr(src,kind,t_p709,h);
+    id<MTL4CommandAllocator> al=[g_dev newCommandAllocator];id<MTL4CommandBuffer> cb=[g_dev newCommandBuffer];id<MTLSharedEvent> ev=[g_dev newSharedEvent];
+    [cb beginCommandBufferWithAllocator:al];int k=present_encode_m4(cb,src,dst,NULL,g_present_uv[0],fx,h);[cb endCommandBuffer];
+    [g_q4 commit:&cb count:1];[g_q4 signalEvent:ev value:1];
+    EXPECT("HDR present completes",1,[ev waitUntilSignaledValue:1 timeoutMS:10000]);
+    if(cpf==MTLPixelFormatRGB10A2Unorm){uint32_t o;[dst getBytes:&o bytesPerRow:W*4 fromRegion:MTLRegionMake2D(W/2,W/2,1,1) mipmapLevel:0];
+        out[0]=(o&1023)/1023.;out[1]=(o>>10&1023)/1023.;out[2]=(o>>20&1023)/1023.;out[3]=(o>>30)/3.;}
+    else{__fp16 o[4];[dst getBytes:o bytesPerRow:W*8 fromRegion:MTLRegionMake2D(W/2,W/2,1,1) mipmapLevel:0];for(int i=0;i<4;i++)out[i]=o[i];}
+    res_remove(src);res_remove(dst);return k;
+}
+static int hdr_present_one(MTLPixelFormat pf, const void *px, size_t bpp, int kind, int up, MTLTextureUsage usage, fx_state *fx, double out[4]) {
+    return hdr_present_fmt(MTLPixelFormatRGBA16Float,pf,px,bpp,kind,up,usage,fx,out);
+}
+static void expect_rgb(const char *name, const double got[4], const double want[3], double tol) {
+    int ok=fabs(got[0]-want[0])<=tol&&fabs(got[1]-want[1])<=tol&&fabs(got[2]-want[2])<=tol;
+    cases++;failed+=!ok;
+    printf("%s expected %.4f %.4f %.4f → got %.4f %.4f %.4f %s\n",name,want[0],want[1],want[2],got[0],got[1],got[2],ok?"✓":"✗");
+}
+static void check_present_hdr(void) {
+    // Which encoding each source format is read in (hdr_src_enc): Mario Kart World's HDR swapchain (NVN 0x3D, RGB10A2) is PQ on the PQ layer; RGBA8 is SDR; float is linear
+    EXPECT("HDR: RGB10A2 on the PQ layer is PQ",HDR_ENC_PQ,hdr_src_enc(MTLPixelFormatRGB10A2Unorm,FRONT_HDR_PQ));
+    EXPECT("HDR: RGB10A2 on the scRGB layer is PQ too",HDR_ENC_PQ,hdr_src_enc(MTLPixelFormatRGB10A2Unorm,FRONT_HDR_SCRGB));
+    EXPECT("HDR: RGBA8 is SDR",HDR_ENC_SDR,hdr_src_enc(MTLPixelFormatRGBA8Unorm,FRONT_HDR_PQ));
+    EXPECT("HDR: BGRA8 sRGB is SDR",HDR_ENC_SDR,hdr_src_enc(MTLPixelFormatBGRA8Unorm_sRGB,FRONT_HDR_PQ));
+    EXPECT("HDR: RGBA16F is linear",HDR_ENC_LINEAR,hdr_src_enc(MTLPixelFormatRGBA16Float,FRONT_HDR_PQ));
+    EXPECT("HDR: RG11B10F is linear",HDR_ENC_LINEAR,hdr_src_enc(MTLPixelFormatRG11B10Float,FRONT_HDR_SCRGB));
+    const double tol=2e-3;   // half-float canvas and the GPU's pow
+    MTLTextureUsage rt=MTLTextureUsageRenderTarget;double got[4];
+    // RGB10A2 holding PQ BT.2020, PQ layer: copied as it is
+    uint32_t pq10=512u|(256u<<10)|(800u<<20)|(3u<<30);
+    hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_PQ,1,rt,NULL,got);
+    expect_rgb("HDR: an RGB10A2 PQ picture is copied into the PQ layer",got,(double[3]){512/1023.,256/1023.,800/1023.},tol);
+    // RGBA8 SDR, PQ layer: sRGB decoded, BT.709 → BT.2020, placed at paper white (203 nits), PQ encoded. White lands on PQ(203) ≈ 0.58
+    uint8_t white[4]={255,255,255,255};
+    hdr_present_one(MTLPixelFormatRGBA8Unorm,white,4,FRONT_HDR_PQ,1,rt,NULL,got);
+    double pw=ref_pq_encode(203);
+    expect_rgb("HDR: SDR white goes to PQ paper white (203 nits)",got,(double[3]){pw,pw,pw},tol);
+    uint8_t c8[4]={200,100,30,255};double l[3]={ref_srgb_linear(200/255.),ref_srgb_linear(100/255.),ref_srgb_linear(30/255.)},w[3];ref_709_to_2020(l,w);
+    hdr_present_one(MTLPixelFormatRGBA8Unorm,c8,4,FRONT_HDR_PQ,1,rt,NULL,got);
+    expect_rgb("HDR: an SDR colour converted to PQ BT.2020",got,(double[3]){ref_pq_encode(w[0]*203),ref_pq_encode(w[1]*203),ref_pq_encode(w[2]*203)},tol);
+    // RGBA16F scRGB, scRGB layer: copied (values above 1 and below 0 kept); RGBA8 into the scRGB layer: sRGB decoded to linear
+    __fp16 f16[4]={2.5,0.5,-0.125,1};
+    hdr_present_one(MTLPixelFormatRGBA16Float,f16,8,FRONT_HDR_SCRGB,1,rt,NULL,got);
+    expect_rgb("HDR: an scRGB picture is copied into the extended linear layer",got,(double[3]){2.5,0.5,-0.125},tol);
+    hdr_present_one(MTLPixelFormatRGBA8Unorm,c8,4,FRONT_HDR_SCRGB,1,rt,NULL,got);
+    expect_rgb("HDR: an SDR colour decoded into the extended linear layer",got,l,tol);
+    // RGB10A2 PQ BT.2020 into the scRGB layer (DM_HDR_PRESENT_KIND=scrgb): PQ decoded to nits, divided by paper white, BT.2020 → BT.709 with negatives kept.
+    // A saturated BT.2020 green (outside BT.709) gives negative red and blue; 1000 nits white gives 1000 / 203
+    {   double pqv[3]={512/1023.,256/1023.,800/1023.},n[3],o3[3];for(int i=0;i<3;i++)n[i]=ref_pq_nits(pqv[i])/203;ref_2020_to_709(n,o3);
+        hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_SCRGB,1,rt,NULL,got);
+        expect_rgb("HDR: an RGB10A2 PQ picture decoded into the extended linear layer",got,o3,4e-3);
+        EXPECT("HDR: the HDR present writes alpha 1",1,got[3]==1);
+        uint32_t green=0u|(700u<<10)|(0u<<20)|(3u<<30);double g3[3]={0,ref_pq_nits(700/1023.)/203,0};ref_2020_to_709(g3,o3);
+        hdr_present_one(MTLPixelFormatRGB10A2Unorm,&green,4,FRONT_HDR_SCRGB,1,rt,NULL,got);
+        expect_rgb("HDR: a BT.2020 green outside BT.709 keeps its negative red and blue",got,o3,o3[1]*2e-3+2e-3);
+        EXPECT("HDR: that green's red is negative",1,got[0]<0&&got[2]<0);
+        uint32_t w1000;{unsigned q=(unsigned)lround(ref_pq_encode(1000)*1023);w1000=q|(q<<10)|(q<<20)|(3u<<30);}
+        double wn=ref_pq_nits(lround(ref_pq_encode(1000)*1023)/1023.)/203;
+        hdr_present_one(MTLPixelFormatRGB10A2Unorm,&w1000,4,FRONT_HDR_SCRGB,1,rt,NULL,got);
+        expect_rgb("HDR: 1000-nit white is 1000 / 203 of paper white",got,(double[3]){wn,wn,wn},wn*3e-3);
+    }
+    // The PQ layer in RGB10A2Unorm (DM_HDR_PRESENT_FORMAT=rgb10a2): PQ values copied bit for bit, an SDR picture converted, alpha 1 (an RGBA8 source with alpha 0)
+    hdr_present_fmt(MTLPixelFormatRGB10A2Unorm,MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_PQ,1,rt,NULL,got);
+    expect_rgb("HDR: an RGB10A2 PQ picture is copied into an RGB10A2 PQ layer",got,(double[3]){512/1023.,256/1023.,800/1023.},0.4/1023);
+    uint8_t white0[4]={255,255,255,0};
+    hdr_present_fmt(MTLPixelFormatRGB10A2Unorm,MTLPixelFormatRGBA8Unorm,white0,4,FRONT_HDR_PQ,1,rt,NULL,got);
+    expect_rgb("HDR: SDR white goes to PQ paper white in an RGB10A2 layer",got,(double[3]){pw,pw,pw},1.5/1023);
+    EXPECT("HDR: alpha 1 from a source with alpha 0",1,got[3]==1);
+    // DM_HDR_GAMUT=709 (front_hdr_primaries_709 1; present_hdr p709): a PQ picture taken as BT.709 primaries is decoded, BT.709 → BT.2020, encoded again for the PQ layer, decoded
+    // with no matrix for the scRGB layer; the flag means nothing for an SDR or linear source. Without it (auto: front_hdr_primaries_709's weak default 0 here) every PQ picture is copied
+    {   t_p709=1;double pqv[3]={512/1023.,256/1023.,800/1023.},n[3],w2[3],o3[3];
+        for(int i=0;i<3;i++)n[i]=ref_pq_nits(pqv[i]);ref_709_to_2020(n,w2);for(int i=0;i<3;i++)o3[i]=ref_pq_encode(w2[i]);
+        hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_PQ,1,rt,NULL,got);
+        expect_rgb("HDR: a BT.709 PQ picture converted to BT.2020 in the PQ layer",got,o3,2e-3);
+        EXPECT("HDR: its colour moved (not copied)",1,fabs(got[2]-pqv[2])>5e-3);
+        hdr_present_fmt(MTLPixelFormatRGB10A2Unorm,MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_PQ,1,rt,NULL,got);
+        expect_rgb("HDR: the same into an RGB10A2 PQ layer",got,o3,1.5/1023);
+        for(int i=0;i<3;i++)o3[i]=n[i]/203;
+        hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_SCRGB,1,rt,NULL,got);
+        expect_rgb("HDR: a BT.709 PQ picture decoded into the scRGB layer without the matrix",got,o3,4e-3*o3[2]+1e-3);
+        float h[4];MTLTextureDescriptor *d8=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:8 height:8 mipmapped:NO];
+        present_hdr([g_dev newTextureWithDescriptor:d8],FRONT_HDR_PQ,1,h);EXPECT("HDR: BT.709 primaries flag only a PQ source",0,(int)h[3]);
+        present_hdr([g_dev newTextureWithDescriptor:[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGB10A2Unorm width:8 height:8 mipmapped:NO]],FRONT_HDR_PQ,0,h);
+        EXPECT("HDR: a BT.2020 PQ source is not flagged",0,(int)h[3]);
+        EXPECT("HDR: auto takes every PQ picture as BT.2020 (front_hdr_primaries_709 0)",0,front_hdr_primaries_709());
+        t_p709=0;
+    }
+    // A linear picture into the PQ layer: 1.0 is paper white
+    __fp16 one[4]={1,1,1,1};
+    hdr_present_one(MTLPixelFormatRGBA16Float,one,8,FRONT_HDR_PQ,1,rt,NULL,got);
+    expect_rgb("HDR: linear 1.0 goes to PQ paper white",got,(double[3]){pw,pw,pw},tol);
+    if([MTLFXSpatialScalerDescriptor supportsMetal4FX:g_dev]) {   // MetalFX upscaling 2x in the HDR present: PQ values go through untouched; a picture that is converted is not written into the canvas by the scaler
+        g_fx_mode=1;fx_state fx={0};
+        int k=hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_PQ,2,rt|MTLTextureUsageShaderWrite|MTLTextureUsageShaderRead,&fx,got);
+        printf("HDR: MetalFX with an RGB10A2 source into RGBA16F: %s\n",k==PRESENT_METALFX?"scaled by MetalFX":"MetalFX refused the formats: bilinear");
+        expect_rgb("HDR: MetalFX keeps an RGB10A2 PQ picture's values",got,(double[3]){512/1023.,256/1023.,800/1023.},4e-3);
+        res_remove(fx.in);res_remove(fx.out);fx=(fx_state){0};
+        k=hdr_present_one(MTLPixelFormatRGBA8Unorm,white,4,FRONT_HDR_PQ,2,rt|MTLTextureUsageShaderWrite|MTLTextureUsageShaderRead,&fx,got);
+        EXPECT("HDR: MetalFX scales an SDR picture into the PQ layer",PRESENT_METALFX,k);
+        expect_rgb("HDR: with MetalFX the SDR picture is still converted (the scaler does not write the canvas)",got,(double[3]){pw,pw,pw},4e-3);
+        res_remove(fx.in);res_remove(fx.out);fx=(fx_state){0};
+        // The scRGB layer with a PQ source through MetalFX: the scaler takes the PQ values (perceptual mode), and fs_hdr decodes its output
+        double pqv[3]={512/1023.,256/1023.,800/1023.},n[3],o3[3];for(int i=0;i<3;i++)n[i]=ref_pq_nits(pqv[i])/203;ref_2020_to_709(n,o3);
+        k=hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_SCRGB,2,rt|MTLTextureUsageShaderWrite|MTLTextureUsageShaderRead,&fx,got);
+        EXPECT("HDR: MetalFX scales a PQ picture into the scRGB layer",PRESENT_METALFX,k);
+        expect_rgb("HDR: MetalFX's PQ output decoded into the scRGB layer",got,o3,0.015*o3[2]);   // MetalFX moves PQ code values by up to about 1e-3 (0.7812 for 0.7820 above): about 1 % in linear light at 1,470 nits
+        res_remove(fx.in);res_remove(fx.out);fx=(fx_state){0};
+        // A linear source into the RGB10A2 PQ layer through MetalFX: scaled in float (HDR mode), so 4.0 (812 nits) is not clipped at 1 before fs_hdr encodes it
+        __fp16 f4[4]={4,4,4,1};double p4=ref_pq_encode(4*203);
+        k=hdr_present_fmt(MTLPixelFormatRGB10A2Unorm,MTLPixelFormatRGBA16Float,f4,8,FRONT_HDR_PQ,2,rt|MTLTextureUsageShaderWrite|MTLTextureUsageShaderRead,&fx,got);
+        EXPECT("HDR: MetalFX scales a linear picture into the RGB10A2 PQ layer",PRESENT_METALFX,k);
+        expect_rgb("HDR: a linear 4.0 through MetalFX reaches PQ(812 nits), not PQ(203)",got,(double[3]){p4,p4,p4},4e-3);
+        res_remove(fx.in);res_remove(fx.out);fx=(fx_state){0};
+        // A BT.709 PQ picture through MetalFX into a canvas MetalFX could write: still converted after the scaler, so MetalFX does not write the canvas
+        t_p709=1;{double pqv[3]={512/1023.,256/1023.,800/1023.},n[3],w2[3],o3[3];for(int i=0;i<3;i++)n[i]=ref_pq_nits(pqv[i]);ref_709_to_2020(n,w2);for(int i=0;i<3;i++)o3[i]=ref_pq_encode(w2[i]);
+        k=hdr_present_one(MTLPixelFormatRGB10A2Unorm,&pq10,4,FRONT_HDR_PQ,2,rt|MTLTextureUsageShaderWrite|MTLTextureUsageShaderRead,&fx,got);
+        EXPECT("HDR: MetalFX scales a BT.709 PQ picture",PRESENT_METALFX,k);
+        expect_rgb("HDR: with MetalFX the BT.709 PQ picture is still converted to BT.2020",got,o3,4e-3);}t_p709=0;
+        res_remove(fx.in);res_remove(fx.out);g_fx_mode=0;
+    } else printf("no Metal 4 MetalFX spatial scaler on this GPU: the HDR present through MetalFX is not checked\n");
 }
 #endif
 
@@ -205,7 +349,7 @@ int main(void) { @autoreleasepool {
                 id<MTL4ComputeCommandEncoder> ce=[fcb computeCommandEncoder];[ce setComputePipelineState:ps];[ce setArgumentTable:at];
                 [ce dispatchThreads:MTLSizeMake(S,S,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];[ce endEncoding];[fcb endCommandBuffer];
                 id<MTL4CommandBuffer> pcb=[g_dev newCommandBuffer];[pcb beginCommandBufferWithAllocator:pal];
-                kinds+=present_encode_m4(pcb,win,canvas,NULL,g_present_uv[0],&g_fx_present)==PRESENT_METALFX;[pcb endCommandBuffer];
+                kinds+=present_encode_m4(pcb,win,canvas,NULL,g_present_uv[0],&g_fx_present,NULL)==PRESENT_METALFX;[pcb endCommandBuffer];
                 [g_q4 commit:&fcb count:1];[g_q4 commit:&pcb count:1];[g_q4 signalEvent:ev value:round];
                 if (![ev waitUntilSignaledValue:round timeoutMS:10000]) { EXPECT("in-place present completes",1,0); break; }
                 id<MTLCommandBuffer> cb=[g_q commandBuffer];id<MTLBlitCommandEncoder> bl=[cb blitCommandEncoder];
@@ -240,6 +384,7 @@ int main(void) { @autoreleasepool {
         EXPECT("whole-window capture callback completes",0,(int)dispatch_semaphore_wait(grabbed,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC)));
         res_remove(big);g_fx_mode=0;
     } else printf("no Metal 4 MetalFX spatial scaler on this GPU: the MetalFX present is not checked\n");
+    check_present_hdr();
 #endif
     int invalid[4][4]={{-1,0,4,4},{0,-1,4,4},{0,0,0,4},{7,0,4,4}};
     for(int i=0;i<4;i++) {

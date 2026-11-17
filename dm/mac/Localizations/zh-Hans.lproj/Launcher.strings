@@ -286,3 +286,7 @@
 "Rotate focused camera" = "锁定时转动镜头（鼠标已自动处理）";
 "Crouch / rise" = "蹲下／起身";
 "Mega evolution" = "超级进化";
+"HDR" = "HDR 高动态范围";
+"MetalFX temporal" = "MetalFX 时域超分";
+"Requires an HDR display and HDR game content. Experimental; off by default." = "需要支持 HDR 的屏幕及游戏内容。实验功能，默认关闭。";
+"Needs a screen that shows HDR, such as a MacBook Pro's XDR display. Only games that render HDR look different (experimental)." = "需要支持 HDR 的屏幕，例如 MacBook Pro 的 XDR 屏幕。仅原生 HDR 游戏有效（实验功能）。";

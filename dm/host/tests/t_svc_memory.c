@@ -581,7 +581,7 @@ static void *init_worker(void *arg) { *(uint64_t *)arg = info(I_AliasAddr); retu
 // The block: 256 MB in front, the heap region, the stack region, the alias region up to its end. The heap and stack sizes are the profile's, whatever the alias region's size
 static void layout_order(void) {
     assert(info(I_HeapAddr) == (uint64_t)(uintptr_t)g_as + 0x10000000);
-    assert(info(I_HeapSize) == DM_GAME_MEM_RESERVE - DM_GAME_MEM_ALIAS - DM_GAME_MEM_STACK - 0x10000000);
+    assert(info(I_HeapSize) == DM_GAME_MEM_RESERVE + g_pool_extra - DM_GAME_MEM_ALIAS - DM_GAME_MEM_STACK - 0x10000000);   // DM_HEAP_EXTRA grows the heap region (0 by default)
     assert(info(I_StackAddr) == info(I_HeapAddr) + info(I_HeapSize) && info(I_StackSize) == DM_GAME_MEM_STACK);
     assert(info(I_AliasAddr) == info(I_StackAddr) + info(I_StackSize));
     assert(info(I_AliasAddr) + info(I_AliasSize) == info(I_AslrAddr) + info(I_AslrSize));
@@ -596,6 +596,27 @@ int main(int argc, char **argv) {
         assert(resize(DM_GAME_APP_POOL - DM_GAME_MEM_USED + 0x200000) == LIMIT);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--heap-extra-probe")) {   // DM_HEAP_EXTRA=8: the pool, the heap region and the reserved block grow by 8 MB; every bound follows the grown pool
+        const uint64_t X = 8 << 20;
+        mem_init();
+        alias = info(I_AliasAddr);
+        assert(g_pool_extra == X);
+        assert(info(I_TotalMem) == DM_GAME_APP_POOL + X && info(I_TotalNonSys) == DM_GAME_APP_POOL + X);
+        assert(g_heap_cap == DM_GAME_MEM_RESERVE - DM_GAME_MEM_ALIAS - DM_GAME_MEM_STACK - 0x10000000 + X);
+#if !TARGET_OS_IPHONE
+        if (!getenv("DM_ALIAS_SIZE")) assert(g_reserve == DM_GAME_MEM_RESERVE + X - DM_GAME_MEM_ALIAS + (DM_GAME_MEM_ALIAS > SWITCH_ALIAS ? DM_GAME_MEM_ALIAS : SWITCH_ALIAS));
+#endif
+        assert(info(I_AslrSize) == g_reserve);
+        layout_order();   // heap, stacks and alias region still in order and inside the block
+        // A heap of the grown total less the used memory GetInfo reports is granted (what a nninitStartup-style or Mario Kart World-style request asks); 2 MB more is ResultLimitReached
+        size_t grown = (size_t)(info(I_TotalMem) - info(I_UsedMem));
+        assert(grown <= g_heap_cap && !resize(grown) && info(I_UsedMem) == DM_GAME_MEM_USED + grown);
+        assert(!resize(0) && resize(grown + 0x200000) == LIMIT && !g_heap_cur);
+        // The room MapPhysicalMemory checks is the grown pool too: with the heap at the old total less used, the 8 MB are there to map
+        assert(!resize(DM_GAME_APP_POOL - DM_GAME_MEM_USED) && !pages(1, alias, X) && !pages(0, alias, X) && !resize(0));
+        printf("DM_HEAP_EXTRA probe passed (pool %#llx, heap region %#zx)\n", (unsigned long long)info(I_TotalMem), g_heap_cap);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--alias-probe")) {   // DM_ALIAS_SIZE sets the alias region; the heap and stacks stay as the profile has them
         mem_init();
         assert(info(I_AliasSize) == 0x10000000);
@@ -606,6 +627,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < 8; ++i) assert(!pthread_create(&threads[i], NULL, init_worker, &addresses[i]));
     for (unsigned i = 0; i < 8; ++i) { assert(!pthread_join(threads[i], NULL)); assert(addresses[i] == addresses[0]); }
     alias = addresses[0]; stack = info(I_StackAddr); heap = info(I_HeapAddr);
+    if (!getenv("DM_HEAP_EXTRA")) assert(!g_pool_extra && info(I_TotalMem) == DM_GAME_APP_POOL);   // off by default: the profile's pool, as before
 #if !TARGET_OS_IPHONE
     if (!getenv("DM_ALIAS_SIZE")) assert(info(I_AliasSize) == SWITCH_ALIAS);   // the Mac's alias region is a Switch's, whatever the profile can give an iPhone; DM_ALIAS_SIZE=<mem_alias> runs these tests on an iPhone's
 #endif

@@ -14,6 +14,7 @@
 #include <limits.h>
 #include "hle.h"
 #include "host_image.h"
+#include "window_size.h"   // the boot window size word (WINDOW_SIZE stubs)
 #if TARGET_OS_IPHONE
 #include <mach/mach.h>
 #endif
@@ -290,6 +291,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "FPS_REALTIME")) m->fps_realtime = v == 1;
         else if (!strcmp(key, "RENDER_SCALE")) m->render_scale_max = (uint32_t)v;
         else if (!strcmp(key, "STEP_MAX")) m->step_max = (uint32_t)v;
+        else if (!strcmp(key, "WINDOW_SIZE")) m->window_size = v != 0;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
         else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
@@ -335,12 +337,15 @@ int dm_fps_realtime;
 static int g_fps_has_realtime;
 int dm_fps_step_max;   // the largest step the stubs give the game (STEP_MAX in its fixups table; 0 = FSTEP_MAX): the frame step holds frames and pays back within it (hle_nvn.c)
 static const char *g_fps_mod;   // the module holding the state page (for the log)
+static int g_window_size;   // the state page's module declares WINDOW_SIZE: its stub reads the boot window's size at +0x2c0 (window_size.h)
 static float g_render_scale_max = 1.0f;   // the render-scale stub's largest scale (RENDER_SCALE in its fixups table; 1 for a stub that only lowers the game's size)
 static void install_fps_state(module_t *m) {
     uint64_t needed = m->fps_realtime ? 0xb0 : 0x40;
     if (m->fps_state_off + needed > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
     dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name; dm_fps_step_max = (int)m->step_max;
     g_fps_has_realtime = m->fps_realtime;
+    if (m->window_size && m->fps_state_off + DM_WINDOW_SIZE_OFF + 8 > m->size) die("%s: frame step state page too small for the window size word", m->name);
+    g_window_size = m->window_size;
     if (m->render_scale_max > 1) g_render_scale_max = (float)m->render_scale_max;
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
@@ -370,6 +375,14 @@ void dm_fps_state_apply(void) {
     const char *dr = getenv("DM_DYNAMIC_RESOLUTION"); uint32_t dyn = dr && !strcmp(dr, "1");
     if (dr && strcmp(dr, "0") && strcmp(dr, "1")) LOG("[RED] DM_DYNAMIC_RESOLUTION=%s: must be 0 or 1; keeping full resolution", dr);
     memcpy(dm_fps_state + 0x40, &dyn, sizeof dyn);
+    // The boot window's size, for builds whose stub reads it (WINDOW_SIZE: Ocarina of Time's nnMain fixes 2560x1440): DM_DISPLAY_BUFFER 2160 / 1440 / 1080 when docked, else 0, the
+    // game's own (window_size.h). The same switch answers vi::QueryDisplayBufferMaxResolution (hle_vi.c) for the games that ask it instead
+    if (g_window_size) {
+        uint64_t ws = dm_window_size_word(getenv("DM_DISPLAY_BUFFER"), dm_opmode() == 1);
+        memcpy(dm_fps_state + DM_WINDOW_SIZE_OFF, &ws, sizeof ws);
+        if (ws) LOG("%s: boot window %ux%u (DM_DISPLAY_BUFFER=%s, docked; the build's WINDOW_SIZE stub)", g_fps_mod, (unsigned)(uint32_t)ws, (unsigned)(ws >> 32), getenv("DM_DISPLAY_BUFFER"));
+        else if (getenv("DM_DISPLAY_BUFFER")) LOG("%s: boot window: the game's own (DM_DISPLAY_BUFFER=%s %s)", g_fps_mod, getenv("DM_DISPLAY_BUFFER"), dm_opmode() == 1 ? "is not 2160, 1440 or 1080" : "applies docked only");
+    }
     // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs
     // (Breath of the Wild 1.9.0's patches.py) render that shape: the output keeps its width (1920) and takes the height that gives the ratio, a multiple of 48 so the
     // 2/3-size layout space (1280 wide) stays whole: 1.43 → 1920x1344 and 1280x896. State +0x48 u32 output height, +0x4c u32 layout height, +0x50 its float; 0 = 16:9
