@@ -38,6 +38,31 @@ The cave check does not establish full shader coverage or other areas'
 rendering. The GPU fixture verified both clear paths against fragment writes
 at 1,042 depths with the modern and compatibility renderers.
 
+## Fate/Samurai Remnant: first playable battle on classic Metal
+
+The pinned iPadOS 16.1 renderer (chain `a3a5cfdab59c`) rejected a draw
+because vertex program `d21bdc731c2ea7f1_b` expected integer register
+bits while the guest supplied Half2. In the isolated M2 60.124 test, the
+scoped variant let Metal fetch the half coordinates as float, then passed
+their float32 register bits to the original translated shader. Only
+Half2 inputs from the targeted shader are adapted. The source and base
+library must match the existing non-point manifest and the argument buffer
+layout must match the original function.
+
+For the pinned 60.123 renderer, apply [the patch](samurai-m2-half2-vertex.patch)
+and copy [the header](nvn_samurai_half_vertex.h) beside the renderer. The
+diagnostic is enabled per title with `DM_TEST_SAMURAI_HALF_VERTEX=1`.
+It does not change the shared shader chain, original library, or other
+games. Separately, restore non-point sources from the matched cache for
+the vertex pipelines that need them; a library alone cannot supply those
+sources at run time.
+
+The M2 reached the playable assassin battle with characters, ground and
+shadows visible. Movement and attacks advanced the tutorial. The
+compatibility log confirmed the Half2 conversion at attribute 2. The
+battle check does not certify the whole game or all effects in later
+sections. The original saves were kept; the test used a separate slot.
+
 ## Ocarina of Time: opening movie on Metal 3 (M2 60.60)
 
 The opening video's decode kernel writes a private RGBA8 target which the

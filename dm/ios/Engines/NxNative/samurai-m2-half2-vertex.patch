@@ -1,0 +1,22 @@
+--- a/dm/gfx/nvn/nvn_mtl_legacy.inc
++++ b/dm/gfx/nvn/nvn_mtl_legacy.inc
+@@ -5151,4 +5151,5 @@
+     }
+ }
++#include "nvn_samurai_half_vertex.h"
+ static id<MTLRenderPipelineState> pso_build(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged, int specialized, NSError **error) {
+     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, fsfn, merged);
+@@ -5187,4 +5188,13 @@
+         d.vertexFunction = fn;
+     } else if (nonpoint) { @synchronized (vs) { if (vs->nonpoint_fn) d.vertexFunction = vs->nonpoint_fn; } }
++    uint64_t halfmask = nonpoint ? legacy_samurai_half_attributes(k, vs) : 0;
++    if (halfmask) {
++        id<MTLFunction> half_fn = legacy_samurai_half_variant(vs, halfmask);
++        if (half_fn) {
++            d.vertexFunction = half_fn;
++            for (int loc = 0; loc < 32; ++loc)
++                if (halfmask >> loc & 1) d.vertexDescriptor.attributes[loc].format = MTLVertexFormatHalf2;
++        }
++    }
+     id<MTLRenderPipelineState> ps = nvn_cached_render_specialized(g_dev, d, specialized, error);
+     NSString *why = error && *error ? (*error).localizedDescription : nil;
