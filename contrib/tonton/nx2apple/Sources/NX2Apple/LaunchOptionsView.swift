@@ -224,7 +224,10 @@ struct LaunchOptionsView: View {
 
     /// Saves: the cloud state of a Mac game and the sheet that imports, exports and shows the backups.
     @ViewBuilder private func saves(_ game: LibraryGame, destination: LaunchDestination) -> some View {
-        if destination == .mac, GameboxCloud.enabled { TonTonCloudStatus(titleIDs: [game.titleID]) }
+        if destination == .mac, GameboxCloud.enabled {
+            TonTonCloudStatus(titleIDs: [game.titleID], transport: cloudTransport(game))
+                .id(game.titleID)
+        }
         GameSavesSection(game: game, settings: saveSettings, players: players)   // first: the save files, import and export
         if destination == .mac { CloudSavesCard(game: game, overrides: saveSettings) }
         VStack(alignment: .leading, spacing: 10) {
@@ -233,6 +236,14 @@ struct LaunchOptionsView: View {
                 actionRow(title: loc.t("saves.menu"), detail: loc.t("launch.savesNote"), button: loc.t("launch.open"), id: "opt.saves") { openSaves?(game.id) }
             }
         }
+    }
+
+    private func cloudTransport(_ game: LibraryGame) -> TonTonCloudStatus.Transport {
+        let (_, saveEnv) = GameStart.saveEnvironment(for: game, global: saveSettings.global, override: saveSettings.game(game.titleID))
+        let overrides = game.launchEnvironment(settings ?? []).merging(saveEnv) { _, save in save }
+        let cloud = GameCloudSaves(titleID: game.titleID, appPath: game.appPath)
+        let envFiles = GameboxCloud.launchSettings(support: cloud.playerEnv.deletingLastPathComponent(), bundle: Bundle(path: game.appPath))
+        return TonTonCloudStatus.Transport(playerIsDefault: players.active.isDefault, overrides: overrides, envFiles: envFiles)
     }
 
     private func actionRow(title: String, detail: String, button: String, id: String, action: @escaping () -> Void) -> some View {

@@ -39,6 +39,22 @@ enum GameboxCloud {
         !["DM_SAVE", "DM_ROOT", "DM_SAVE_SYNC"].contains { overrides[$0] != nil || settings[$0] != nil }
     }
 
+    static func launchSettings(support: URL, bundle: Bundle?) -> [String: String] {
+        let files = [support.appendingPathComponent("env.txt"),
+                     bundle?.resourceURL?.appendingPathComponent("dm/env.txt")].compactMap { $0 }
+        var settings: [String: String] = [:]
+        for url in files {
+            guard let value = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for line in value.split(separator: "\n") {
+                let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { continue }
+                let key = parts[0].trimmingCharacters(in: .whitespaces)
+                if settings[key] == nil { settings[key] = parts[1].trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
+        }
+        return settings
+    }
+
     /// Read only: account identity and existing record metadata, never save assets.
     static func inspectBackups(titles: [String]) async throws -> Int {
         guard let name = container else { throw NSError(domain: "TonTonCloud", code: 2) }
@@ -151,18 +167,7 @@ enum GameboxCloud {
             defer { close(lock) }
             guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { return }
             if let game = running(id) { game.activate(); return }
-            let envFiles = [support.appendingPathComponent("env.txt"),
-                            bundle.resourceURL?.appendingPathComponent("dm/env.txt")].compactMap { $0 }
-            var settings: [String: String] = [:]
-            for url in envFiles {
-                guard let value = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                for line in value.split(separator: "\n") {
-                    let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                    guard parts.count == 2 else { continue }
-                    let key = parts[0].trimmingCharacters(in: .whitespaces)
-                    if settings[key] == nil { settings[key] = parts[1].trimmingCharacters(in: .whitespacesAndNewlines) }
-                }
-            }
+            let settings = launchSettings(support: support, bundle: bundle)
             let launchData = ProcessInfo.processInfo.environment["TONTON_GAME_ENV"]?.data(using: .utf8)
             let overrides = launchData.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
             // Custom player saves and explicit folder transports retain their own location.

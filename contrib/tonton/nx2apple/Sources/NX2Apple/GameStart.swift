@@ -42,13 +42,7 @@ enum GameStart {
         // The global setup and this game's own choices (SaveLocation.swift): a save folder and a cloud folder. A game with nothing set adds nothing.
         var base = SaveTransfer.macSave(titleID: game.titleID, appPath: game.appPath).save
         if let saves {
-            let own = GameCloudSaves(titleID: game.titleID, appPath: game.appPath).setting
-            let save = SaveLocations.effectiveSave(titleID: game.titleID, appPath: GameboxCloud.enabled ? "" : game.appPath, global: saves.global, game: saves.game)
-            let cloud = SaveLocations.effectiveCloud(global: saves.global, game: saves.game, own: own)
-            var saveEnv = SaveLocations.environment(save: save, cloud: cloud)
-            // Turning off the optional folder channel returns to TonTon's
-            // original backups; it must not turn off the private container.
-            if GameboxCloud.enabled, saveEnv["DM_SAVE_SYNC"] == "0" { saveEnv.removeValue(forKey: "DM_SAVE_SYNC") }
+            let (save, saveEnv) = saveEnvironment(for: game, global: saves.global, override: saves.game)
             if let folder = saveEnv["DM_SAVE"] { try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true) }
             environment.merge(saveEnv) { $1 }
             base = save.path
@@ -60,6 +54,17 @@ enum GameStart {
             environment.merge(playerEnv) { $1 }
         }
         return environment
+    }
+
+    static func saveEnvironment(for game: LibraryGame, global: SaveGlobalSettings,
+                                override: SaveGameOverride) -> (SaveLocations.EffectiveSave, [String: String]) {
+        let own = GameCloudSaves(titleID: game.titleID, appPath: game.appPath).setting
+        let save = SaveLocations.effectiveSave(titleID: game.titleID, appPath: GameboxCloud.enabled ? "" : game.appPath, global: global, game: override)
+        let cloud = SaveLocations.effectiveCloud(global: global, game: override, own: own)
+        var environment = SaveLocations.environment(save: save, cloud: cloud)
+        // The optional folder channel falls back to TonTon's original backups.
+        if GameboxCloud.enabled, environment["DM_SAVE_SYNC"] == "0" { environment.removeValue(forKey: "DM_SAVE_SYNC") }
+        return (save, environment)
     }
 
     /// The display the game's window should open on: the launcher window's screen (front_mac.m DM_SCREEN reads this NSScreenNumber).

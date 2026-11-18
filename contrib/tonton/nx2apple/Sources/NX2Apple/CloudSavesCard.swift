@@ -52,8 +52,10 @@ struct CloudSavesCard: View {
                     Divider().opacity(0.25).padding(.leading, 18)
                     notice
                 }
-                Divider().opacity(0.25).padding(.leading, 18)
-                lastRow
+                if setting.isOn || !GameboxCloud.enabled {
+                    Divider().opacity(0.25).padding(.leading, 18)
+                    lastRow
+                }
             }
             .background(LauncherPalette.card, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(LauncherPalette.cardBorder))
@@ -71,7 +73,7 @@ struct CloudSavesCard: View {
             Image(systemName: setting.isOn ? "icloud" : "icloud.slash").font(.system(size: 17, weight: .medium))
                 .foregroundStyle(setting.isOn ? LauncherPalette.accent : .secondary).frame(width: 22)
             VStack(alignment: .leading, spacing: 3) {
-                Text(setting.folder.map(Self.name) ?? loc.t("cloud.off")).font(.manrope(14, .medium)).lineLimit(1)
+                Text(setting.folder.map(Self.name) ?? loc.t(GameboxCloud.enabled ? "tonton.folderCloudOff" : "cloud.off")).font(.manrope(14, .medium)).lineLimit(1)
                 if let folder = setting.folder {
                     Text(Self.shown(folder, home: home)).font(.manrope(11.5)).foregroundStyle(LauncherPalette.secondaryText).lineLimit(1).truncationMode(.middle)
                         .help(folder)

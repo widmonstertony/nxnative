@@ -43,7 +43,9 @@ struct GlobalSavesCard: View {
     }
 
     private var cloudDetail: String {
-        guard global.cloudOn, let folder = global.cloudFolder else { return loc.t("cloud.off") }
+        guard global.cloudOn, let folder = global.cloudFolder else {
+            return loc.t(GameboxCloud.enabled ? "tonton.folderCloudOff" : "cloud.off")
+        }
         return CloudSavesCard.shown(CloudSaveSync.folder(for: folder, home: home) ?? folder, home: home)
     }
 
