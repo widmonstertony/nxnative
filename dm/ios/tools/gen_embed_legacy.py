@@ -57,7 +57,9 @@ for n in names:
             assert body % PG == 0 and 0 < patch_size <= front and xhi == wlo
             assert whi <= ko and ko + ks <= data_end
             assert not back or (len(back) == 1 and back[0][1] - back[0][0] == body - back_off)
-            asm.append(f'    .section __TEXT,__dm{tag}far,regular,pure_instructions')
+            # These opaque bytes use guest-relative branches. Keep the section
+            # after the host's branch stubs in the executable segment.
+            asm.append(f'    .section __TEXT,__dm{tag}far,regular')
             place(asm, bin_, sz, flo, fhi)
             if front > patch_size: asm.append(f'    .space {front - patch_size:#x}')
             place(asm, bin_, sz, xlo, xhi)
