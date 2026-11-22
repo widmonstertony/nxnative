@@ -595,6 +595,43 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
     if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p -> %#lx (%#lx bytes) failed: %d", m->name, from, (unsigned long)to, size, kr);
     if ((cur & need) != need) die("%s permissions after vm_remap %#x, missing %#x", m->name, cur, need);
 }
+#if !TARGET_OS_TV
+static const uint8_t *signed_front_section(const module_t *m, const char *ns, unsigned long *size) {
+    if (m->nro || m->patch_off >= 0) return NULL;
+    char section[17];
+    snprintf(section, sizeof section, "__dm%s%sfar", ns, m->name);
+    return getsectiondata(IMAGE_MH, "__TEXT", section, size);
+}
+
+static void map_signed_front(module_t *m, const char *ns, const uint8_t *image, uint64_t bytes) {
+    char wseg[17], lens[17];
+    snprintf(wseg, sizeof wseg, "__DM%s%sW", ns, m->name);
+    snprintf(lens, sizeof lens, "__dm%s%splen", ns, m->name);
+    unsigned long data_bytes = 0, len_bytes = 0;
+    const uint8_t *data = getsectiondata(IMAGE_MH, wseg, "__img", &data_bytes);
+    const uint64_t *patch_bytes = (const uint64_t *)getsectiondata(IMAGE_MH, "__DATA_CONST", lens, &len_bytes);
+    uint64_t front = -(uint64_t)m->patch_off, text = (m->text_end + 0x3FFF) & ~0x3FFFull;
+    uint64_t data_end = m->back_len ? m->back_off : m->image_size;
+    if (!data || !patch_bytes || len_bytes != sizeof *patch_bytes || !*patch_bytes || *patch_bytes > front ||
+        front > bytes || m->image_size != bytes - front || text > m->file_image_len ||
+        data_bytes != m->file_image_len - text || m->file_image_len > m->key_page_off ||
+        m->key_page_off > data_end || m->key_page_size > data_end - m->key_page_off ||
+        ((front | bytes | text | data_end | data_bytes | *patch_bytes | (uintptr_t)image | (uintptr_t)data) & 0x3FFF))
+        die("%s signed front-patch section layout mismatch", m->name);
+    m->base = (uint8_t *)image + front;
+    m->size = m->image_size;
+    m->patch_len = *patch_bytes;
+    // Map only data and zero pages. Guest code and both patch areas retain
+    // their original signed executable mappings.
+    vm_address_t address = (uintptr_t)m->base + text;
+    kern_return_t kr = vm_allocate(mach_task_self(), &address, data_end - text, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
+    if (kr != KERN_SUCCESS || address != (uintptr_t)m->base + text)
+        die("%s could not map signed front layout data (error %d)", m->name, kr);
+    memcpy((void *)address, data, data_bytes);
+    LOG("%s using signed front-patch image in place", m->name);
+    install_key_page(m);
+}
+#endif
 static void map_image(module_t *m, const char *dir) {
     (void)dir;
     const char *ns = "";
@@ -620,6 +657,12 @@ static void map_image(module_t *m, const char *dir) {
     LOG("%s using static signed tvOS RX/RW/RX segments; no TEXT protection change", m->name);
     return;
 #else
+    unsigned long signed_bytes = 0;
+    const uint8_t *signed_front = signed_front_section(m, ns, &signed_bytes);
+    if (signed_front) {
+        map_signed_front(m, ns, signed_front, signed_bytes);
+        return;
+    }
     if (!m->nro && m->patch_off >= 0) {
     char sw[17]; snprintf(sw, sizeof sw, "__DM%s%sW", ns, m->name);
     unsigned long zw; const uint8_t *w = getsectiondata(IMAGE_MH, sw, "__img", &zw);
@@ -685,13 +728,16 @@ int dm_loader_classic_release_drained(void) {
     for (int i = 0; i < g_nmod; i++) {
         module_t *m = &g_mod[i];
         if (!m->base) continue;
-        if (!m->nro && m->patch_off >= 0) {
-            // dyld owns this contiguous signed image: leave its text mapped
-            // and close writes to its data hole until the next map_image().
+        unsigned long signed_bytes = 0;
+        const uint8_t *signed_front = signed_front_section(m, "", &signed_bytes);
+        if (signed_front || (!m->nro && m->patch_off >= 0)) {
+            // dyld owns this contiguous signed image. Only close writes to
+            // its data pages before map_image() initializes the next run.
             vm_size_t text = (m->text_end + 0x3FFF) & ~0x3FFFull;
-            if ((uint64_t)m->patch_off <= text ||
+            vm_size_t data_end = signed_front ? (m->back_len ? m->back_off : m->image_size) : (uint64_t)m->patch_off;
+            if (data_end <= text ||
                 vm_protect(mach_task_self(), (uintptr_t)m->base + text,
-                           m->patch_off - text, FALSE, VM_PROT_READ) != KERN_SUCCESS) return 0;
+                           data_end - text, FALSE, VM_PROT_READ) != KERN_SUCCESS) return 0;
         } else {
             vm_size_t prefix = m->patch_off < 0 ? -(uint64_t)m->patch_off : 0;
             vm_address_t start = (uintptr_t)m->base - prefix;

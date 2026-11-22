@@ -198,3 +198,14 @@ the Pokkén title sequence after about 54 seconds without reproducing an
 exit. The tests did not cover a race or battle, and the two new renderer
 fixes still need an in-game test after installation. The original saves
 matched their fingerprints after both tests.
+
+On M2 60.129, Ocarina reached its opening movie with a scratch save. The
+retest did not reach the village GPU-fault checkpoint. Crisis Core
+reproduced an immediate abort before rendering: its main module has
+`PATCH_OFF=-0x2000000`, and the signed execute mapping returned read-only
+permissions on iPadOS 16.1. The experimental `DM_IOS_SIGNED_FRONT=1` legacy
+layout places the front patch and code in one signed image and maps only the
+data hole writable. A local iOS 16.1 link and code-signing check preserved the
+exact original code, patch and writable-section bytes for all three modules.
+This layout requires its matching loader and shader chain before delivery.
+It has not been installed. The M2's original saves matched after both tests.

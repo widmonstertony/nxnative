@@ -2,7 +2,9 @@
 #   __TEXT,__dm<name>img  complete address layout: original text, a zero-filled hole for W, then the patch area
 #   __DM<name>W,__img     RW source: [round16K(TEXT_END), PATCH_OFF), rest of ro + data + bss (relocations land only here)
 # At run time the loader leaves both code ranges in their signed __TEXT addresses and replaces only the zero-filled hole with a copy-on-write mapping of W. This never creates executable memory or a second executable segment.
-# Negative PATCH_OFF builds additionally embed the upstream optional x2 back-patch section.
+# DM_IOS_SIGNED_FRONT=1 embeds front-patched modules as one signed segment. The
+# legacy loader opens only the zero-filled data range for writing. Existing
+# split layouts and NROs retain their current representation.
 #   Modules with the patch area before the base (negative PATCH_OFF, see patch_nso.py FAR): W is [round16K(TEXT_END), FILE_IMAGE_LEN), x1 is the patch area after FILE_IMAGE_LEN in the file; bss and the key page are not in the executable
 # Packed NROs use three pieces; a namespaced NRO table is rejected until its loader is implemented.
 # Usage: gen_embed.py [--namespace XY] <build output dir> <output .S> <module name...>; link flags are printed to stdout (-segprot for the W segment)
@@ -15,6 +17,7 @@ if args and args[0] == '--namespace':
     ns = args[1]; args = args[2:]
 out, dst, names = args[0], args[1], args[2:]
 PG = 0x4000
+signed_front = os.environ.get('DM_IOS_SIGNED_FRONT') == '1'
 def r16(x): return (x + PG - 1) & ~(PG - 1)
 def pieces(n):   # the module's (x0, W, x1[, x2]) as (file start, end)
     hdr = dict(l[2:].split() for l in open(f'{out}/{n}.fixups.tsv'))
@@ -45,9 +48,28 @@ for n in names:
     a, end = r16(te), r16(sz)
     if po < 0:
         bin_, sz, parts = pieces(n)
-        for sect, (lo, hi) in zip((f'__TEXT,__dm{tag}x0', f'__DM{tag}W,__img', f'__TEXT,__dm{tag}x1', f'__TEXT,__dm{tag}x2'), parts):
-            assert all(len(x) <= 16 for x in sect.split(','))
-            asm.append(f'    .section {sect}'); place(asm, bin_, sz, lo, hi)
+        if signed_front:
+            front, body = -po, int(hdr['IMAGE_SIZE'], 16)
+            (xlo, xhi), (wlo, whi), (flo, fhi), *back = parts
+            patch_size = fhi - flo
+            back_off = int(hdr.get('BACK_OFF', '0'), 16)
+            data_end = back_off if back else body
+            assert body % PG == 0 and 0 < patch_size <= front and xhi == wlo
+            assert whi <= ko and ko + ks <= data_end
+            assert not back or (len(back) == 1 and back[0][1] - back[0][0] == body - back_off)
+            asm.append(f'    .section __TEXT,__dm{tag}far,regular,pure_instructions')
+            place(asm, bin_, sz, flo, fhi)
+            if front > patch_size: asm.append(f'    .space {front - patch_size:#x}')
+            place(asm, bin_, sz, xlo, xhi)
+            asm.append(f'    .space {data_end - xhi:#x}')
+            if back: place(asm, bin_, sz, *back[0])
+            asm += [f'    .section __DATA_CONST,__dm{tag}plen', '    .p2align 3', f'    .quad {patch_size:#x}']
+            asm.append(f'    .section __DM{tag}W,__img')
+            place(asm, bin_, sz, wlo, whi)
+        else:
+            for sect, (lo, hi) in zip((f'__TEXT,__dm{tag}x0', f'__DM{tag}W,__img', f'__TEXT,__dm{tag}x1', f'__TEXT,__dm{tag}x2'), parts):
+                assert all(len(x) <= 16 for x in sect.split(','))
+                asm.append(f'    .section {sect}'); place(asm, bin_, sz, lo, hi)
     else:
         assert po % PG == 0 and a <= ko and ko + ks <= po and ko % PG == 0 and ks == PG
         text_sect = f'__TEXT,__dm{tag}img,regular,pure_instructions'

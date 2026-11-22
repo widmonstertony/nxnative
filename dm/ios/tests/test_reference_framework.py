@@ -2,8 +2,11 @@
 """Verify exact-host migration and reject malformed Mach-O metadata."""
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -91,6 +94,37 @@ class ReferenceFramework(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'main: MOD0 offset'):
             fw.reference_assembly(self.path, '05', ['main'], out, self.text_ends)
         self.assertFalse(out.exists())
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'requires the iOS linker')
+class SignedFrontLayout(unittest.TestCase):
+    def test_retains_front_text_and_back_bytes_with_a_separate_writable_source(self):
+        page = 0x4000
+        text, writable, patch, back = (bytes([i]) * page for i in range(1, 5))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'main.patched.bin').write_bytes(text + writable + patch + back)
+            (root / 'main.fixups.tsv').write_text(
+                '# TEXT_END\t0x4000\n# PATCH_OFF\t-0x8000\n# FILE_IMAGE_LEN\t0x8000\n'
+                '# KEY_PAGE_OFF\t0xc000\n# KEY_PAGE_SIZE\t0x4000\n# IMAGE_SIZE\t0x14000\n'
+                '# BACK_OFF\t0x10000\n# BACK_LEN\t0x4000\n')
+            assembly, binary = root / 'embed.S', root / 'DmGame'
+            env = dict(os.environ, DM_IOS_SIGNED_FRONT='1')
+            flags = subprocess.check_output([sys.executable, str(fw.TOOLS / 'gen_embed_legacy.py'),
+                                             str(root), str(assembly), 'main'], env=env, text=True).split()
+            subprocess.run(['xcrun', '-sdk', 'iphoneos', 'clang', '-target', 'arm64-apple-ios16.1',
+                            '-dynamiclib', *flags, str(assembly), '-o', str(binary)],
+                           check=True, capture_output=True)
+            sections = fw.host_sections(binary)
+            raw = binary.read_bytes()
+            def section(seg, name):
+                off, size = sections[seg, name]
+                return raw[off:off+size]
+            self.assertEqual(section('__TEXT', '__dmmainfar'), patch + bytes(page) + text + bytes(3 * page) + back)
+            self.assertEqual(section('__DMmainW', '__img'), writable)
+            self.assertEqual(section('__DATA_CONST', '__dmmainplen'), struct.pack('<Q', page))
+            self.assertNotIn(('__TEXT', '__dmmainx0'), sections)
+
 
 
 if __name__ == '__main__': unittest.main()
