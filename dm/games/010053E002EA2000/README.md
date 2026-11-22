@@ -29,3 +29,10 @@ Gamebox and displayed the title menu. The update checks found the same game
 file identities and save digests before and after installation. This check
 ended at the title menu; gameplay, language selection and return to the
 shelf were not verified.
+
+On November 22, the M2 library on 60.143 still reported the original and
+Fate/EXTELLA LINK ready with their installed iPadOS 16.1 frameworks and game
+images. Both shelf artwork entries were missing. The thumbnails extracted
+from the respective cartridges were added to the library artwork directory,
+verified against the source bytes, and seen on the iPad shelf. The image and
+runtime files were reused in place.

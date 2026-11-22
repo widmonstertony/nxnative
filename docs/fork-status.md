@@ -271,6 +271,13 @@ trace reproduced the same guest abort. The SDK page calls sampled before
 it returned success, with roughly 11.5 GiB of process memory still
 available.
 
+The 60.143 device build gave Crisis Core 512 MiB more in its application
+pool and reused the existing shaders. With an 8 GiB alias reservation for
+the diagnostic run, it passed the allocation abort and entered the first
+battle tutorial. The HUD and prompts continued to draw, but the 3D scene
+behind them remained black. The test used an isolated save and restored the
+previous settings afterward.
+
 ### M2 Ocarina village transition on 60.133 (2026-11-22)
 
 The same isolated save reproduced the Metal GPU page fault at the village
