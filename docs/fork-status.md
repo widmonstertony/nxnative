@@ -169,9 +169,12 @@ already contains the previously shipped artwork library. Its entry in the
 executable's dynamic-library list was lost when the legacy host was reused.
 The re-linked 60.129 candidate restores that one entry to the original M2
 executable while preserving its 37 file-backed sections byte for byte.
-The candidate is signed by the installed app's developer team for iPadOS
-16.1. The app-only delta uses the device's existing app cache. Deployment
-and the visual check are tracked separately from the source merge.
+The installed app's developer team signed the candidate for iPadOS 16.1.
+The app-only delta reused the M2's existing installation cache. On 2026-11-22
+the M2 registered 60.129 and opened the wide artwork banner and vertical game
+grid, which matched the old iPad's 60.120 shelf. The installed app files,
+run-time frameworks, game files and original save fingerprints were checked
+before and after the update.
 
 ## Upstream integration and iPad crash fixes — 2026-11-22
 
@@ -188,6 +191,10 @@ and preservation of an existing complete image.
 - **Need for Speed Hot Pursuit on A10X** — Retain transient texture views
   through resource declaration to address the recorded `objc_retain` crash.
 
-The classic GPU suite passed 299 checks. Both crash changes still need
-in-game validation on the iPad. The source update leaves each deployed game's
-frameworks, shader resources and save data in place.
+The classic GPU suite passed 299 checks, and the modified renderer compiled
+for iOS 16.1. On the old iPad's existing 60.120 installation, scratch-save
+tests reached the Need for Speed opening video after about 78 seconds and
+the Pokkén title sequence after about 54 seconds without reproducing an
+exit. The tests did not cover a race or battle, and the two new renderer
+fixes still need an in-game test after installation. The original saves
+matched their fingerprints after both tests.
