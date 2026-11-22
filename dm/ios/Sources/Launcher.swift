@@ -73,6 +73,7 @@ private struct GameDataSection: View {
 /// Cloud saves too). The host brings the save in from there when the game starts and
 /// sends it there after each save (dm/host/save_sync.h); the folder is a bookmark (CloudSaves.m).
 private struct CloudSavesSection: View {
+    let checking: Bool
     @State private var folder: String = ""
     @State private var note: String = ""
     @State private var picking = false
@@ -98,6 +99,7 @@ private struct CloudSavesSection: View {
                     .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
             Button(folder.isEmpty ? "Choose a folder in iCloud Drive…" : "Choose a different folder…") { picking = true }
+                .disabled(checking)
                 // The sheet sits on the button, not on the Section: SwiftUI hands a Section's modifiers to every row, so one tap presented a picker per row and they invalidated each other (LNPANDY/NX2Apple#315).
                 .sheet(isPresented: $picking) {
                     DocumentPicker(types: [.folder]) { url in
@@ -114,6 +116,7 @@ private struct CloudSavesSection: View {
                 Button("Turn off cloud saves", role: .destructive) {
                     dm_clear_cloud_saves(); refresh(); note = ""
                 }
+                .disabled(checking)
             }
         } footer: {
             Text(note.isEmpty
@@ -127,7 +130,7 @@ private struct CloudSavesSection: View {
         var stale: ObjCBool = false
         folder = dm_cloud_saves_path(&stale) ?? ""
         if stale.boolValue && folder.isEmpty {
-            note = "The folder you chose before is no longer readable (the app was signed differently). Please choose it again."
+            note = "The folder you chose before is no longer readable. Please choose it again."
         }
     }
 }
@@ -205,7 +208,8 @@ private struct LauncherView: View {
                         Text("Brings back all settings this game was tested with.")
                     }
                     GameDataSection()
-                    CloudSavesSection()
+                    // The background save check reads the selected folder until it returns.
+                    CloudSavesSection(checking: checking)
                     Section {
                         HStack {
                             Text("Memory available")
@@ -243,7 +247,7 @@ private struct LauncherView: View {
         if checking {
             VStack(spacing: 6) {
                 HStack(spacing: 6) { ProgressView(); Text("Checking the cloud save…").font(.callout).foregroundStyle(.secondary) }
-                Button("Play Without It") { checking = false; go("offline") }.font(.callout)
+                Button("Play Without It") { check += 1; go("offline") }.font(.callout)
             }
         }
     }

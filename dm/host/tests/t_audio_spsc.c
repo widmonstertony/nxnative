@@ -204,3 +204,5 @@ int main(void) {
 #endif
     return released != NBUF || failed || sig < 1 || !after;
 }
+
+void dm_audio_device_changed(void) {}   // renderer notification delivery is checked by t_audren_work

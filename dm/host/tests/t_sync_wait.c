@@ -1,5 +1,5 @@
-// WaitSynchronization through real SVCs. Hold G across notification and clear
-// to make the lost-notification window deterministic, without scheduler sleeps.
+// Real synchronization SVCs and relative waits with the replay clock pinned.
+// Hold G across notification and clear to make the lost-notification window deterministic.
 #define DM_TEST_GUEST_EXIT_WATCH 1
 #include "../hle_thread.c"
 #include <assert.h>
@@ -11,6 +11,13 @@ module_t *module_of(const void *p) {
     static module_t m = {.base = (void *)TEST_GUEST_BASE, .text_end = 0x1000, .patch_off = TEST_PATCH, .patch_len = 0x1000, .size = TEST_PATCH + 0x1000};
     return (uintptr_t)p - TEST_GUEST_BASE < m.size ? &m : NULL;
 }
+
+// Unused host facilities referenced by the real clock and entropy code.
+module_t *g_mod;
+int g_nmod;
+void *module_sym(module_t *m, const char *name) { (void)m; (void)name; return NULL; }
+int dm_sdk_ounce(void) { return 1; }
+void crash_watch_frame(void) {}
 
 typedef struct { uint32_t write, read; } ends_t;
 typedef struct {
@@ -368,6 +375,40 @@ static void retirement_boundaries(int managed) {
     assert(!pthread_key_delete(g_keythr));
 }
 
+static const uint64_t replay_delays[] = {1000000, 33333334};   // a job poll and a two-vsync sleep
+static void replay_sleep(void) {
+    dm_guest_frame_tick();
+    assert(dm_detclock_enabled());
+    uint64_t tick = guest_ns();
+    for (unsigned i = 0; i < sizeof replay_delays / sizeof *replay_delays; i++) {
+        uint64_t ns = replay_delays[i], start = now_ns();
+        uint64_t r[32] = {ns};
+        assert(svc_thread(0x0B, r));
+        assert(now_ns() - start >= ns - 20000);   // sleep_precise permits up to 20 us early
+        assert(guest_ns() == tick);
+    }
+}
+static void replay_timeout(void) {
+    dm_guest_frame_tick();
+    assert(dm_detclock_enabled());
+    uint64_t tick = guest_ns();
+    ends_t e = event_new();
+    uint32_t word = 0;
+    for (unsigned i = 0; i < sizeof replay_delays / sizeof *replay_delays; i++) {
+        uint64_t ns = replay_delays[i], start = now_ns();
+        assert(wait_now(&e.read, 1, (int64_t)ns, NULL) == R_TIMEOUT);
+        assert(now_ns() - start >= ns);
+        assert(guest_ns() == tick);
+
+        start = now_ns();
+        uint64_t r[32] = {(uint64_t)&word, 2, 0, ns};   // WaitForAddress while word == 0
+        assert(svc_thread(0x34, r) && r[0] == R_TIMEOUT);
+        assert(now_ns() - start >= ns);
+        assert(guest_ns() == tick);
+    }
+    event_close(e);
+}
+
 int main(int argc, char **argv) {
     alarm(10);
     if (argc == 1 || !strcmp(argv[1], "retirement") || !strcmp(argv[1], "managed-retirement")) {
@@ -387,9 +428,10 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
+    assert(!setenv("DM_DETCLOCK", "16666667", 1));
     svc_thread_main_init();
-    const char *names[] = {"framing", "endpoints", "signal-clear", "close-reuse", "snapshot", "cancel-release", "thread-close", "query-close", "core-mask", "closed-unstarted", "exit-watch"};
-    void (*tests[])(void) = {framing, endpoints, signal_then_clear, close_and_reuse, handle_array_snapshot, cancellation_and_release, closed_thread_wait, query_close, core_mask, closed_unstarted, exit_watch_covers_destructors};
+    const char *names[] = {"framing", "endpoints", "signal-clear", "close-reuse", "snapshot", "cancel-release", "thread-close", "query-close", "core-mask", "closed-unstarted", "exit-watch", "replay-sleep", "replay-timeout"};
+    void (*tests[])(void) = {framing, endpoints, signal_then_clear, close_and_reuse, handle_array_snapshot, cancellation_and_release, closed_thread_wait, query_close, core_mask, closed_unstarted, exit_watch_covers_destructors, replay_sleep, replay_timeout};
     for (unsigned i = 0; i < sizeof tests / sizeof *tests; i++) {
         if (argc > 1 && strcmp(argv[1], names[i])) continue;
         tests[i](); printf("PASS: %s\n", names[i]);

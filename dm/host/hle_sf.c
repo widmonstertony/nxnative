@@ -128,6 +128,7 @@ static Result nsd_answer(sf_req *call) {
 
 // The services the host serves to a game's own client (ConnectToHipcService): their answer (NULL: every request succeeds with zeroed output) and what the log says of them
 static const struct { const char *name; sf_answer answer; const char *what; } sf_served[] = {
+    {"mnpp:app", NULL, "offline mission event acknowledgement"},
     {"olsc:u", NULL, "every request succeeds with zeroed output"}, {"notif:a", NULL, "reminder alarms are unavailable"},
     {"caps:su", NULL, "every request succeeds with zeroed output"}, {"caps:u", NULL, "every request succeeds with zeroed output"},
     {"caps:a", NULL, "every request succeeds with zeroed output"}, {"caps:c", NULL, "every request succeeds with zeroed output"},

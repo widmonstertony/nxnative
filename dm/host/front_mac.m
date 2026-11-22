@@ -1,5 +1,5 @@
 // Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard and controllers → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
-// Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
+// Without DM_WINDOW: run the guest on the current thread with the default application task role (front_role.h).
 // The window is fullscreen-capable (the green button and ⌃⌘F); DM_FULLSCREEN=1 starts it that way. ⌘Q quits, and so does a controller's Home button held for 2 s and
 // confirmed with A (home_quit.h); a short press opens the Home menu (Resume, Back to console mode, Quit); the left mouse button is the touchscreen.
 // Cheats (hle_cheats.c): the Cheats menu's rows toggle, reload (⌘R) and open the cheats folder; its first item "Show Cheats
@@ -16,6 +16,7 @@
 #import <MetalFX/MetalFX.h>
 #import <GameController/GameController.h>
 #include "dm.h"
+#include "front_role.h"
 #include "dm_input.h"
 #include "front.h"
 #include "hle.h"
@@ -25,6 +26,7 @@
 #include "home_quit.h"
 #include "home_quit_mac.h"
 #include "ctrl_prompt.h"
+#include "user_select_mac.h"
 #include <signal.h>
 #include <math.h>
 #include "desktop_input.h"
@@ -899,6 +901,12 @@ static void (^g_fs_failed)(void);
 @interface DmWinDelegate : NSObject <NSWindowDelegate> @end
 @implementation DmWinDelegate
 - (void)windowDidFailToEnterFullScreen:(NSWindow *)w { (void)w; if (g_fs_failed) g_fs_failed(); }
+// Fullscreen hides the menu bar and the Dock for good. AppKit's default auto-hide still brought the menu bar over the picture on macOS 27 with two screens,
+// whenever the game was the active app. ⌃⌘F and ⌘Q still work without the bar shown. HideMenuBar requires HideDock (NSApplication presentationOptions rules)
+- (NSApplicationPresentationOptions)window:(NSWindow *)w willUseFullScreenPresentationOptions:(NSApplicationPresentationOptions)proposed {
+    (void)w; (void)proposed;
+    return NSApplicationPresentationFullScreen | NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
+}
 @end
 
 typedef struct { void (*fn)(void); } guest_arg;
@@ -1757,9 +1765,19 @@ static NSArray<NSURL *> *found_cheat_files(NSString *build) {
 @end
 
 void front_run(void (*guest)(void)) {
-    // A game: tell macOS its work is latency-critical, so the system does not trade its frame time for power while the frame rate is capped
-    static id activity; activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical reason:@"game"];
-    if (!getenv("DM_WINDOW")) { guest(); return; }
+    // Keep the latency-critical activity token alive for the host process, including windowless play.
+    static id<NSObject> game_activity;
+    if (!game_activity)
+        game_activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical reason:@"game"];
+    if (!getenv("DM_WINDOW")) {
+        kern_return_t kr;
+        int role_status = front_windowless_role(getenv("DM_WINDOWLESS_ROLE"), &kr);
+        if (role_status > 0) LOG("front end: applied the default application task role for windowless play");
+        else if (role_status < 0) LOG("front end: could not apply the default application task role (Mach error %d)", kr);
+        else LOG("front end: kept the existing task role (DM_WINDOWLESS_ROLE=0)");
+        guest();
+        return;
+    }
     @autoreleasepool {
         [NSApplication sharedApplication];
         // DM_CURSOR_HIDDEN=1 (see the pointer below) hides it here, before the app takes the front: a hide after the window left the pointer up until it ran. The
@@ -1875,11 +1893,11 @@ void front_run(void (*guest)(void)) {
         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
         [[bar addItemWithTitle:@"Controllers" action:nil keyEquivalent:@""] setSubmenu:front_controllers_menu()];
         NSApp.mainMenu = bar;
+        static DmWinDelegate *wd; wd = [DmWinDelegate new]; win.delegate = wd;   // also for fullscreen entered later (⌃⌘F, the green button): no menu bar over the game
         const char *fs = getenv("DM_FULLSCREEN");   // 1 (or any value but 0): start in fullscreen; 0, the settings window's Window, or unset: a window
         if (fs && strcmp(fs, "0")) {
             // A game opened from a fullscreen app starts while macOS leaves that Space. Wait for activation and for the window to reach the active Space before asking for fullscreen
             // (whichever happens last), and repeat a refused startup request once. Only a request made here owns a retry; a later player request must never restart startup handling
-            static DmWinDelegate *wd; wd = [DmWinDelegate new]; win.delegate = wd;
             __block int want = 1, retried = 0, entering = 0;
             void (^enter)(void) = ^{
                 if (!want || (win.styleMask & NSWindowStyleMaskFullScreen) || !NSApp.isActive || !win.isOnActiveSpace) return;
@@ -2014,6 +2032,17 @@ void front_web_detach(NSView *box) { if (box.window && box.window.firstResponder
 
 // Software keyboard input box (front.h): the main thread shows an NSAlert + text field and the guest thread waits synchronously for the result. Not shown in windowless mode (returns -1, the caller treats it as cancel)
 extern int g_swkbd_min_chars;   // hle_swkbd.c: this input's minimum length from ShowKeyboardArg; the applet keeps OK disabled until the text is long enough
+int front_user_select(const front_user *users, int count, int allow_create, int allow_skip) {
+    if (!g_layer) return FRONT_USER_CANCEL;
+    __block int result = FRONT_USER_CANCEL;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        g_text_box = 1; input_release();
+        result = user_select_mac(users, count, allow_create, allow_skip);
+        g_text_box = 0;
+        if (g_win.isKeyWindow) input_resume();
+    });
+    return result;
+}
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
     if (!g_layer) return -1;
     __block int r = 0;

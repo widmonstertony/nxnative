@@ -15,6 +15,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,18 @@ spec = importlib.util.spec_from_file_location('pack_app', REPO / 'dm/mac/pack_ap
 pack_app = importlib.util.module_from_spec(spec); spec.loader.exec_module(pack_app)
 TID = '01008CF01BAAC000'
 TEST_ROOT = Path(os.environ.get('NXNATIVE_TEST_ROOT', tempfile.gettempdir()))
+
+def module_with_import(name, defined=False):
+    """Minimal rewritten module with one dynamic symbol for packer capability checks."""
+    image = bytearray(256)
+    struct.pack_into('<I', image, 4, 16)
+    struct.pack_into('<4si', image, 16, b'MOD0', 16)
+    struct.pack_into('<qQqQqQ', image, 32, 6, 80, 5, 128, 0, 0)
+    struct.pack_into('<IBBHQQ', image, 104, 1, 0x10, 0, int(defined), 0, 0)
+    name = name.encode() + b'\0'
+    image[129:129 + len(name)] = name
+    return image
+
 
 HOST_C = r'''#include <signal.h>
 #include <stdio.h>
@@ -128,6 +141,7 @@ class PackReuse(unittest.TestCase):
             'ios/Sources/SaveSyncReport.swift': b'report', 'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
             'source/ControllerMap.swift': b'mapping parser', 'source/DesktopControls.swift': b'mapping editor',
             'source/DesktopControlsNotices.txt': b'MIT notices', 'host/input_map.h': b'input mapping', 'host/dm_input.h': b'input API',
+            'tools/nso_syms.py': b'symbols',
         }
         for n in pack_app.TABLES: files['profile/' + n] = n.encode()
         for n, content in files.items(): (t / n).write_bytes(content)
@@ -261,7 +275,7 @@ class PackReuse(unittest.TestCase):
 
     def test_each_selected_file_content_invalidates_even_with_same_stat(self):
         self.pack()
-        names = ['dmhost', 'patched/main.patched.bin', 'patched/main.fixups.tsv', 'patched/main.gates.tsv', 'patched/main.cuts.tsv', 'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf', 'pso/gpu-prewarm-00.mtl4a', 'pso/gpu-prewarm-00.keys', 'pso/prewarm.tsv', 'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c', 'ios/Sources/SaveSyncReport.swift', 'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift', 'host/save_sync.c', 'host/save_sync.h', 'host/save_cloudkit.m', 'host/input_map.h', 'host/dm_input.h', 'control.nacp', 'tools/nacp.py']
+        names = ['dmhost', 'patched/main.patched.bin', 'patched/main.fixups.tsv', 'patched/main.gates.tsv', 'patched/main.cuts.tsv', 'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf', 'pso/gpu-prewarm-00.mtl4a', 'pso/gpu-prewarm-00.keys', 'pso/prewarm.tsv', 'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c', 'ios/Sources/SaveSyncReport.swift', 'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift', 'host/save_sync.c', 'host/save_sync.h', 'host/save_cloudkit.m', 'host/input_map.h', 'host/dm_input.h', 'control.nacp', 'tools/nacp.py', 'tools/nso_syms.py']
         names += ['profile/' + n for n in pack_app.TABLES]
         for name in names:
             with self.subTest(name=name):
@@ -488,6 +502,20 @@ class PackReuse(unittest.TestCase):
         out = self.pack(); self.assertEqual(out.count('(reused, signed)'), 2)   # which the two images, whose change times moved above, no longer have
         self.assertEqual(signed() & {'GameData.bundle', 'ShaderLibraries.bundle', 'PipelineArchive.bundle'}, {'GameData.bundle', 'ShaderLibraries.bundle'})
 
+    def test_microphone_metadata_matches_the_supported_import(self):
+        module = self.tmp / 'patched/main.patched.bin'
+        cases = (
+            ('_ZN2nn5audio12ListAudioInsEPNS0_11AudioInInfoEi', False, False),
+            (pack_app.nso_syms._INPUT_STREAM_OPEN, True, False),
+            (pack_app.nso_syms._INPUT_STREAM_OPEN, False, True),
+        )
+        for name, defined, supported in cases:
+            with self.subTest(name=name, defined=defined):
+                module.write_bytes(module_with_import(name, defined))
+                self.pack()
+                info = plistlib.loads((Path(self.args.out) / 'Contents/Info.plist').read_bytes())
+                self.assertEqual('NSMicrophoneUsageDescription' in info, supported)
+
     def test_a_pack_that_stops_leaves_the_bundles_of_the_app_in_place_reusable(self):
         # the usual moment a pack is stopped is while it signs: the app is the old one, and its record went with the attempt, so the next pack signed every bundle again (Ocarina of
         # Time: 36 GB). The record is set aside instead, for the bundles alone
@@ -541,6 +569,21 @@ class PackReuse(unittest.TestCase):
         self.assertEqual((res / 'p1/romfs/data').read_bytes(), b'game2')
         (t / 'p1/msl/k.metallib').write_bytes(b'lib2')
         self.assertIn('step: shader libraries\n', self.pack())
+
+    def test_program_shader_bundle_reuses_canonical_image_name(self):
+        library = self.tmp / 'b-abcdef012345'
+        shutil.copytree(self.tmp / 'msl', library)
+        self.assertTrue(pack_app.shader_lib.pack(library, say=lambda s: None))
+        program = ['1', *(str(self.tmp / p) for p in ('patched', 'romfs')), f'{library}.img', str(self.tmp / 'profile'), str(self.tmp / 'html')]
+        self.args.program = ['\t'.join(program)]
+        self.pack()
+        packed = Path(self.args.out) / 'Contents/PlugIns/ShaderLibraries.bundle/Contents/Resources/msl/p1'
+        self.assertEqual([p.name for p in packed.iterdir()], ['b-abcdef012345.img'])
+
+        program[3] = str(library)
+        self.args.program = ['\t'.join(program)]
+        self.assertIn('step: shader libraries (reused, signed)\n', self.pack())
+        self.assertEqual([p.name for p in packed.iterdir()], ['b-abcdef012345.img'])
 
     def test_other_programs_romfs_beside_the_romfs(self):   # a NUP of several programs (scripts/pack_nup.py): romfs_programs/ beside the RomFS, in a data bundle of its own, where the host looks
         t = self.tmp; (t / 'romfs_programs').mkdir(); (t / 'romfs_programs/0.img').write_bytes(b'switch 1 data')
@@ -728,6 +771,21 @@ class App(unittest.TestCase):
                                    '--tables', str(t / 'profile'), '--font', str(t / 'font'), '--aoc', str(t / 'aoc'), '--pso', str(t / 'pso'), '--env-file', str(t / 'env.txt'), '--settings', str(t / 'launcher.json'), '--title-id', TID.lower(),
                                    '--name', 'Game: Test', '--version', '1.0.1', '--package-version', 'v65536', '--lang', 'fr', '--marker', 'region_common/audio/edward.bfsar', '--icon', str(t / 'icon.jpg'),
                                    '--category', 'public.app-category.games', '--control', str(t / 'control.nacp')])
+        # Bundle variants share the launcher sources. Keep the linker output so each pack can still sign its own copy.
+        build_launcher = pack_app.build_launcher
+        launcher = t / 'launcher-fixture'
+        launcher_inputs = None
+
+        def build_fixture(out, *inputs):
+            nonlocal launcher_inputs
+            if inputs == launcher_inputs:
+                shutil.copy(launcher, out)
+            else:
+                build_launcher(out, *inputs)
+                shutil.copy(out, launcher)
+                launcher_inputs = inputs
+
+        cls.enterClassContext(mock.patch.object(pack_app, 'build_launcher', build_fixture))
         with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(cls.args)
 
     @classmethod
@@ -815,6 +873,22 @@ class App(unittest.TestCase):
         self.assertNotIn('DMTitleNames', pack_app.info_plist(a, '26.0', False))
         a.control = str(self.tmp / 'missing.nacp')
         self.assertNotIn('DMTitleNames', pack_app.info_plist(a, '26.0', False))
+
+    def test_library_given_as_its_image(self):
+        lib = self.tmp / 'packed/b-0123456789ab'
+        shutil.copytree(self.tmp / 'cache/b-0123456789ab', lib)
+        self.assertTrue(pack_app.shader_lib.pack(lib, say=lambda s: None))
+        self.assertFalse(lib.exists())
+        app = self.tmp / 'Image.app'
+        with contextlib.redirect_stdout(io.StringIO()):
+            pack_app.pack(types.SimpleNamespace(**{**vars(self.args), 'out': str(app), 'msl': f'{lib}.img'}))
+        contents = app / 'Contents'
+        msl = contents / 'Resources/msl'
+        self.assertEqual([p.name for p in msl.iterdir()], ['b-0123456789ab.img'])
+        self.assertEqual(plistlib.loads((contents / 'Info.plist').read_bytes())['DMChain'], '0123456789ab')
+        self.assertTrue(msl.is_symlink())
+        self.assertEqual(msl.resolve(), contents / 'PlugIns/ShaderLibraries.bundle/Contents/Resources/msl')
+        subprocess.run(['codesign', '--verify', '--deep', '--strict', app], check=True, capture_output=True)
 
     def test_packed_language_is_the_lists(self):   # --lang a game lacks: the Game language row's default (settings.py: the game's first), with or without the window
         with tempfile.TemporaryDirectory(dir=TEST_ROOT) as d:
@@ -1721,6 +1795,13 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         stamp = self.tmp / 'run/pso_archive_partial/prebuilt.tsv'; stamp.parent.mkdir(parents=True); stamp.write_text('chain\n')
         cmd = self.run_cmd(partial=True)
         self.assertTrue(cmd.endswith(f'2>&1 | tee {self.tmp}/run/host.log')); self.assertIn(f'DM_PSO_ARCHIVE={self.tmp}/run/pso_archive_partial', cmd); self.assertFalse(stamp.exists())
+
+    def test_run_command_passes_the_runtime_compiler(self):
+        python = self.tmp / 'python environment' / 'bin/python3'
+        compiler = self.tmp / 'source tree' / 'dmsh_live.py'
+        self.assertNotIn('DM_NVN_RUNTIME_COMPILER', self.run_cmd())
+        self.assertIn(f"DM_NVN_RUNTIME_PYTHON='{python}'", self.run_cmd(nvn_runtime=(python, compiler)))
+        self.assertIn(f"DM_NVN_RUNTIME_COMPILER='{compiler}'", self.run_cmd(nvn_runtime=(python, compiler)))
 
     def test_pack_takes_the_partial_folder(self):   # the app and its pipeline archive read b-<chain> of the folder build_shaders returned
         ran = []

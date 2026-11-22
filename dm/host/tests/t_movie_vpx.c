@@ -38,6 +38,7 @@ static uint64_t test_now = 1000000000ull;
 uint64_t now_ns(void) { return test_now; }
 __thread _Atomic int dm_host_work;   // hle_thread.c
 void dm_host_lock(pthread_mutex_t *m) { pthread_mutex_lock(m); }
+void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size) { (void)fn; (void)arg; (void)prio; (void)stack_size; return NULL; }
 void mavc_drop(mavc *a) { (void)a; }   // hle_movie_avc.c: no H.264 here
 static pthread_t deferred;
 static unsigned guest_workers;
@@ -232,6 +233,7 @@ static void *buffer_data(const void *buf) { return (void *)((const test_buffer *
 static size_t buffer_size(const void *buf) { return ((const test_buffer *)buf)->used; }
 static size_t buffer_capacity(const void *buf) { return sizeof ((const test_buffer *)buf)->bytes; }
 static void unused_export(void) { abort(); }
+module_t *module_of(const void *p) { (void)p; return NULL; }
 static int exports_const, exports_mutable, mutable_lookups;
 void *guest_sym(const char *name) {
     static const struct { const char *modern, *early; void *fn; } getters[] = {
