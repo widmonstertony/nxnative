@@ -2,6 +2,7 @@
 #import "CloudSaves.h"
 #import "DataBookmark.h"
 #import "DmGameMenu.h"
+#import "DmRotation.h"
 #include "save_sync.h"
 
 // main.m: set when the game data found is an old shard archive (romfs.idx), which is no longer read. The sentence names the
