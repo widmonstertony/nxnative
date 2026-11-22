@@ -169,5 +169,25 @@ already contains the previously shipped artwork library. Its entry in the
 executable's dynamic-library list was lost when the legacy host was reused.
 The re-linked 60.129 candidate restores that one entry to the original M2
 executable while preserving its 37 file-backed sections byte for byte.
-The original developer team's signing identity and a device UI check are
-still required before this can replace 60.128.
+The candidate is signed by the installed app's developer team for iPadOS
+16.1. The app-only delta uses the device's existing app cache. Deployment
+and the visual check are tracked separately from the source merge.
+
+## Upstream integration and iPad crash fixes — 2026-11-22
+
+The source now includes upstream `3dd1f7a6`. The legacy renderer keeps its
+shader chain, and the modern chain is `aa98ae5541fa`. The merge combines
+Ocarina's render-scale and GPU-only memory-pool changes with the fork's
+window sizing and real-time clock support. The memory-pool and capture
+fixtures ran on Mac. The iPad village-scene GPU fault still needs a device
+retest. The disk-full shader cache tests verified removal of partial outputs
+and preservation of an existing complete image.
+
+- **Pokkén on A10X** — End texture blits before starting the render encoder,
+  preserving the command-buffer fence between them.
+- **Need for Speed Hot Pursuit on A10X** — Retain transient texture views
+  through resource declaration to address the recorded `objc_retain` crash.
+
+The classic GPU suite passed 299 checks. Both crash changes still need
+in-game validation on the iPad. The source update leaves each deployed game's
+frameworks, shader resources and save data in place.

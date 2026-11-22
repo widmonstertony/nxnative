@@ -15,7 +15,8 @@ __asm__(".linker_option \"-lcompression\"");   // libcompression (LZFSE) links i
 #define CAP_OFF(T, f, n) _Static_assert(offsetof(T, f) == (n), "nvn_capture.c: " #T "." #f " moved: update cap_rec_fields and cap_layout")
 CAP_SIZE(tex_t, 128); CAP_OFF(tex_t, mem, 88); CAP_OFF(tex_t, pool, 96); CAP_OFF(tex_t, serial, 120);
 CAP_SIZE(nvn_texdesc, 40); CAP_OFF(nvn_texdesc, pkg_layout, 36); CAP_OFF(nvn_texdesc, gob_order, 38);
-CAP_SIZE(pool_t, 40); CAP_SIZE(dpool_t, 24); CAP_SIZE(prog_t, 112); CAP_SIZE(sync_t, 16); CAP_SIZE(samp_par, 40); CAP_SIZE(view_t, 16);
+CAP_SIZE(pool_t, 40); CAP_OFF(pool_t, vmode, 32); CAP_OFF(pool_t, host_flags, 36);
+CAP_SIZE(dpool_t, 24); CAP_SIZE(prog_t, 112); CAP_SIZE(sync_t, 16); CAP_SIZE(samp_par, 40); CAP_SIZE(view_t, 16);
 CAP_SIZE(p_set_rt, 240); CAP_OFF(p_set_rt, n, 0); CAP_OFF(p_set_rt, color, 8); CAP_OFF(p_set_rt, depth, 208);
 CAP_SIZE(p_bind_program, 16); CAP_OFF(p_bind_program, prog, 0);
 CAP_SIZE(NVNbufferRange, 16); CAP_SIZE(p_bind_vbuf, 264); CAP_OFF(p_bind_vbuf, n, 4); CAP_OFF(p_bind_vbuf, r, 8);
