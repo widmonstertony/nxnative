@@ -60,8 +60,7 @@ static int zero_image_prepare(NvProg *program, const p_draw *dw, const p_draw_id
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     int tid = (int)(S.img[1][fragment->zero_image_reg] & 0xfffff);
     pthread_mutex_lock(&g_rmu);
-    void *view = NULL; (void)tex_fast_rid(tid, &view);
-    id<MTLTexture> texture = (__bridge id<MTLTexture>)view;
+    id<MTLTexture> texture = nil; (void)tex_fast_rid(tid, &texture);
     NSUInteger bytes = 0; uint32_t layout[6];
     int valid = tid > 0 && tid < g_ntreg && g_treg[tid].ok &&
         (fragment->zero_image_variant == 3 ? nvn_atomic_2d_layout(texture, layout, &bytes) :

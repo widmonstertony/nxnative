@@ -164,6 +164,10 @@ The M2's 60.128 app still shows the legacy shelf. That release reused the
 60.127 host executable and replaced only the Ocarina framework. The A10X
 60.120 app already shows the wide banner and vertical artwork grid. The shared
 library source for that layout compiles for an ARM64 iPadOS 16.1 deployment
-target with availability checks. Installing the layout on M2 still requires
-the M2 host link inputs, including its title registry and embedded sections,
-and a signed rebuild with the existing frameworks.
+target with availability checks. A follow-up confirmed that the M2 bundle
+already contains the previously shipped artwork library. Its entry in the
+executable's dynamic-library list was lost when the legacy host was reused.
+The re-linked 60.129 candidate restores that one entry to the original M2
+executable while preserving its 37 file-backed sections byte for byte.
+The original developer team's signing identity and a device UI check are
+still required before this can replace 60.128.

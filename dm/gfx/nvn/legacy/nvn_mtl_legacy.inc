@@ -4380,9 +4380,15 @@ static id<MTLTexture> tex_alpha_red(int tid, id<MTLTexture> t, uint64_t *rid) {
     r->ar = (void *)CFBridgingRetain(v); r->ar_of = (__bridge void *)t; r->ar_rid = legacy_texture_rid(v);
     *rid = r->ar_rid; return v;
 }
-static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
-    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && legacy_view_current(&g_treg[tid], g_ser_gen, g_treg[tid].view_pkg ? nvn_dirty_now() : 0)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
-    id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t; return t ? legacy_texture_rid(t) : 0;
+// Keep a strong reference until the caller has declared the resource to Metal.
+// A slow lookup may return a newly materialized texture owned only by the return value.
+static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, id<MTLTexture> __strong *out) {
+    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && legacy_view_current(&g_treg[tid], g_ser_gen, g_treg[tid].view_pkg ? nvn_dirty_now() : 0)) {
+        *out = (__bridge id<MTLTexture>)g_treg[tid].view;
+        return g_treg[tid].view_rid;
+    }
+    *out = tex_by_id(tid);
+    return *out ? legacy_texture_rid(*out) : 0;
 }
 static MTLSamplerAddressMode wrapm(int w) {
     switch (w) { case 0: case 7: return MTLSamplerAddressModeClampToEdge; case 1: return MTLSamplerAddressModeRepeat;
@@ -5483,10 +5489,10 @@ static void za_diag_arm(NvShader *sh, int stage, int reg, int tid, const tex_t *
     g_za_diag_last_frame = frame; g_za_diag_frames++;
     int src_tid = stage < 6 ? (int)(S.tex[stage][0] & 0xfffff) : 0;
     const tex_t *src_tt = src_tid > 0 && src_tid < g_ntreg && g_treg[src_tid].ok ? &g_treg[src_tid].t : NULL;
-    void *outv = NULL, *srcv = NULL;
+    id<MTLTexture> outv = nil, srcv = nil;
     (void)tex_fast_rid(tid, &outv); if (src_tid) (void)tex_fast_rid(src_tid, &srcv);
     g_za_diag_armed = 1; g_za_diag_atomic = atomic; g_za_diag_atomic_bytes = atomic_bytes;
-    g_za_diag_out = (__bridge id<MTLTexture>)outv; g_za_diag_src = (__bridge id<MTLTexture>)srcv;
+    g_za_diag_out = outv; g_za_diag_src = srcv;
     g_za_diag_src_tid = src_tid; g_za_diag_src_ser = src_tt ? src_tt->serial : 0;
     MLOG("[ZA-DIAG] arm frame=%llu pass=%llu shader=%s stage=%d image_reg=%d out_tid=%d ser=%llu nvn=%#x target=%u flags=%#x size=%ux%ux%u levels=%u layout=%llu atomic_bytes=%zu metal=%lu %lux%lux%lu array=%lu type=%lu usage=%#lx src_tid=%d src_ser=%llu src_metal=%lu %lux%lux%lu type=%lu",
          (unsigned long long)frame, (unsigned long long)g_stat_pass, sh->key, stage, reg, tid,
@@ -5994,7 +6000,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                            (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.border[0], sp.border[1], sp.border[2], sp.border[3], sp.lod_min, sp.lod_max, sp.lod_bias, sp.aniso, (int)sp.cmp_mode, (int)sp.cmp_func, ss ? "实" : "建不出"); }
         } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
             int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_handle(nvn_stage, reg, b->off) & 0xfffff) : reg < NTEX ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
-            void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            id<MTLTexture> t = nil; uint64_t trid = tid ? tex_fast_rid(tid, &t) : 0;
             za_diag_use("sample", sh, nvn_stage, reg, tid, t && tid < g_ntreg ? g_treg[tid].t.serial : 0);
             if (t && g_fb_n && g_fb_seq == g_draw_seq && nvn_stage == 1) for (int q = 0; q < g_fb_n; q++) if (t == g_fb_src[q]) { t = g_fb_use[q]; trid = g_fb_rid[q]; break; }   // same-pass feedback sampling: read the snapshot instead (see fb_prepare)
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
@@ -6022,7 +6028,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_IMG) {   // Writable texture: NVN image slot r (BindImages) ↔ D3D u_r
             int tid = reg < 32 ? (int)(S.img[nvn_stage][reg] & 0xfffff) : 0;
-            void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            id<MTLTexture> t = nil; uint64_t trid = tid ? tex_fast_rid(tid, &t) : 0;
             za_diag_use("image", sh, nvn_stage, reg, tid, t && tid < g_ntreg ? g_treg[tid].t.serial : 0);
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (t && b->dtt == MTLTextureType2D && t.textureType == MTLTextureType2DArray &&
@@ -6074,14 +6080,14 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 slots[aid] = legacy_buffer_gpu(sink);
                 USE(sink, MTLResourceUsageRead | MTLResourceUsageWrite);
                 if (using_shadow) {
-                    void *tv = NULL; (void)tex_fast_rid(tid, &tv);
-                    za_atomic_schedule(sink, (__bridge id<MTLTexture>)tv);
+                    id<MTLTexture> t = nil; (void)tex_fast_rid(tid, &t);
+                    za_atomic_schedule(sink, t);
                 }
             }
             if (bl) PD("B %llu st%d imga reg%d tid=%d %s", g_stat_pass, nvn_stage, reg, tid, linear && tt->mem ? "real" : "dummy");
         } else if (b->kind == NVN_RB_TBUF) {   // Typed buffer: the buffer texture (target BUFFER) in texture slot r
             int tid = reg < NTEX ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
-            void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            id<MTLTexture> t = nil; uint64_t trid = tid ? tex_fast_rid(tid, &t) : 0;
             if (t && t.textureType != MTLTextureTypeTextureBuffer) { RED_ONCE(40, "类型化缓冲槽绑的不是缓冲贴图（贴图号 %d 类型 %lu）", tid, (unsigned long)t.textureType); t = nil; }
             if (bl) PD("B %llu st%d tbuf reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
@@ -7412,7 +7418,7 @@ static int fz_p2_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint8_
             if (lv || sl || MAX(R.rt.color[j]->d.width, 1u) != g_pass.tw || MAX(R.rt.color[j]->d.height, 1u) != g_pass.th) { PD("F %llu 证不出：附件不是第 0 级第 0 层或尺寸不符", g_stat_pass); return 0; }
             {   // The sampled view must also be exactly the attachment itself (previously only the attachment being level 0 layer 0 was checked, not the view bound by the shader -- when the same texture is sampled through a view of level k / layer k / a changed format,
                 // the proof would still hold, the sampling would be changed to read on-tile level 0 / the original format, and the picture would be wrong). The view's starting level / layer must be 0 and its format must equal the attachment's actual format, otherwise do not merge
-                int tid_ = (int)(h & 0xfffff); void *tv_ = NULL; if (tid_) tex_fast_rid(tid_, &tv_); __unsafe_unretained id<MTLTexture> tv = (__bridge id<MTLTexture>)tv_;
+                int tid_ = (int)(h & 0xfffff); id<MTLTexture> tv = nil; if (tid_) tex_fast_rid(tid_, &tv);
                 uint32_t apf_ = tv.parentTexture ? (uint32_t)tv.parentTexture.pixelFormat : (uint32_t)tv.pixelFormat; uint8_t swz_[4];
                 if (R.rt.has_cview[j] && R.rt.cview[j].set_format && !(nvn_fmt_to_mtl(R.rt.cview[j].format, &apf_, swz_) && apf_)) apf_ = 0;   // The attachment is attached through a format-changing view: take that format; if unrecognized, do not merge
                 MTLPixelFormat apf = (MTLPixelFormat)apf_;
@@ -7763,7 +7769,7 @@ static void fb_prepare(NvProg *pr) {
         if (!ser) continue;
         for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) { if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
             uint64_t aser; int lv, sl; rt_sub(&R.rt, k, &aser, &lv, &sl);
-            pthread_mutex_lock(&g_rmu); void *tv = NULL; tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv; pthread_mutex_unlock(&g_rmu);
+            pthread_mutex_lock(&g_rmu); id<MTLTexture> t = nil; tex_fast_rid(tid, &t); pthread_mutex_unlock(&g_rmu);
             if (!t) continue;
             int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t; if (dup) continue;
             id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0;
@@ -8340,8 +8346,7 @@ frz_plain:;
         int tid = (int)(S.img[1][reg] & 0xfffff);
         if (!tid) continue;
         pthread_mutex_lock(&g_rmu);
-        void *view = NULL; (void)tex_fast_rid(tid, &view);
-        id<MTLTexture> texture = (__bridge id<MTLTexture>)view;
+        id<MTLTexture> texture = nil; (void)tex_fast_rid(tid, &texture);
         MLOG("[RED] Missing fragment %s image binding: reg=%d tid=%d format=%lu type=%lu size=%lux%lux%lu usage=%#lx",
              pr->missing[1].UTF8String, reg, tid, (unsigned long)texture.pixelFormat,
              (unsigned long)texture.textureType, (unsigned long)texture.width,
@@ -8380,8 +8385,7 @@ frz_plain:;
             int tid = (int)(S.img[st][reg] & 0xfffff);
             if (!tid) continue;
             pthread_mutex_lock(&g_rmu);
-            void *view = NULL; (void)tex_fast_rid(tid, &view);
-            id<MTLTexture> texture = (__bridge id<MTLTexture>)view;
+            id<MTLTexture> texture = nil; (void)tex_fast_rid(tid, &texture);
             MLOG("[RED] Missing-pipeline image binding: stage=%d reg=%d tid=%d format=%lu type=%lu size=%lux%lux%lu usage=%#lx",
                  st, reg, tid, (unsigned long)texture.pixelFormat, (unsigned long)texture.textureType,
                  (unsigned long)texture.width, (unsigned long)texture.height, (unsigned long)texture.arrayLength,

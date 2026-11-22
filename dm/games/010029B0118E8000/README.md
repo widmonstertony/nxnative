@@ -209,3 +209,18 @@ logged. Other games keep 5 ms. This is a measured-failure-driven candidate,
 not a claim that every source of audio starvation is fixed. Compare new
 underrun/silence counters on the owner's next normal play session. The queue
 ownership, sample conversion and render backend are unchanged.
+
+## Classic iPad texture ownership (2026-11-21)
+
+The A10X iPad on iPadOS 16.1 and TonTon 60.120 reached frame 4593 before an
+`objc_retain` fault. Its installed binary puts `encode_args_+0x5524` at the
+return from declaring a texture to the render encoder with `useResource`.
+The texture had already crossed a borrowed-reference boundary after the
+cache lookup and materialization. The classic lookup now publishes a strong
+texture reference to the caller through the resource declaration, including
+the slow path that returns a newly materialized texture. The shader ABI and
+library files are unchanged.
+
+The classic renderer compiles for iPadOS 16.1. Its 299 checks pass with Metal
+API validation on the Mac. A signed A10X build and the original race replay
+are still needed to verify that this resolves the device crash.
