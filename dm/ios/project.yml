@@ -49,9 +49,6 @@ targets:
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationLandscapeLeft
         UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationLandscapeRight
-          - UIInterfaceOrientationLandscapeLeft
-        UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeRight
