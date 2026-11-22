@@ -243,3 +243,26 @@ existing `a3a5cfdab59c` shader chain. After the game-local update, the usual
 library launch also renders the first-run Autolog agreement and privacy text.
 The original game image and saves were verified unchanged. The 3D preview
 still draws incompletely.
+
+### Race compositor on A10X (2026-11-22)
+
+The Roadsters Reborn race reached the driving HUD on iPadOS 16.1. The
+rear-view mirror and HUD drew, while the main view resolved to gray and
+blue silhouettes. The last full-screen race pass, fragment
+`c85f31db03049b39`, samples the full-resolution HDR image at register 0
+with a transparent-black border and the depth/stencil attachment at
+register 4.
+
+[The legacy build recipe](legacy_race_composite.py) rebuilds this fragment
+from its retained `a3a5cfdab59c` Metal source. It gives the HDR image a
+linear zero-border sampler at mip zero and reads the depth aspect with a
+nearest sampler. The binding indices and the rest of the race effects
+are preserved. The recipe targets the A10X compatibility library only.
+
+The same race displayed the Boxster, road markings, coast and HUD with
+the replacement fragment on the old iPad. The 16.1 library was added to
+the installed game's shader directory. Read-back verified the earlier
+font shader, original game image and save fingerprints. The tested
+racing view still ran around 20–25 FPS. The regular car-selection screen
+showed the car model. The separate paint preview still had a blurred
+background and remains open.
