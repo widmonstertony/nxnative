@@ -285,6 +285,7 @@ static void *ctl_main(void *arg) {
                 if (!strncmp(line, "texlist ", 8)) { void dm_gfx_texlist(int target); dm_gfx_texlist(atoi(line + 8)); continue; }
 #if !TARGET_OS_IPHONE || defined(DM_NVN_MODERN_RENDERER)
                 if (!strcmp(line, "restop")) { void dm_gfx_restop(void); dm_gfx_restop(); continue; }   // what the residency set holds (nvn_mtl.m res_top)
+                if (!strcmp(line, "memtrim")) { void dm_gfx_memtrim(void); dm_gfx_memtrim(); continue; }   // a memory pressure trim at the next submission, as a warn asks on iOS (nvn_mtl.m mem_trim)
 #endif
                 if (!strncmp(line, "addr ", 5)) { void dm_gfx_addr_note(uint64_t a, char *note, size_t n); char note[600]; uint64_t a = strtoull(line + 5, NULL, 16);   // what the host knows of a guest address
                     dm_gfx_addr_note(a, note, sizeof note); LOG("DM_CTL: addr %#llx:%s", (unsigned long long)a, note[0] ? note : " nothing known"); continue; }
