@@ -258,8 +258,9 @@ references the Unreal out-of-memory message. Reserving 8 GiB of guest alias
 address space and testing a 256 MiB texture-streaming pool still produced
 the abort. Both settings were restored afterward. Sixty-five non-point
 shader companions matched the existing on-device libraries and were installed
-without replacing the shader image. Twenty-one of them were discovered in
-the last battle attempt and still need an in-scene retest.
+without replacing the shader image. A fresh run with all 65 installed
+reproduced the same allocation abort at the first battle. The allocator
+retries growing its page pool before reaching `main+0xdf7da8`.
 
 ### M2 Ocarina village transition on 60.133 (2026-11-22)
 

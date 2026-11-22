@@ -11,6 +11,15 @@ The NSO rewriter (`dm/tools/patch_nso.py`) and its per-build tables (`dm/tools/s
 - **Fix:** install `capstone>=5,<6` (README and CI). `patch_nso.py` checks the major version (`cs_version()`) before it disassembles anything, and the NSP script checks it before building or surveying, so the extraction is not wasted; both print the install command for the Python that runs them. Capstone 6 is not supported.
 - **Found on:** [Celeste](../../dm/games/01002B30028F6000/README.md#found-on-this-game).
 
+## Guest CPU compatibility
+
+### Newer guest instructions fault on A10X
+
+- **Symptom:** a signed iPadOS 16.1 game enters SDK initialization and exits with SIGILL at an authenticated return or an atomic instruction.
+- **Cause:** the guest SDK uses combined pointer-authentication returns and newer AArch64 LSE/RCpc encodings. The deployment target controls iPadOS compatibility. It does not change the instructions in the embedded guest modules.
+- **Fix:** the classic A10X build uses `guest_armv80.py` to lower combined returns to the corresponding HINT-space authenticating instruction followed by RET. Scalar LSE operations and CASP use exclusive load/store loops that retain ordering, status flags and unaffected registers. LDAPR becomes LDAR. The rewriter scans executable ranges and records the target in the rewrite cache key. [Arm's exclusive-loop reference](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/making-the-most-of-the-arm-architecture-in-gcc-10).
+- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md#a10x-launch-boundary-2026-11-22) and [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md#a10x-launch-boundary-2026-11-22).
+
 ## Patch discovery
 
 ### Repository patches missing under bracketed paths

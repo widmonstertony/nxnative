@@ -192,6 +192,8 @@ On the PQ layer (`DM_HDR_PRESENT_KIND=pq`, the default) the RGB10A2 picture is c
 
 ## Found on this game
 
+- [A10X guest instructions](../../../docs/reference/rewriter.md#newer-guest-instructions-fault-on-a10x).
+
 - [The application pool grown by DM_HEAP_EXTRA](../../../docs/reference/memory.md#the-application-pool-grown-by-dm_heap_extra): its heap is total − used − 1.46 GB (`main+0x84790`); not needed for its 4K overlay so far
 - [A residency commit stays blocked in the iPhone kernel](../../../docs/reference/rendering.md#a-residency-commit-stays-blocked-in-the-iphone-kernel) (open).
 - [A timed archive write stalls active presentation](../../../docs/reference/rendering.md#a-timed-archive-write-stalls-active-presentation).
@@ -352,6 +354,10 @@ execute. [Apple documents pointer-authentication support on A12 and newer A-seri
 The deployment target controls OS compatibility. An A10X executable also
 needs the guest instructions translated for that CPU. Gameplay on this
 device remains unverified.
+
+`60.135` passes that return. The next boot stopped at `sdk+0x14e7e4` on
+`casa w8, w20, [x0]`. The [A10X rewriter](../../../docs/reference/rewriter.md#newer-guest-instructions-fault-on-a10x)
+also covers the atomics and RCpc loads present in the retained modules.
 
 ### M2 60.105 retained iPadOS 16.1 build (November 14)
 

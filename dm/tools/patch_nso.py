@@ -24,6 +24,7 @@ if capstone.cs_version()[0] != 5:   # the rewriter uses Capstone 5's names (CS_A
 from capstone import *
 from capstone.arm64 import ARM64_OP_IMM, ARM64_OP_MEM, ARM64_OP_REG
 import mod_layout, nso, nso_asm, nso_syms
+import guest_armv80
 from nso_asm import *   # the instruction encoders (B, ADRP, LDRX, ...), shared with the per-build patch files
 
 # The NSP script terminates a failed or cancelled rewrite with SIGTERM. Exit through the pool's context manager so it reaps the workers too.
@@ -1852,6 +1853,30 @@ spin_sites = [(g['T'], sorted(g['valid']), sum(len(g['nodes'][a]['ins']) for a i
 for g in spin_regions: spin_emit(g)
 if os.environ.get('DM_SPIN_LIST'):
     for T, bes, n in spin_sites: print(f'{NAME} spin wait {T:#x} ({n} instructions), back-edges ' + ' '.join(f'{b:#x}' for b in bes))
+
+if os.environ.get('DM_IOS_RENDERER') == 'legacy' and os.environ.get('DM_LEGACY_TARGET') == 'a10x':
+    # AUTxSP encodes in architectural HINT space on CPUs without PAuth.
+    # The tail branch leaves SP, LR and flags as they were at RETAx.
+    return_thunks = {}
+    for offset, authenticate in list(guest_armv80.returns(IMG, CODE_RANGES)):
+        use_area(offset)
+        key = (PATCH_BASE, authenticate)
+        if key not in return_thunks:
+            return_thunks[key] = here()
+            emit(authenticate)
+            emit(guest_armv80.RET)
+        put_branch(offset, return_thunks[key])
+        stat('portable_authenticated_return')
+    for offset, word, kind in list(guest_armv80.atomics(IMG, CODE_RANGES)):
+        if kind == "rcpc":
+            struct.pack_into('<I', IMG, offset, guest_armv80.ldar(word))
+        else:
+            use_area(offset)
+            entry = here()
+            for instruction in guest_armv80.atomic_thunk(word, kind, offset, entry, jump=BX):
+                emit(instruction)
+            put_branch(offset, entry)
+        stat('portable_atomic')
 
 os.makedirs(outdir, exist_ok=True)
 P = lambda ext: os.path.join(outdir, f'{NAME}.{ext}')

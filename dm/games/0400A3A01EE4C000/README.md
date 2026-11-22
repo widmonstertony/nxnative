@@ -214,7 +214,17 @@ is a first-map performance check, not a complete graphics or all-area pass;
 Air's successful-scene measurements must not be presented as M2 results. The classic renderer does not
 implement Air's `DM_PRESENT_SNAP` setting.
 
+### A10X launch boundary (2026-11-22)
+
+The old iPad's 60.134 launch stops at the authenticated return
+`sdk+0x1520bc`. With the return lowered in 60.135, the next run reaches
+`sdk+0x151ec8` and faults on `casa w8, w20, [x0]`. The
+[A10X rewriter](../../../docs/reference/rewriter.md#newer-guest-instructions-fault-on-a10x)
+covers both encodings.
+
 ## Found on this game
+
+- [A10X guest instructions](../../../docs/reference/rewriter.md#newer-guest-instructions-fault-on-a10x).
 
 - [Independent-engine performance options](../../../docs/reference/rendering.md#an-independent-ipad-engine-reads-performance-options-without-applying-them): verify execution, not only saved preferences, on the frozen M2 engine.
 
