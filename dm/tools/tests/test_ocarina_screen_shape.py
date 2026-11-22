@@ -31,7 +31,12 @@ def record_hooks(others):
     def emit(_word):
         cursor[0] += 4
 
-    ctx = types.SimpleNamespace(here=lambda: cursor[0], emit=emit, site=sites.__setitem__, put=lambda off, words, why: None,
+    def record_site(offset, expected):
+        if offset in sites:
+            raise AssertionError(f"duplicate hook at {offset:#x}")
+        sites[offset] = expected
+
+    ctx = types.SimpleNamespace(here=lambda: cursor[0], emit=emit, site=record_site, put=lambda off, words, why: None,
                                 state=0x9000000, base=0, others=others, capabilities=capabilities)
     patch.frame_step(ctx)
     return sites, capabilities
@@ -43,15 +48,20 @@ class Placement(unittest.TestCase):
         self.assertEqual(OTHERS['movie draw']['size'], 0x158)
         sites, capabilities = record_hooks(FUNCTIONS)
         self.assertEqual(sites[FUNCTIONS['movie draw'] + 0x64], '69a241a9')
-        self.assertEqual(len(sites), 21)   # frame step, DRS, and 19 aspect hooks
-        self.assertEqual(capabilities, {'DYNAMIC_RESOLUTION', 'SCREEN_ASPECT'})
+        self.assertEqual(len(sites), 24)   # frame step, DRS, render-scale pair, graphics init, and 19 aspect hooks
+        self.assertEqual(capabilities, {'DYNAMIC_RESOLUTION', 'FPS_REALTIME', 'SCREEN_ASPECT', 'WINDOW_SIZE'})
+        self.assertNotIn(FUNCTIONS['window size'] + 0x200, sites)   # the shape hook owns the boot window
 
     def test_any_missing_aspect_match_leaves_all_aspect_hooks_out(self):
         for name in patch.screen_shape_functions:
             with self.subTest(name=name):
                 sites, capabilities = record_hooks(FUNCTIONS | {name: None})
-                self.assertEqual(set(sites), {0xe4, FUNCTIONS['dynamic resolution']})
-                self.assertEqual(capabilities, {'DYNAMIC_RESOLUTION'})
+                scale = FUNCTIONS['render scale']
+                self.assertEqual(set(sites), {
+                    0xe4, FUNCTIONS['dynamic resolution'], scale + 0xce4, scale + 0xd48,
+                    FUNCTIONS['window size'] + 0x200, FUNCTIONS['gfx init'],
+                })
+                self.assertEqual(capabilities, {'DYNAMIC_RESOLUTION', 'FPS_REALTIME', 'WINDOW_SIZE'})
 
     def test_aspect_does_not_need_dynamic_resolution(self):
         sites, _ = record_hooks(FUNCTIONS)
@@ -59,7 +69,7 @@ class Placement(unittest.TestCase):
             with self.subTest(name=name):
                 without_drs, capabilities = record_hooks(FUNCTIONS | {name: None})
                 self.assertEqual(set(without_drs), set(sites) - {FUNCTIONS['dynamic resolution']})
-                self.assertEqual(capabilities, {'SCREEN_ASPECT'})
+                self.assertEqual(capabilities, {'FPS_REALTIME', 'SCREEN_ASPECT', 'WINDOW_SIZE'})
 
 
 class Arm64ScreenShape(unittest.TestCase):

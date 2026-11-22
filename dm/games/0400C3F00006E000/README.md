@@ -58,6 +58,10 @@ To the race:
 
 4. `CRASH pc=0` from `main+0x19e77a0` when the cup's opening movie starts: `nn::syncpt::sdk::TryWaitSyncPointEvent` went through the SDK's null table, as `CreateSyncPointEvent` did on Donkey Kong Bananza; the host answers it from the event's SystemEvent (`hle_codec_video.c`). The movie player is in `main` and takes SDK 19's decoder forms ([SDK 19's decoder forms](../../../docs/reference/movies.md#sdk-19s-decoder-forms)): VP9 at 2560x1440.
 
+After a race:
+
+5. `game called nn::diag abort` with Result 0x1c286f (nn::codec 3604) on `VideoDecoderThread`, about 1 time in 5 before the post-race picture: registered decoder buffers were pre-signalled at generation 0 instead of waiting for a decoded picture ([Registered decoder buffers signalled before a picture was decoded](../../../docs/reference/movies.md#registered-decoder-buffers-signalled-before-a-picture-was-decoded)).
+
 ## Frame rate
 
 The host handles [cube face splitting and pass merging](../../../docs/reference/rendering.md#a-draw-into-the-six-faces-of-a-cube-level-at-once-ran-short-of-threads) and [guest compute dispatch ordering](../../../docs/reference/frame-rate.md#compute-dispatches-that-wait-for-each-other). The shader chain [compares bounded uniform reads by row where it can prove the component is in range](../../../docs/reference/shaders.md#reads-past-a-uniform-bindings-size). The performance measurements are recorded with those mechanisms.
@@ -228,6 +232,7 @@ On the PQ layer (`DM_HDR_PRESENT_KIND=pq`, the default) the RGB10A2 picture is c
 - [Uniform references past the first kilobyte](../../../docs/reference/shaders.md#uniform-references-past-the-first-kilobyte)
 - [A control section's words read as a BAHS entry](../../../docs/reference/shaders.md#a-control-sections-words-read-as-a-bahs-entry) (resolved, [issue #1592](https://github.com/seedds/nxnative/issues/1592)): `cs_lib.bin` 74, `797e77c2ec4341c5` at `agl_common.sharcb#BAHS@0x5c778`, was no shader. Dropping it and its fact reduced the index of the next 69 `cs_lib.bin` rows (`agl_common`, `agl_ndsr`, `agl_technique_pfx`, gsys `common`) by one, as in the reporter's base-game split. The full [v0 split](#shaders) confirms the removal. [1.8.0](#180) also has false entries outside control sections.
 - [SDK 19's decoder forms](../../../docs/reference/movies.md#sdk-19s-decoder-forms)
+- [Registered decoder buffers signalled before a picture was decoded](../../../docs/reference/movies.md#registered-decoder-buffers-signalled-before-a-picture-was-decoded) (post-race 3604 abort in 1.0.0, [PR #3173](https://github.com/seedds/nxnative/pull/3173))
 - [A version without one of the profile's modules stops the host at boot](../../../docs/reference/packing.md#a-version-without-one-of-the-profiles-modules-stops-the-host-at-boot)
 - [The controller applet waits for players](../../../docs/reference/services.md#the-controller-applet-waits-for-players) (1.8.0, pull request #1596; GitHub issue #1640: the player screen closed when the second controller had not pressed yet)
 - [HDR presented through an extended dynamic range layer](../../../docs/reference/rendering.md#hdr-presented-through-an-extended-dynamic-range-layer) (1.8.0, experimental: its RGB10A2 HDR10 swapchain)

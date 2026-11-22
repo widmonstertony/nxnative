@@ -256,8 +256,9 @@ class Registry(unittest.TestCase):
             return at + 4 * (imm - (1 << 26) if imm & (1 << 25) else imm)
 
         nn, init = 0x300000, 0x200000
-        none = {'dynamic resolution': None, 'dynamic resolution update': None, 'window size': None, 'gfx init': None}
-        self.assertEqual(set(none), set(rule['others']))
+        window_inputs = {'dynamic resolution', 'dynamic resolution update', 'window size', 'gfx init'}
+        self.assertLessEqual(window_inputs, set(rule['others']))
+        none = dict.fromkeys(rule['others'])
         words, sites, puts, caps, stub = run(dict(none, **{'window size': nn}))
         site = nn + 0x200
         self.assertEqual(sites[site], '084081d208b4c0f2')   # the original two words asserted

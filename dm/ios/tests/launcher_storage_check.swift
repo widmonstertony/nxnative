@@ -65,7 +65,7 @@ import Foundation
         setenv("DM_ENV_FILE_KEYS", "", 1); unsetenv("DM_FULLSCREEN"); unsetenv("DM_OPMODE")
         let mm = LauncherModel(mac.settings, defaults: d)
         expect(mm.sections(basic: true) == ["Game", "Controls"] && mm.sections(basic: false) == ["Game", "Controls", "Performance"], "Basic and Advanced keep the list's sections")
-        expect(mm.rows(in: "Game", basic: true).map(\.env) == ["DM_FPS_TARGET", "DM_RENDER_SCALE", "DM_OPMODE", "DM_LANG", "DM_FULLSCREEN"], "Basic rows in the list's order")
+        expect(mm.rows(in: "Game", basic: true).map(\.env) == ["DM_FPS_TARGET", "DM_RENDER_SCALE", "DM_OPMODE", "DM_LANG", "DM_FULLSCREEN", "DM_SCREEN_MATCH"], "Basic rows in the list's order")
         expect(!file.settings.contains { $0.env == "DM_FULLSCREEN" } && mm.values["DM_FULLSCREEN"] == "1", "Display mode is the Mac's, Fullscreen by default")
         mm.values["DM_FULLSCREEN"] = "0"; mm.apply()
         expect(String(cString: getenv("DM_FULLSCREEN")) == "0" && d.string(forKey: "launcher.DM_FULLSCREEN") == "0", "Window goes into the environment and is saved")
@@ -91,12 +91,14 @@ import Foundation
         let both = SaveSyncReport(line: "sync=1 cloud=1 local=\(lh) saved=1 files=1 size=1 chash=\(ch) csaved=2 cfiles=1 csize=1 cdevice=iPhone17,1 sametitle=1 conflict=1 pull=0")!
         expect(SaveSyncReport.step(both) == .choose && both.localChoice == "local:" + ch && both.cloudChoice == "cloud:" + ch, "both changed: local:<cloud's hash> and cloud:<cloud's hash>")
         let none = SaveSyncReport(line: "sync=1 cloud=0 local=\(lh) saved=1 files=1 size=1 chash=- csaved=0 cfiles=0 csize=0 cdevice=- sametitle=1 conflict=0 pull=0")!
-        expect(none.localChoice == "local:none", "no cloud save: local:none")
+        expect(SaveSyncReport.step(none) == .play("ask") && none.localChoice == "local:none", "no cloud save and never synced: ask, local:none")
+        let missing = SaveSyncReport(line: "sync=1 cloud=0 local=\(lh) saved=1 files=1 size=1 chash=- csaved=0 cfiles=0 csize=0 cdevice=- sametitle=1 conflict=1 pull=0")!
+        expect(SaveSyncReport.step(missing) == .missing && missing.localChoice == "local:none", "no cloud save though previously synced: missing, local:none")
         failed += checkLauncherLayout(LauncherModel(mac.settings, defaults: d), defaults: d)
         let keymap = try! JSONDecoder().decode(Setting.self, from: Data(#"{"env":"DM_KEYMAP","kind":"keymap","label":"Keys","note":"","default":""}"#.utf8))
         let padmap = try! JSONDecoder().decode(Setting.self, from: Data(#"{"env":"DM_PAD_MAP","kind":"padmap","label":"Pad","note":"","default":""}"#.utf8))
         expect(keymap.accepts("A=128,Run=56,LUp=14") && keymap.accepts("") && !keymap.accepts("A=131") && !keymap.accepts("A= 49"), "keyboard mapping agrees with host codes and rejects malformed values")
-        expect(padmap.accepts("A=B,B=A,Minus=none") && !padmap.accepts("A=Shake") && !padmap.accepts("A=LUp"), "physical mappings only accept controller buttons")
+        expect(padmap.accepts("A=B,B=A,Minus=none") && padmap.accepts("A=Shake") && !padmap.accepts("Shake=A") && !padmap.accepts("A=LUp"), "physical mappings accept Shake only as a target and keep sticks unmapped")
         let maps = LauncherModel([keymap,padmap], defaults: d, environment: [:])
         maps.values["DM_KEYMAP"] = "A=128,Run=56,LUp=14"
         maps.values["DM_PAD_MAP"] = "A=B,B=A"

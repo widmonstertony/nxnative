@@ -179,13 +179,7 @@ DM_NVN_CPUPROF	diagnostic	1 records CPU wall/time/instruction totals by renderer
 DM_NVN_CSH_PRESCAN	diagnostic	`0` runs the compute-hoist scan at every pass's first draw even when no dispatch follows (as before; for timing)
 DM_NVN_CS_HOIST	switch	`0` makes a compute dispatch between the draws of a pass end it (on by default: the dispatch runs ahead of the pass when that changes nothing the draws before it read)
 DM_NVN_CUT	switch	`=<draws>`: the replay commits its command buffer every that many draws, between passes (default 64; `0` one command buffer per submission, except the cut after a buffer-to-texture copy)
-DM_NVN_CUT_BUSY	switch	`=0`: a segment boundary commits whatever the GPU is doing (the default commits only when earlier work has reported back, keeping the boundary's GPU timestamp otherwise)
-DM_NVN_CUT_DRY	switch	`0` commits segments only between passes; on by default a draw pass with at least DM_NVN_CUT_DRY_N (24) draws since the last commit ends and commits before its next draw when nothing is in flight (the GPU ran dry): Ocarina of Time on an M1 -0.3 / -0.15 ms a frame (both A/B polarities), its slow spot at 30 fps
-DM_NVN_CUT_DRY_N	number	draws since the last commit before DM_NVN_CUT_DRY may split a pass (default 24)
-DM_NVN_CUT_FIRST	switch	`0` turns off the early first segment: on by default a submission's first segment is cut after `DM_NVN_CUT_FIRST_N` draws (8) and committed even while earlier segments run, so a frame's first work reaches the GPU before the previous frame's runs out (Ocarina of Time on an M1: -0.85 ms a frame)
-DM_NVN_CUT_FIRST_N	diagnostic	`=<draws>`: the size of `DM_NVN_CUT_FIRST`'s first segment (default 8)
-DM_NVN_DEFER	switch	`0` turns off the deferred pass merging of the TBDR optimizations (which run only with `DM_NVN_TBDR=1`)
-DM_NVN_DEFER_AB	diagnostic	`=1` keeps the deferred pass merging (with `DM_NVN_TBDR=1`) off until the second screenshot has been written, then turns it on, to compare the pictures with and without it
+DM_NVN_CUT_BUSY	switch	`=0` / `=1` / `=<N>`: `0`, a segment boundary commits whatever the GPU is doing; `1` (the default), commits only when earlier work on the queue has finished (read from the queue's shared event `g_rx_ev`, or held on the encode thread with `DM_NVN_ENC_THREAD=1`); `<N>` (`>= 2`), commits while fewer than `N` commits are in flight on the queue
 DM_NVN_DEPTHOVR	diagnostic	`=<fragment shader key prefix>,…`: those draws compare depth with `ALWAYS`; with `DM_NVN_HILITE`, tells "the depth test rejects every fragment" from "nothing rasterizes"
 DM_NVN_DEPTH_BOUNDS	diagnostic	`0` ignores NVN and Vulkan depth bounds on Apple10+ GPUs (`setDepthTestMinBound:maxBound:`); `ab` alternates with `DM_AB` (on by default on Apple10+ GPUs, inactive on older GPUs)
 DM_NVN_DIRECT_UPLOAD	switch	0 disables bounded direct RGBA16F array uploads and keeps staged copies; on by default for supported non-sparse textures.
