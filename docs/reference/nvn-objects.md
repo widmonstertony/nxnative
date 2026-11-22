@@ -1092,6 +1092,14 @@ cause is resolved.
 - **Fix:** the five getters read the builder's current sampler parameters through their typed NVN entry points, including the values restored by `SetDefaults`.
 - **Found on:** [Digimon Story Time Stranger](../../dm/games/010062E01FE0C000/README.md) (reported in [#872](https://github.com/seedds/nxnative/issues/872) for v1.2.1).
 
+### Transparent sampler borders on older Apple GPUs
+
+- **Symptom:** UI letters are invisible on Apple3 even when their vertices reach rasterization and the font atlas contains visible glyphs.
+- **Cause:** the classic renderer used Metal's programmable border color for a transparent-black NVN sampler. Apple GPUs before Apple7 lack that feature. [Metal Feature Set Tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
+- **Fix:** select Metal's clamp-to-zero address mode for transparent-black `CLAMP_TO_BORDER` samplers on older GPUs. This fixes zero-alpha borders for alpha-bearing textures. Colored and mirrored borders remain outside this repair.
+- **Check:** `t_legacy_border` forces the older GPU choice and checks both an interior sample and an external sample through both Metal argument-buffer encodings. The iPadOS 16.1 renderer also passes compilation.
+- **Found on:** [Need for Speed Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md#menu-text-on-older-apple-gpus-2026-11-22), whose menu text was verified on the A10X iPad with an equivalent one-shader update.
+
 ### Integer sampler border colours
 
 - **Symptom:** `[RED] NVN unimplemented function called: nvnSamplerBuilderSetBorderColorui` during renderer initialization.

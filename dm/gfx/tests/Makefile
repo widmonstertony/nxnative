@@ -568,6 +568,10 @@ t_view_reuse: t_view_reuse.m $(MTL_T_DEP)
 check_t_view_reuse: RUN_ENV = MTL_DEBUG_LAYER=1
 t_border: t_border.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_border.m $(MTL_T_SRC) $(FW)
+t_legacy_border: CFLAGS += -DDM_NVN_LEGACY_RENDERER_TEST=1
+t_legacy_border: t_legacy_border.m t_border.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_legacy_border.m $(MTL_T_SRC) $(FW)
+check_t_legacy_border: RUN_ENV = MTL_DEBUG_LAYER=1
 .PHONY: check_t_border
 check_t_border: t_border
 	MTL_DEBUG_LAYER=1 ./t_border

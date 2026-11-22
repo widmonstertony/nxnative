@@ -218,8 +218,9 @@ restores the image reader without changing the image, the guest modules or
 the iPad's saved data. Fourteen legacy vertex companions were verified
 against the exact Metal libraries in that image. With the companions, the
 title screen and new-game setup render on the M2. Ocarina's 60.132 retest
-reached the village transition with MetalFX and a 0.5 render scale. The GPU still faulted in a 128×128 pass
-using fragment shader `ccfff02a2829b620`; the village is unverified.
+reached the village transition with MetalFX and a 0.5 render scale. The GPU
+still faulted in a 128×128 pass using fragment shader `ccfff02a2829b620`.
+The village is unverified.
 
 The old iPad finally registered 60.131 after its installer had already
 reported failure. Both runtime frameworks and the original game images and
@@ -227,12 +228,7 @@ saves passed read-back checks. The Need for Speed 60.120 race log showed
 eleven missing shader keys and an omitted vertex draw. Those stages were
 rebuilt at iPadOS 16.1 on the retained `a3a5cfdab59c` translation chain.
 The final signed 60.131 package and its 697-entry map verified on-device.
-In scratch runs on iPadOS 16.1, the title screen rendered and the game
-reached the map and the Boxster Spyder selection screen. Four additional
-vertex companions in a local shader overlay removed the observed variant
-warnings. The map and vehicle pages still missed labels, and the first-run
-Autolog page had no body text with either the Traditional Chinese or English
-localization. The game opened the corresponding language and font bundles
-in both runs. Expanding BC2/BC3 directly instead of transcoding them to ASTC
-left the missing labels unchanged. The original game image and saves passed
-read-back checks.
+Four additional vertex companions removed the observed variant warnings. A
+[single fragment library update](../dm/games/010029B0118E8000/README.md#menu-text-on-older-apple-gpus-2026-11-22)
+restored the text prompts and labels on the old iPad. The original game image
+and saves passed read-back checks. The 3D car preview has a separate issue.

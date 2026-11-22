@@ -174,6 +174,7 @@ void mtl_prepare_snapshot(nvn_prepare_status *out) {
 }
 
 static id<MTLDevice> g_dev;
+static BOOL g_sampler_border_color;
 static int g_layered_native = 1, g_bare_native = 1, g_fragment_image_native = 1, g_slice_replaying;
 static uint32_t g_selected_slice;
 static NSMutableArray *g_l3_gpu_leaks;
@@ -616,6 +617,11 @@ void mtl_init(void) {
     if (latency && atoi(latency) > 0) g_present_latency = atoi(latency);
     g_res_check_on = getenv("DM_RES_CHECK") != NULL;
     g_dev = MTLCreateSystemDefaultDevice();
+#if TARGET_OS_OSX
+    g_sampler_border_color = [g_dev supportsFamily:MTLGPUFamilyMac2];
+#else
+    g_sampler_border_color = [g_dev supportsFamily:MTLGPUFamilyApple7];
+#endif
     if (!g_dev) MDIE("没有 Metal 设备");
     legacy_arguments_configure(g_dev);
     g_layered_native = [g_dev supportsFamily:MTLGPUFamilyApple5] || [g_dev supportsFamily:MTLGPUFamilyMac1];
@@ -4390,9 +4396,11 @@ static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, id<M
     *out = tex_by_id(tid);
     return *out ? legacy_texture_rid(*out) : 0;
 }
-static MTLSamplerAddressMode wrapm(int w) {
+static MTLSamplerAddressMode wrapm(int w, BOOL zero_border) {
     switch (w) { case 0: case 7: return MTLSamplerAddressModeClampToEdge; case 1: return MTLSamplerAddressModeRepeat;
-        case 3: case 2: return MTLSamplerAddressModeMirrorClampToEdge; case 5: case 4: return MTLSamplerAddressModeClampToBorderColor;
+        case 3: case 2: return MTLSamplerAddressModeMirrorClampToEdge;
+        case 5: return zero_border ? MTLSamplerAddressModeClampToZero : MTLSamplerAddressModeClampToBorderColor;
+        case 4: return MTLSamplerAddressModeClampToBorderColor;
         case 6: return MTLSamplerAddressModeMirrorRepeat; }
     return MTLSamplerAddressModeRepeat;
 }
@@ -4404,7 +4412,6 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     d.magFilter = p.magf ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     d.minFilter = (p.minf == 1 || p.minf == 3 || p.minf == 5) ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     d.mipFilter = p.minf <= 1 ? MTLSamplerMipFilterNotMipmapped : (p.minf == 2 || p.minf == 3) ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterLinear;
-    d.sAddressMode = wrapm(p.ws); d.tAddressMode = wrapm(p.wt); d.rAddressMode = wrapm(p.wr);
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
     d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
@@ -4420,6 +4427,12 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     }
     int bn, bw; float k[4]; const uint8_t wrap[3] = {p.ws, p.wt, p.wr};
     int twin = nvn_border(p.border, wrap, p.reduction, &bn, &bw, k);
+    // Older Apple GPUs implement clamp-to-zero but do not support a custom border color.
+    // A transparent border can use the hardware zero mode without rewriting the shader.
+    BOOL zero_border = !g_sampler_border_color && !memcmp(p.border, nvn_mtl_border[0], sizeof p.border);
+    d.sAddressMode = wrapm(p.ws, zero_border);
+    d.tAddressMode = wrapm(p.wt, zero_border);
+    d.rAddressMode = wrapm(p.wr, zero_border);
     d.borderColor = (MTLSamplerBorderColor)bn;
     d.supportArgumentBuffers = YES;
     id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d];

@@ -224,3 +224,22 @@ library files are unchanged.
 The classic renderer compiles for iPadOS 16.1. Its 299 checks pass with Metal
 API validation on the Mac. A signed A10X build and the original race replay
 are still needed to verify that this resolves the device crash.
+
+### Menu text on older Apple GPUs (2026-11-22)
+
+On the A10X iPad and TonTon 60.131, the game opened the expected Traditional
+Chinese and English font bundles, yet Autolog and the map did not display
+their labels. Direct BC3 expansion did not recover the labels. GPU readback
+of the 4096×2048 Traditional Chinese glyph atlas had the same nonzero alpha
+count as the CPU decode and a mean absolute alpha difference of 0.009 on an
+8-bit scale. Diagnostic color filled rectangles at the glyph positions.
+
+Text fragment `70f48864fa17b09d` uses a transparent border sampler on this
+atlas. [Older Apple GPUs need the zero-border address mode](../../../docs/reference/nvn-objects.md#transparent-sampler-borders-on-older-apple-gpus).
+An iPadOS 16.1 library for this one fragment uses linear filtering at mip level
+zero and retains its original color and glyph bounds. In-game title prompts,
+race map text and Boxster Spyder paint options render with the library in the
+existing `a3a5cfdab59c` shader chain. After the game-local update, the usual
+library launch also renders the first-run Autolog agreement and privacy text.
+The original game image and saves were verified unchanged. The 3D preview
+still draws incompletely.
