@@ -29,3 +29,15 @@ additional exact captures were saved and validated outside the repository. The
 expanded matching 163-stage macOS/iOS set compiles successfully; a later host
 rebuild and package must carry it. The installed `.5` still contains 158 stages,
 and the user's current game was not interrupted.
+
+### Classic Metal encoder ordering (2026-11-21)
+
+An A10X iPad running Gamebox 60.120 aborted at `enc_r_begin` after 9,000
+frames. Metal reported an encoder already active on the command buffer.
+The classic renderer could open a blit after the initial pass boundary while
+preparing textures. Render encoder creation now ends that outstanding blit
+through the existing fence path. The Metal validation regression copies a
+pixel to the attachment then verifies a load/store pass preserves it. The
+classic suite passed 299 checks on macOS and the renderer compiled for iOS
+16.1. Packaging for the deployed shader chain and the A10X scene retest are
+still open.

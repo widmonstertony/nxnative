@@ -99,6 +99,11 @@ Ocarina 60.128 still faults the GPU at the first controllable village scene;
 reducing deferred-release pressure did not fix the invalid access. See the
 [open device finding](dm/games/0400486024DEC000/README.md#fork-m2-ipados-161-checkpoint-2026-11-17).
 
+The [November 21 launch audit](docs/fork-status.md#ipad-launch-audit--2026-11-21)
+records the remaining A10X and M2 blockers. A classic Metal encoder-ordering
+fix passes the local GPU regression and compiles for iOS 16.1. Device
+validation is pending.
+
 Air build 60.61 defaults compatible native Switch games to handheld mode and
 MetalFX spatial upscaling, with a per-game override. Handheld mode leaves the
 render size to each game. The compatibility renderer also has a classic

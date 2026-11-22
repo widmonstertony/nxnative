@@ -135,3 +135,20 @@ modern-chain table or library was relabelled. All completed isolated runs
 used scratch saves with cloud sync disabled; original save fingerprints
 matched after cleanup. New scene-only deltas do not reset the primary build
 checkpoints. The Mac build page records installation and scene tests separately.
+
+## iPad launch audit — 2026-11-21
+
+The installed M2 build 60.128 reports 26 of 28 entries ready. Emiya and
+Arceus are blocked at framework preflight: their signed manifests identify
+chains `11f9fb19e60d` and `ea90ed511690`, while the shared renderer expects
+`a3a5cfdab59c`. Samurai and another ready title report missing or mismatched
+non-point sources. The first controllable Ocarina scene remains open.
+
+The A10X build 60.120 reports 14 of 24 entries ready. Its retained logs
+show distinct failures: Mario Kart World lacks its signed title framework
+and the embedded fallback aborts on missing `__DM0LmainW`. Naruto requests
+a `0x81e00000` heap against a `0x8000000` cap. Need for Speed Hot Pursuit
+crashes in `objc_retain` after rendering a scene. Pokken's command-buffer
+assertion has an [encoder-ordering candidate](../dm/games/0100B3F000BE2000/README.md#classic-metal-encoder-ordering-2026-11-21).
+Each requires its own device check. The audit read the current shelf and
+the last retained game logs. It did not launch games or change saves.

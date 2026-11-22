@@ -299,6 +299,33 @@ static void classic_metalfx_present(void) {
     }
 }
 
+static void render_after_texture_blit(void) {
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                width:4 height:4 mipmapped:NO];
+    desc.usage = MTLTextureUsageRenderTarget;
+    desc.storageMode = MTLStorageModeShared;
+    id<MTLTexture> target = [g_dev newTextureWithDescriptor:desc];
+    id<MTLBuffer> pixels = [g_dev newBufferWithLength:1024 options:MTLResourceStorageModeShared];
+    CHECK(target && pixels, "texture upload regression allocates its resources");
+    if (!target || !pixels) return;
+    memset(pixels.contents, 0x80, pixels.length);
+
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = target;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    mtl_sub_begin();
+    enc_b_copy_buffer_texture(blit(), pixels, 0, 256, 1024, MTLSizeMake(4, 4, 1), target, 0, 0, MTLOriginMake(0, 0, 0));
+    id<MTLRenderCommandEncoder> render = enc_r_begin(pass);
+    CHECK(render && !g_blit, "classic render starts after the outstanding texture copy");
+    enc_r_end(render);
+    mtl_sub_commit();
+    mtl_drain();
+    uint32_t value = 0;
+    [target getBytes:&value bytesPerRow:4 fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
+    CHECK(value == 0x80808080u, "the render pass loads and retains the uploaded pixel");
+}
+
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc > 1 && !strcmp(argv[1], "--cpu-only")) {
         cpu_pool_bc_readback();
@@ -306,12 +333,17 @@ int main(int argc, char **argv) { @autoreleasepool {
         return failed != 0;
     }
     mtl_init();
+    if (argc > 1 && !strcmp(argv[1], "--encoder-order")) {
+        render_after_texture_blit();
+        printf("classic encoder ordering: %d checks, %d failures\n", checks, failed);
+        return failed != 0;
+    }
     if (getenv("DM_TEST_CLASSIC_METALFX")) {
         classic_metalfx_present();
         printf("classic MetalFX: %d checks, %d failures\n", checks, failed);
         return failed != 0;
     }
-    binding_commands(); cpu_texture_readback(); cpu_pool_bc_readback(); NSError *error = nil;
+    render_after_texture_blit(); binding_commands(); cpu_texture_readback(); cpu_pool_bc_readback(); NSError *error = nil;
     NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint i [[vertex_id]]) { return float4(i == 1 ? 3.0 : -1.0, i == 2 ? 3.0 : -1.0, 0, 1); }\n"
         "fragment float4 f() { return float4(.125,.25,.5,.375); }\n"

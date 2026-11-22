@@ -1134,6 +1134,13 @@ static void legacy_bind_buffer(id<MTLRenderCommandEncoder> e, int fragment, NSUI
     } else if (fragment) [e setFragmentBuffer:b offset:off atIndex:index]; else [e setVertexBuffer:b offset:off atIndex:index];
 }
 static inline id<MTLRenderCommandEncoder> enc_r_begin(MTLRenderPassDescriptor *d) {
+    // Resolving an attachment or a draw-time texture can open a blit after
+    // the caller's earlier pass boundary. Classic Metal permits only one
+    // active encoder on g_cb. End the blit here so its fence orders the draw.
+    if (g_blit) {
+        m4_end(g_blit);
+        g_blit = nil;
+    }
     memset(&g_legacy_state, 0, sizeof g_legacy_state);
     id<MTLRenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d];
     if (e) nvn_resource_usage_begin(&g_legacy_use);
