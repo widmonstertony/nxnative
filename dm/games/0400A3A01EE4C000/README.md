@@ -223,7 +223,9 @@ The old iPad's 60.134 launch stops at the authenticated return
 covers both encodings. 60.137 passed the SDK atomic and found a second
 CASAL at `main+0x3c17b50` in the earlier x18 rewriter's generated stub.
 The rewrite covers those generated stubs as well, preserving their scratch
-values below SP.
+values below SP. On 60.140 the launch passed both CPU failures. Metal then
+aborted at a 3.42 GiB no-copy pool registration against its 1 GiB
+per-buffer limit, before the title screen.
 
 ## Found on this game
 

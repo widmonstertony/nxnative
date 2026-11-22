@@ -249,6 +249,12 @@ return instructions in their guest text sections. This inventory verifies the
 signed components and distinguishes the known Mario Kart fault. Individual
 gameplay results for other titles still require a device run.
 
+The in-place A10X updates lowered both instruction families. Mario Kart
+World 60.137 and Pokopia 60.140 then reached Metal pool initialization.
+Their respective 2.37 GiB and 3.42 GiB buffers exceeded the device's 1 GiB
+single-buffer limit. Neither run reached its title screen. The cached
+game images and original save fingerprints verified on both updates.
+
 ### M2 Crisis Core first battle (2026-11-22)
 
 On 60.133, the title, new-game setup and opening movie render. The first
@@ -271,3 +277,15 @@ shader expects a 3D texture. The legacy adapter logged the incompatibility
 and still bound the 2D texture. The faulty draw also uses a nonzero base
 vertex. The capture identifies what to isolate in the next replay. The
 village has yet to render successfully on this iPad.
+
+
+### M2 Ocarina same-scene retest on 60.139 (2026-11-22)
+
+The earlier 60.136 candidate used an older runtime that opened the wrong
+shader directory and lacked the audio-device service. It was replaced
+in place. The 60.139 build reused the six signed guest sections and the
+installed `70fa6008c58d` shader chain. A depth-one texture adapter was active
+during the same village load. The replay reached the same render pass, then
+reported Metal command-buffer error 8. The final samples recorded about
+14 GiB of GPU allocations and over 23,000 deferred releases. The village
+still did not render. The original save fingerprints matched the baseline.
