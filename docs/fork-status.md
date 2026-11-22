@@ -241,8 +241,9 @@ framework was the only framework added in this update. The existing game
 images, save fingerprints and both Need for Speed patches verified afterward.
 
 [Mario Kart World](../dm/games/0400C3F00006E000/README.md#a10x-launch-boundary-2026-11-22)
-now loads its signed modules and then faults at an authenticated return in
-its Switch 2 SDK. Pokopia's guest text also contains authenticated returns.
+and Pokopia both load their signed modules, then fault at an authenticated
+return in their Switch 2 SDKs. The Pokopia device log reports SIGILL at
+`sdk+0x1520bc` and the instruction word is `d65f0fff`.
 The other 20 locally inspected framework packages had no matches for those
 return instructions in their guest text sections. This inventory verifies the
 signed components and distinguishes the known Mario Kart fault. Individual
