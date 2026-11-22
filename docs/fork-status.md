@@ -152,3 +152,18 @@ crashes in `objc_retain` after rendering a scene. Pokken's command-buffer
 assertion has an [encoder-ordering candidate](../dm/games/0100B3F000BE2000/README.md#classic-metal-encoder-ordering-2026-11-21).
 Each requires its own device check. The audit read the current shelf and
 the last retained game logs. It did not launch games or change saves.
+
+After the audit, three Samurai non-point sources were recovered from the
+original 16.1 build. The installed library and reflection files matched the
+backup by SHA-256 for every recovered source. The source files and their
+manifest were verified after import. The subsequent launch did not produce
+a fresh title log. Diagnostic overrides were restored and the original save
+fingerprint matched.
+
+The M2's 60.128 app still shows the legacy shelf. That release reused the
+60.127 host executable and replaced only the Ocarina framework. The A10X
+60.120 app already shows the wide banner and vertical artwork grid. The shared
+library source for that layout compiles for an ARM64 iPadOS 16.1 deployment
+target with availability checks. Installing the layout on M2 still requires
+the M2 host link inputs, including its title registry and embedded sections,
+and a signed rebuild with the existing frameworks.
