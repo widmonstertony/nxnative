@@ -19,6 +19,9 @@ class GuestArmv80Tests(unittest.TestCase):
     def test_acquire_cas_thunk_keeps_flags_and_returns_to_next_instruction(self):
         # CASA W8, W20, [X0] was the first unsupported atomic on the old iPad.
         code = atomic_thunk(0x88E87C14, "cas", 0x100, 0x200)
+        # The earlier x18 stub can keep scratch at SP-24.
+        spill = (code[0] >> 15) & 0x7F
+        self.assertEqual(((spill ^ 0x40) - 0x40) * 8, -144)
         self.assertIn(0x885FFC09, code)  # ldaxr w9, [x0]
         self.assertIn(0x880B7C14, code)  # stxr w11, w20, [x0]
         self.assertIn(0xD5033F5F, code)  # clrex on a failed comparison

@@ -1867,16 +1867,27 @@ if os.environ.get('DM_IOS_RENDERER') == 'legacy' and os.environ.get('DM_LEGACY_T
             emit(guest_armv80.RET)
         put_branch(offset, return_thunks[key])
         stat('portable_authenticated_return')
-    for offset, word, kind in list(guest_armv80.atomics(IMG, CODE_RANGES)):
-        if kind == "rcpc":
-            struct.pack_into('<I', IMG, offset, guest_armv80.ldar(word))
-        else:
-            use_area(offset)
-            entry = here()
-            for instruction in guest_armv80.atomic_thunk(word, kind, offset, entry, jump=BX):
-                emit(instruction)
-            put_branch(offset, entry)
-        stat('portable_atomic')
+    def lower_atomics(code, ranges, base=None):
+        for offset, word, kind in list(guest_armv80.atomics(code, ranges)):
+            if kind == "rcpc":
+                replacement = guest_armv80.ldar(word)
+            else:
+                origin = offset if base is None else base + offset
+                if base is None:
+                    use_area(origin)
+                entry = here()
+                for instruction in guest_armv80.atomic_thunk(word, kind, origin, entry, jump=BX):
+                    emit(instruction)
+                replacement = BX(origin, entry)
+            struct.pack_into('<I', code, offset, replacement)
+            stat('portable_atomic')
+
+    lower_atomics(IMG, CODE_RANGES)
+    # Earlier instruction rewrites also move guest atomics into executable
+    # stubs, notably to preserve accesses through x18.
+    for patch, PATCH_BASE in ((patch_front, PATCH_OFF), (patch_back, BACK_OFF)):
+        if patch:
+            lower_atomics(patch, [(0, len(patch))], PATCH_BASE)
 
 os.makedirs(outdir, exist_ok=True)
 P = lambda ext: os.path.join(outdir, f'{NAME}.{ext}')
@@ -1921,7 +1932,7 @@ def movie_native_color_keys():
     return RO_OFF <= target < DATA_OFF and IMG[target:target + len(key)] == key
 
 with open(os.path.join(outdir, 'build_src.sha256'), 'w') as f:   # the same for every module: the rewriter and every patch file, by path from dm/tools
-    for src_ in (os.path.abspath(__file__), nso.__file__, nso_code.__file__, nso_asm.__file__, nso_syms.__file__, ue_cvar.__file__, ue_malloc.__file__, fps_target.__file__, monolith_fps.__file__, ue_fixed_rate.__file__, unity_fps.__file__, unity_bucket.__file__, ue_region.__file__, ue_ring.__file__, snowdrop_pools.__file__, os.path.join(os.path.dirname(ue_malloc.__file__), 'loader_census.py'), *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
+    for src_ in (os.path.abspath(__file__), nso.__file__, nso_code.__file__, nso_asm.__file__, nso_syms.__file__, guest_armv80.__file__, ue_cvar.__file__, ue_malloc.__file__, fps_target.__file__, monolith_fps.__file__, ue_fixed_rate.__file__, unity_fps.__file__, unity_bucket.__file__, ue_region.__file__, ue_ring.__file__, snowdrop_pools.__file__, os.path.join(os.path.dirname(ue_malloc.__file__), 'loader_census.py'), *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
 with open(P('fixups.tsv'), 'w') as f:
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
     if FAR: f.write(f'# IMAGE_SIZE\t{IMAGE_SIZE:#x}\n# FILE_IMAGE_LEN\t{FILE_IMAGE_LEN:#x}\n')   # patch area before the base (negative PATCH_OFF): whole image size, length of the image part of the file

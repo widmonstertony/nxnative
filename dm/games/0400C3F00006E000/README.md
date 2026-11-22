@@ -358,6 +358,9 @@ device remains unverified.
 `60.135` passes that return. The next boot stopped at `sdk+0x14e7e4` on
 `casa w8, w20, [x0]`. The [A10X rewriter](../../../docs/reference/rewriter.md#newer-guest-instructions-fault-on-a10x)
 also covers the atomics and RCpc loads present in the retained modules.
+On the old iPad, 60.137 passed SDK initialization and then stopped during
+Metal initialization. The game requested a single 2.37 GiB no-copy buffer;
+A10X reported a 1 GiB maximum. This run did not reach the title.
 
 ### M2 60.105 retained iPadOS 16.1 build (November 14)
 

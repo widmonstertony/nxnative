@@ -93,11 +93,14 @@ def atomic_thunk(word, kind, origin, target, jump=B):
     scratch = iter(r for r in range(9, 18) if r not in used)
     old, value = next(scratch), next(scratch)
     status, address = next(scratch), next(scratch)
-    code = [STP_PRE(old, value, 31, -32), STP_PRE(status, address, 31, -16)]
+    # Rewriter stubs may already have live scratch values below SP.
+    # Leave the complete 128-byte Darwin red zone intact.
+    frame = 128 + 16
+    code = [STP_PRE(old, value, 31, -frame), STP_PRE(status, address, 31, -16)]
     # The original SP is also a valid atomic address. The spill area stays
     # below it, outside the guest stack frame.
     if base == 31:
-        code.append(ADDI(address, 31, 48))
+        code.append(ADDI(address, 31, frame + 16))
         base = address
     flags = next(scratch) if is_minmax else None
     if is_minmax:
@@ -161,6 +164,6 @@ def atomic_thunk(word, kind, origin, target, jump=B):
         code.append(move(src if compare else dst, old, wide))
     if is_minmax:
         code.extend((0xD51B4200 | flags, LDP_POST(flags, 31, 31, 16)))
-    code.extend((LDP_POST(status, address, 31, 16), LDP_POST(old, value, 31, 32)))
+    code.extend((LDP_POST(status, address, 31, 16), LDP_POST(old, value, 31, frame)))
     code.append(jump(pc(), origin + 4))
     return code

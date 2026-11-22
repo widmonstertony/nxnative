@@ -220,7 +220,10 @@ The old iPad's 60.134 launch stops at the authenticated return
 `sdk+0x1520bc`. With the return lowered in 60.135, the next run reaches
 `sdk+0x151ec8` and faults on `casa w8, w20, [x0]`. The
 [A10X rewriter](../../../docs/reference/rewriter.md#newer-guest-instructions-fault-on-a10x)
-covers both encodings.
+covers both encodings. 60.137 passed the SDK atomic and found a second
+CASAL at `main+0x3c17b50` in the earlier x18 rewriter's generated stub.
+The rewrite covers those generated stubs as well, preserving their scratch
+values below SP.
 
 ## Found on this game
 
