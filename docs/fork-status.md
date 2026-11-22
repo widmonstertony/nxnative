@@ -260,3 +260,13 @@ the abort. Both settings were restored afterward. Sixty-five non-point
 shader companions matched the existing on-device libraries and were installed
 without replacing the shader image. Twenty-one of them were discovered in
 the last battle attempt and still need an in-scene retest.
+
+### M2 Ocarina village transition on 60.133 (2026-11-22)
+
+The same isolated save reproduced the Metal GPU page fault at the village
+transition with MetalFX and a 0.5 render scale. The binding capture for
+fragment `ccfff02a2829b620` shows a 4×4 2D texture at register 8, while the
+shader expects a 3D texture. The legacy adapter logged the incompatibility
+and still bound the 2D texture. The faulty draw also uses a nonzero base
+vertex. The capture identifies what to isolate in the next replay. The
+village has yet to render successfully on this iPad.
