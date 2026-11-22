@@ -621,12 +621,13 @@ static void map_signed_front(module_t *m, const char *ns, const uint8_t *image, 
     m->base = (uint8_t *)image + front;
     m->size = m->image_size;
     m->patch_len = *patch_bytes;
-    // Map only data and zero pages. Guest code and both patch areas retain
-    // their original signed executable mappings.
+    // Open the reserved, zero-filled data hole the same way as the normal
+    // embedded layout. iPadOS 16.1 rejects attempts to replace this part of
+    // the signed mapping with a new VM allocation.
     vm_address_t address = (uintptr_t)m->base + text;
-    kern_return_t kr = vm_allocate(mach_task_self(), &address, data_end - text, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
-    if (kr != KERN_SUCCESS || address != (uintptr_t)m->base + text)
-        die("%s could not map signed front layout data (error %d)", m->name, kr);
+    kern_return_t kr = vm_protect(mach_task_self(), address, data_end - text, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+    if (kr != KERN_SUCCESS)
+        die("%s could not make signed front layout data writable (error %d)", m->name, kr);
     memcpy((void *)address, data, data_bytes);
     LOG("%s using signed front-patch image in place", m->name);
     install_key_page(m);
