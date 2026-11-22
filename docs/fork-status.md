@@ -232,3 +232,30 @@ Four additional vertex companions removed the observed variant warnings. A
 [single fragment library update](../dm/games/010029B0118E8000/README.md#menu-text-on-older-apple-gpus-2026-11-22)
 restored the text prompts and labels on the old iPad. The original game image
 and saves passed read-back checks. The 3D car preview has a separate issue.
+
+### A10X launch audit after 60.134 (2026-11-22)
+
+All 21 installed game images had a corresponding signed framework in the
+old iPad's 60.134 installation. The previously missing Mario Kart World
+framework was the only framework added in this update. The existing game
+images, save fingerprints and both Need for Speed patches verified afterward.
+
+[Mario Kart World](../dm/games/0400C3F00006E000/README.md#a10x-launch-boundary-2026-11-22)
+now loads its signed modules and then faults at an authenticated return in
+its Switch 2 SDK. Pokopia's guest text also contains authenticated returns.
+The other 20 locally inspected framework packages had no matches for those
+return instructions in their guest text sections. This inventory verifies the
+signed components and distinguishes the known Mario Kart fault. Individual
+gameplay results for other titles still require a device run.
+
+### M2 Crisis Core first battle (2026-11-22)
+
+On 60.133, the title, new-game setup and opening movie render. The first
+battle loads additional pipelines and reaches the guest's fatal allocation
+path. The abort stack passes through `main+0xdf7da8`; its enclosing code
+references the Unreal out-of-memory message. Reserving 8 GiB of guest alias
+address space and testing a 256 MiB texture-streaming pool still produced
+the abort. Both settings were restored afterward. Sixty-five non-point
+shader companions matched the existing on-device libraries and were installed
+without replacing the shader image. Twenty-one of them were discovered in
+the last battle attempt and still need an in-scene retest.

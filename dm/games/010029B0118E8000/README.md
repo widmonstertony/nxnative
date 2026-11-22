@@ -241,8 +241,7 @@ zero and retains its original color and glyph bounds. In-game title prompts,
 race map text and Boxster Spyder paint options render with the library in the
 existing `a3a5cfdab59c` shader chain. After the game-local update, the usual
 library launch also renders the first-run Autolog agreement and privacy text.
-The original game image and saves were verified unchanged. The 3D preview
-still draws incompletely.
+The original game image and saves were verified unchanged.
 
 ### Race compositor on A10X (2026-11-22)
 
@@ -263,6 +262,20 @@ The same race displayed the Boxster, road markings, coast and HUD with
 the replacement fragment on the old iPad. The 16.1 library was added to
 the installed game's shader directory. Read-back verified the earlier
 font shader, original game image and save fingerprints. The tested
-racing view still ran around 20–25 FPS. The regular car-selection screen
-showed the car model. The separate paint preview still had a blurred
-background and remains open.
+racing view still ran around 20–25 FPS.
+
+### Paint preview on A10X (2026-11-22)
+
+Fragment `bb746472ac3e7420` reads the sharp HDR input and uses the same
+transparent-black border at register 0. A split-view diagnostic showed
+that the HDR input contained the Porsche in the paint preview. The
+[second recipe](legacy_race_composite.py) adjusts only that sampler.
+Depth of field, exposure and color grading retain their original
+calculations.
+
+The regular selection page on 60.134 showed the Boxster with its Chinese
+labels. The paint-page test with the uninstrumented sampler replacement
+showed the detailed car body in silver and black after changing the selected
+paint. Dark and soft frames still occur during camera changes. The replacement
+was installed with read-back checks for it, the race and font fragments,
+the original game image and the save fingerprint.

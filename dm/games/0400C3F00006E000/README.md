@@ -338,6 +338,21 @@ This is a useful negative control, not a root-cause fix or a 60 FPS pass. The
 persistent environment was restored and original save hashes were unchanged.
 No Air deployment or race pass is inferred from this M2 result.
 
+### A10X launch boundary (2026-11-22)
+
+The old iPad registered TonTon 60.134 with a signed iPadOS 16.1 framework
+matched to the existing `b-b88c9e5f457c` shader image. The original game
+image and save fingerprints verified after installation.
+
+The old boot attempt fell back to an empty embedded module. With the signed
+framework present, all three modules map and launch reaches `nnosInitialize`.
+The next failure is SIGILL at `sdk+0x14e9dc`. The instruction there is
+`retab` (`d65f0fff`), an authenticated return that the A10X cannot
+execute. [Apple documents pointer-authentication support on A12 and newer A-series devices](https://developer.apple.com/documentation/security/preparing-your-app-to-work-with-pointer-authentication).
+The deployment target controls OS compatibility. An A10X executable also
+needs the guest instructions translated for that CPU. Gameplay on this
+device remains unverified.
+
 ### M2 60.105 retained iPadOS 16.1 build (November 14)
 
 The in-place build reused the signed classic cartridge and its
