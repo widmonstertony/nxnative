@@ -208,4 +208,21 @@ layout places the front patch and code in one signed image and maps only the
 data hole writable. A local iOS 16.1 link and code-signing check preserved the
 exact original code, patch and writable-section bytes for all three modules.
 This layout requires its matching loader and shader chain before delivery.
-It has not been installed. The M2's original saves matched after both tests.
+
+The later M2 60.130 test reproduced an allocation failure when replacing
+pages inside the signed image. Build 60.132 changed the protection of the
+reserved data hole in place. It passed that abort and ran through video
+decode, but rendered black because its retained renderer looked for loose
+shader files while the existing 3.15 GB library is an image. Build 60.133
+restores the image reader without changing the image, the guest modules or
+the iPad's saved data. Ocarina's 60.132 retest reached the village transition
+with MetalFX and a 0.5 render scale. The GPU still faulted in a 128×128 pass
+using fragment shader `ccfff02a2829b620`; the village is unverified.
+
+The old iPad finally registered 60.131 after its installer had already
+reported failure. Both runtime frameworks and the original game images and
+saves passed read-back checks. The Need for Speed 60.120 race log showed
+eleven missing shader keys and an omitted vertex draw. Those stages were
+rebuilt at iPadOS 16.1 on the retained `a3a5cfdab59c` translation chain and
+verified in the game's local resource directory. The original game assets and
+compiled shader libraries were reused.
