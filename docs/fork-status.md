@@ -266,7 +266,10 @@ the abort. Both settings were restored afterward. Sixty-five non-point
 shader companions matched the existing on-device libraries and were installed
 without replacing the shader image. A fresh run with all 65 installed
 reproduced the same allocation abort at the first battle. The allocator
-retries growing its page pool before reaching `main+0xdf7da8`.
+retries growing its page pool before reaching `main+0xdf7da8`. The 60.141
+trace reproduced the same guest abort. The SDK page calls sampled before
+it returned success, with roughly 11.5 GiB of process memory still
+available.
 
 ### M2 Ocarina village transition on 60.133 (2026-11-22)
 
@@ -284,8 +287,13 @@ village has yet to render successfully on this iPad.
 The earlier 60.136 candidate used an older runtime that opened the wrong
 shader directory and lacked the audio-device service. It was replaced
 in place. The 60.139 build reused the six signed guest sections and the
-installed `70fa6008c58d` shader chain. A depth-one texture adapter was active
-during the same village load. The replay reached the same render pass, then
+installed `70fa6008c58d` shader chain. The build included a depth-one texture adapter for the same village load. The replay reached the same render pass, then
 reported Metal command-buffer error 8. The final samples recorded about
 14 GiB of GPU allocations and over 23,000 deferred releases. The village
 still did not render. The original save fingerprints matched the baseline.
+
+60.142 forced earlier submission boundaries and waited for deferred
+releases between render passes. The retry still returned Metal error 8 at
+the village transition. GPU allocation reached 14,791 MiB and one pass
+accumulated over 85,000 pending releases before the boundary. The
+experimental renderer is retained as a local candidate.
