@@ -281,5 +281,8 @@ was installed with read-back checks for it, the race and font fragments,
 the original game image and the save fingerprint.
 
 The in-place updates through 60.160 rechecked all three installed shader
-hashes and their game-specific paths. The recorded race and selection
-runs used 60.134.
+hashes and their game-specific paths. A 60.160 replay with an isolated save
+copy showed readable Chinese on the event map, the Boxster in the selection
+and paint menus, and the rendered Roadsters Reborn briefing. The paint
+preview still alternated between sharp, dark, and soft images. The driving
+view recorded above was tested on 60.134. Original saves verified afterward.
