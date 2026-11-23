@@ -1157,6 +1157,7 @@ void mtl_sub_begin(void) {
     void arena_begin(void); arena_begin();
 }
 
+static void legacy_ghost_trim_at_commit(void);
 static void rp_end(void);
 extern int g_frz_on; static int g_frz_state;   // World freeze: the state latched for this frame (0 normal / 1 full frame / 2 frozen frame), see the note above frz_op
 // DM_NVN_PASSGPU_SERIAL=1 (for measurement): before creating each encoder on the main command buffer, encode 'signal n+1 → wait for signal n+1' - the signal is only raised once all prior work has completed,
@@ -1579,6 +1580,7 @@ uint64_t mtl_sub_commit(void) {
     rp_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     up_flush();
+    legacy_ghost_trim_at_commit();
     uint64_t fence = defer_submission_prepare_commit();
     if (g_vis_ring_i >= 0) g_vis_ring[g_vis_ring_i].fence = fence;
     // CPU-visible effects after completion: copy the op table into the callback
@@ -1782,27 +1784,108 @@ static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get
 // Texture serials owned by a live NVN texture object (TextureInitialize until Finalize or re-initialization, hle_nvn.c). Command records and texture pool registrations snapshot the
 // texture object (tex_snap in hle_nvn.c, mtl_reg_tex), so replay can resolve a texture the game has already finalized: Breath of the Wild records each frame's transient render targets
 // (the HUD captures, the 640x360 half-resolution buffers) and finalizes their objects before it submits. Those serials went back into g_by_serial and stayed there for good, as no second
-// Finalize comes: about 10 a frame, 200,000 after an hour in the first shrine. A dead serial resolves through g_ghost instead, a small table whose oldest entry goes when a new one comes,
-// so a record replayed again soon still finds its texture
-enum { NGHOST = 512 };
+// Finalize comes. Ocarina area streaming keeps thousands of recently finalized textures in use.
+// Match the modern owner's idle-order eviction (upstream #2389) for this legacy renderer.
+enum { NGHOST = 512, GHOST_IDLE = 16, GHOST_IDLE_SUBS = 1024, GHOST_TRIM = 32 };
 static nvn_hmap g_tex_live = {.klen = 8};   // serial → (void *)1, under g_smu
-static nvn_hmap g_ghost = {.klen = 8}; static uint64_t g_ghost_ring[NGHOST]; static unsigned g_ghost_next; static uint64_t g_ghost_puts;
+static nvn_hmap g_ghost = {.klen = 8}, g_ghost_use = {.klen = 8};
+static uint64_t g_ghost_puts;
+
+typedef struct legacy_ghost_use {
+    struct legacy_ghost_use *prev, *next;
+    uint64_t serial, frame, submission;
+} legacy_ghost_use;
+
+static legacy_ghost_use *g_ghost_lru, *g_ghost_mru;
+uint64_t mtl_present_count(void);
+
 void mtl_tex_init(const tex_t *t) { if (!t->serial) return; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1); pthread_mutex_unlock(&g_smu); }
 static void obj_drop(id o) { if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o); }   // caller holds g_smu
-static __unsafe_unretained id tex_get(uint64_t k) {
-    pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); if (!o && g_ghost.n) o = hm_get_id(&g_ghost, &k); pthread_mutex_unlock(&g_smu); return o;
+
+static void legacy_ghost_unlink(legacy_ghost_use *use) {
+    if (use->prev) use->prev->next = use->next; else g_ghost_lru = use->next;
+    if (use->next) use->next->prev = use->prev; else g_ghost_mru = use->prev;
 }
-static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external textures (mtl_ext_tex), never initialized by the game
-    pthread_mutex_lock(&g_smu);
-    nvn_hmap *m = k >= (1ull << 62) || nvn_hm_get(&g_tex_live, &k) ? &g_by_serial : &g_ghost;
-    id old = hm_get_id(m, &k);
-    if (old) obj_drop(old);
-    else if (m == &g_ghost) {
-        uint64_t *slot = &g_ghost_ring[g_ghost_next++ % NGHOST];
-        if (*slot) { id ev = hm_get_id(&g_ghost, slot); if (ev) obj_drop(ev); hm_del_id(&g_ghost, slot); }
-        *slot = k; g_ghost_puts++;
+
+static void legacy_ghost_touch(uint64_t serial) {
+    legacy_ghost_use *use = nvn_hm_get(&g_ghost_use, &serial);
+    if (!use) {
+        use = calloc(1, sizeof(*use));
+        if (!use) MDIE("legacy ghost metadata allocation failed");
+        use->serial = serial;
+        nvn_hm_put(&g_ghost_use, &serial, use);
+    } else if (use != g_ghost_mru) {
+        legacy_ghost_unlink(use);
     }
-    hm_put_id(m, &k, o); g_ser_gen++;
+    use->frame = mtl_present_count();
+    use->submission = atomic_load_explicit(&g_fence, memory_order_relaxed);
+    if (use == g_ghost_mru) return;
+    use->prev = g_ghost_mru;
+    use->next = NULL;
+    if (g_ghost_mru) g_ghost_mru->next = use; else g_ghost_lru = use;
+    g_ghost_mru = use;
+}
+
+static void legacy_ghost_remove(uint64_t serial) {
+    legacy_ghost_use *use = nvn_hm_del(&g_ghost_use, &serial);
+    if (!use) return;
+    legacy_ghost_unlink(use);
+    free(use);
+    id old = hm_get_id(&g_ghost, &serial);
+    if (old) obj_drop(old);
+    hm_del_id(&g_ghost, &serial);
+    g_ser_gen++;
+}
+
+static void legacy_ghost_trim(unsigned budget) {
+    uint64_t frame = mtl_present_count();
+    uint64_t submission = atomic_load_explicit(&g_fence, memory_order_relaxed);
+    while (budget-- && g_ghost.n > NGHOST && g_ghost_lru) {
+        legacy_ghost_use *use = g_ghost_lru;
+        if (frame - use->frame < GHOST_IDLE &&
+            submission - use->submission < GHOST_IDLE_SUBS) break;
+        legacy_ghost_remove(use->serial);
+    }
+}
+
+static void legacy_ghost_trim_at_commit(void) {
+    pthread_mutex_lock(&g_smu);
+    legacy_ghost_trim(GHOST_TRIM);
+    pthread_mutex_unlock(&g_smu);
+}
+
+static __unsafe_unretained id tex_get(uint64_t serial) {
+    pthread_mutex_lock(&g_smu);
+    __unsafe_unretained id object = hm_get_id(&g_by_serial, &serial);
+    if (!object && g_ghost.n && (object = hm_get_id(&g_ghost, &serial)))
+        legacy_ghost_touch(serial);
+    pthread_mutex_unlock(&g_smu);
+    return object;
+}
+
+static void tex_put(uint64_t serial, id object) {
+    pthread_mutex_lock(&g_smu);
+    bool live = serial >= (1ull << 62) || nvn_hm_get(&g_tex_live, &serial);
+    nvn_hmap *table = live ? &g_by_serial : &g_ghost;
+    id old = hm_get_id(table, &serial);
+    if (object) {
+        if (old != object) {
+            if (old) obj_drop(old);
+            hm_put_id(table, &serial, object);
+            g_ser_gen++;
+        }
+        if (!live) {
+            if (!old) g_ghost_puts++;
+            legacy_ghost_touch(serial);
+            legacy_ghost_trim(2);
+        }
+    } else if (old && !live) {
+        legacy_ghost_remove(serial);
+    } else if (old) {
+        obj_drop(old);
+        hm_del_id(table, &serial);
+        g_ser_gen++;
+    }
     pthread_mutex_unlock(&g_smu);
 }
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check

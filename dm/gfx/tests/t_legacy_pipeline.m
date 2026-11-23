@@ -17,6 +17,25 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 
+static void finalized_texture_cache(void) {
+    const uint64_t first = 1ull << 60;
+    NSObject *frequent = [NSObject new], *other = [NSObject new];
+    for (unsigned i = 0; i < NGHOST + GHOST_TRIM + 1; i++)
+        tex_put(first + i, i == 0 ? frequent : other);
+    CHECK(tex_get(first) == frequent, "a finalized texture survives a same-frame working set larger than 512");
+
+    uint64_t before = atomic_fetch_add(&g_displayed_n, GHOST_IDLE);
+    CHECK(tex_get(first) == frequent, "looking up a finalized texture refreshes its age");
+    legacy_ghost_trim_at_commit();
+    CHECK(!tex_get(first + 1), "the next commit reclaims the least recently used idle entry");
+    CHECK(tex_get(first) == frequent, "idle reclamation preserves a texture just used by replay");
+    atomic_store(&g_displayed_n, before);
+
+    for (unsigned i = 0; i < NGHOST + GHOST_TRIM + 1; i++)
+        tex_put(first + i, nil);
+    CHECK(!tex_get(first), "removing a finalized texture also removes its reuse entry");
+}
+
 static void pixels(id<MTLRenderPipelineState> ps, __fp16 out[4]) {
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:4 height:4 mipmapped:NO];
     td.usage = MTLTextureUsageRenderTarget; td.storageMode = MTLStorageModeShared;
@@ -333,6 +352,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         return failed != 0;
     }
     mtl_init();
+    finalized_texture_cache();
     if (argc > 1 && !strcmp(argv[1], "--encoder-order")) {
         render_after_texture_blit();
         printf("classic encoder ordering: %d checks, %d failures\n", checks, failed);
@@ -500,6 +520,6 @@ int main(int argc, char **argv) { @autoreleasepool {
             CHECK((ps!=nil)==(k.dfmt!=0), "depth output requires a real depth attachment");
         }
     }
-    printf("legacy blend: %d checks, %d failures\n", checks, failed);
+    printf("legacy pipeline: %d checks, %d failures\n", checks, failed);
     return failed != 0;
 }}
