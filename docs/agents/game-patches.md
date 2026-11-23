@@ -814,7 +814,7 @@ Applied to the `sdk` of any build without CUTS, found by function fingerprint ([
 
 Dead code unless such a build is run; a candidate for removal, or for a build row in its profile.
 
-- `d3016fc0…`: [hle_gl_legacy.inc:2192](../../dm/gfx/gl/hle_gl_legacy.inc#L2192): build check (a build no profile registers)
+- `d3016fc0…`: [hle_gl_legacy.inc:2239](../../dm/gfx/gl/hle_gl_legacy.inc#L2239): build check (a build no profile registers)
 - `b151a224…`: [hle_witcher_timing.inc:9](../../dm/host/hle_witcher_timing.inc#L9): build check (a build no profile registers)
 
 ## Translator rules keyed by a shader's code

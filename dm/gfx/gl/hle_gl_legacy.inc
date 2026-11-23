@@ -20,6 +20,7 @@
 #include "../../host/hle.h"
 #include "../nvn/nvn_mtl.h"
 #include "../nvn/nvn_tex.h"
+#include "../tex/nvn_bcdec.h"
 #include <nvn.h>
 #include "../nvn/host_msl.h"
 #import <Metal/Metal.h>
@@ -581,6 +582,31 @@ static id<MTLSamplerState> tex_sampler(tex_t *t) {
 }
 static void lv_free(level_t *l) { free(l->data); memset(l, 0, sizeof *l); }
 static void tex_drop(tex_t *t) { for (int f = 0; f < 6; f++) for (int l = 0; l < MAXLV; l++) lv_free(&t->pend[f][l]); t->tex = nil; t->made = 0; t->defined = 0; t->levels = 0; t->gen++; }
+
+// Keep the GL format for upload validation and use uncompressed Metal backing
+// on GPUs without BC support. ASTC remains on its existing path.
+static uint32_t tex_bc_fallback(int format, uint32_t *pixel_format, int *bytes_per_pixel) {
+    static const uint8_t bc_formats[] = {
+        [F_BC1_RGB] = 0x41, [F_BC1] = 0x42, [F_BC2] = 0x43, [F_BC3] = 0x44,
+        [F_BC1_SRGB] = 0x46, [F_BC2_SRGB] = 0x47, [F_BC3_SRGB] = 0x48,
+        [F_BC4] = 0x49, [F_BC4S] = 0x4a, [F_BC5] = 0x4b, [F_BC5S] = 0x4c,
+        [F_BC7] = 0x4d, [F_BC7_SRGB] = 0x4e, [F_BC6S] = 0x4f, [F_BC6U] = 0x50,
+    };
+    if (format < F_BC1_RGB || format > F_BC6U || [g_dev supportsBCTextureCompression]) return 0;
+    uint32_t bc = bc_formats[format];
+    return nvn_bc_unpacked(bc, pixel_format, bytes_per_pixel) ? bc : 0;
+}
+
+static uint8_t *tex_expand_bc(uint32_t bc, const void *blocks, size_t block_pitch, uint32_t width, uint32_t height,
+                              int bytes_per_pixel, size_t *decoded_pitch) {
+    *decoded_pitch = (size_t)width * bytes_per_pixel;
+    if (!*decoded_pitch || height > SIZE_MAX / *decoded_pitch) return NULL;
+    uint8_t *decoded = malloc(*decoded_pitch * height);
+    if (decoded && !nvn_bc_decode(bc, blocks, block_pitch, width, height, decoded, *decoded_pitch)) return decoded;
+    free(decoded);
+    return NULL;
+}
+
 // Make the Metal texture from the levels given so far: as many levels as are given in a row from level 0 (and fit the size), or as glTexStorage said. rt: made for a framebuffer attachment
 static int tex_make(tex_t *t, int rt) {
     if (t->made) return t->tex != nil;
@@ -590,10 +616,13 @@ static int tex_make(tex_t *t, int rt) {
     if (t->slevels) lv = (int)umin(umin((uint32_t)t->slevels, full), MAXLV);
     else { while (lv < MAXLV && lv < (int)full && (t->defined >> lv & 1)) lv++; if (!lv) lv = 1; }
     const fmt_t *m = &g_fmt[t->fmt];
+    uint32_t pixel_format = m->pf;
+    int decoded_bpp = 0;
+    uint32_t bc = tex_bc_fallback(t->fmt, &pixel_format, &decoded_bpp);
     @autoreleasepool {
         MTLTextureDescriptor *td = [MTLTextureDescriptor new];
         td.textureType = faces == 6 ? MTLTextureTypeCube : vol ? MTLTextureType3D : arr ? MTLTextureType2DArray : MTLTextureType2D;
-        td.pixelFormat = m->pf; td.width = t->w; td.height = faces == 6 ? t->w : t->h;
+        td.pixelFormat = pixel_format; td.width = t->w; td.height = faces == 6 ? t->w : t->h;
         if (vol) td.depth = umax(1, t->d); else if (arr) td.arrayLength = umax(1, t->d);
         td.mipmapLevelCount = lv;
         MTLTextureSwizzleChannels sw = tex_swz(t);
@@ -609,8 +638,14 @@ static int tex_make(tex_t *t, int rt) {
         if (!t->tex) { GLOG("[RED] texture %ux%u %s (%d levels) could not be made", t->w, t->h, m->name, lv); t->made = 1; return 0; }
         for (int f = 0; f < faces; f++) for (int l = 0; l < lv; l++) {
             level_t *p = &t->pend[f][l];
-            if (p->data && td.storageMode == MTLStorageModeShared)
-                [t->tex replaceRegion:MTLRegionMake2D(0, 0, umax(1, t->w >> l), umax(1, t->h >> l)) mipmapLevel:l slice:f withBytes:p->data bytesPerRow:p->pitch bytesPerImage:0];
+            if (!p->data || td.storageMode != MTLStorageModeShared) continue;
+            const uint32_t width = umax(1, t->w >> l), height = umax(1, t->h >> l);
+            if (bc && (width > p->w || height > p->h)) continue;
+            size_t pitch = p->pitch;
+            uint8_t *decoded = bc ? tex_expand_bc(bc, p->data, p->pitch, width, height, decoded_bpp, &pitch) : NULL;
+            if (!bc || decoded)
+                [t->tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:l slice:f withBytes:decoded ?: p->data bytesPerRow:pitch bytesPerImage:0];
+            free(decoded);
         }
     }
     for (int f = 0; f < 6; f++) for (int l = 0; l < MAXLV; l++) lv_free(&t->pend[f][l]);
@@ -638,12 +673,24 @@ void *gl_host_texture_2d(uint32_t name, nvn_texdesc *desc) {
 static void tex_write(tex_t *t, int face, int lv, uint32_t x, uint32_t y, uint32_t z, uint32_t w, uint32_t h, const void *data, size_t pitch) {
     g_n_up++;
     size_t rows = fmt_rows(t->fmt, h);
+    uint32_t pixel_format;
+    int decoded_bpp;
+    uint32_t bc = tex_bc_fallback(t->fmt, &pixel_format, &decoded_bpp);
+    uint8_t *decoded = NULL;
+    if (bc) {
+        decoded = tex_expand_bc(bc, data, pitch, w, h, decoded_bpp, &pitch);
+        if (!decoded) return;
+        data = decoded;
+        rows = h;
+    }
     if (t->use <= atomic_load(&g_done) && t->tex.storageMode == MTLStorageModeShared) {
         [t->tex replaceRegion:MTLRegionMake3D(x, y, z, w, h, 1) mipmapLevel:lv slice:face withBytes:data bytesPerRow:pitch bytesPerImage:t->target == GL_TEXTURE_3D ? pitch * rows : 0];
+        free(decoded);
         return;
     }
     size_t off; id<MTLBuffer> st = arena_alloc(pitch * rows, &off);
     memcpy((uint8_t *)st.contents + off, data, pitch * rows);
+    free(decoded);
     id<MTLCommandBuffer> cb;
     if (t->use >= g_serial) { pass_end(); cb = cb_get(); }
     else { cb = [g_q commandBuffer]; cb.label = @"gl upload"; }

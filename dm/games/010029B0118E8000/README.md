@@ -279,3 +279,7 @@ showed the detailed car body in silver and black after changing the selected
 paint. Dark and soft frames still occur during camera changes. The replacement
 was installed with read-back checks for it, the race and font fragments,
 the original game image and the save fingerprint.
+
+The in-place 60.156 update rechecked all three installed shader hashes
+and their game-specific paths. The recorded race and selection runs used
+60.134.

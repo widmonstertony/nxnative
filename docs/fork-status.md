@@ -338,6 +338,13 @@ pixel storage on this device, which supports 32 bytes. Some non-point
 and Tier 1 sampler companions are still missing. Both runs restored
 their diagnostic settings and verified the original saves.
 
+A subsequent isolated Naruto test loaded 337 rebuilt OpenGL shader entries
+from the game data directory. More fragment variants were requested after
+that initial batch. Metal then aborted in the OpenGL upload path when
+it encountered BC3 on the A10X. The classic GL renderer now uses the
+existing CPU BC decoder on hardware without native BC textures, keeping
+the original GL format for upload validation and preserving sRGB and alpha.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table
@@ -436,6 +443,15 @@ save fingerprints matched.
 resolving them. The same village load still returned Metal error 8.
 The final allocation sample reached 18,003 MiB. Original saves verified
 after the isolated replay.
+
+60.157 coalesced repeated references to the same resource behind a fence.
+The replay still hit Metal errors 8 and 3 during the village load.
+60.158 also evicted idle finalized textures from the pinned renderer.
+The same replay stayed black without a Metal command-buffer fault through
+the observation window. The last renderer allocation sample was 8,531 MiB,
+and a few of the final frames took more than two seconds. A compute shader
+was absent from the installed map. The original save hashes matched after
+restoring the test settings. Village control and frame rate remain unverified.
 
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
