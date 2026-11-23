@@ -15,7 +15,8 @@ to a translated <key>_b.metal (dmsh_meshstage.py output)
 
 Buffers (compute table): 24 dm_moff (task path: exclusive offsets of the launch counts, n + 1),
 25 dm_cnt, 26 dm_pl, 27 dm_kv, 28 dm_ki, 29 dm_draw {count, first, ntask}. Vertex function: 27 dm_kv.
-Not taken: per-primitive outputs, non-triangle topology (those draws stay native).
+Per-primitive user outputs use one vertex record per triangle corner. System
+primitive outputs and non-triangle topology still use the native path.
 
 The host (nvn_mtl.m, mk_*; DM_NVN_MESH_COMPUTE=1) loads <key>_bk.metallib from the DM_MSL_DIR overlay. Build them for a game with
 
@@ -43,12 +44,74 @@ def _func(s, head):
         k += 1
 
 
+def _expand_primitive_outputs(body, maxv, maxp):
+    # Read each corner's original vertex and primitive data from the shader's
+    # shared output, after the original barrier. Give adjacent triangles
+    # separate records even when they share original vertex indices.
+    loops = re.compile(
+        rf'    for \(uint n = dm_lid; n < {maxv}u; n \+= \d+u\)\n'
+        r'    \{\n(?P<vertex>.*?)        dm_out\.set_vertex\(n, v\);\n    \}\n'
+        r'    for \(uint n = dm_lid; n < np; n \+= \d+u\)\n'
+        r'    \{\n(?P<primitive>.*?)        dm_out\.set_primitive\(n, p\);\n    \}\n'
+        r'    for \(uint n = dm_lid; n < np \* 3u; n \+= (?P<step>\d+)u\)\n'
+        r'    \{\n(?P<index>.*?)        dm_out\.set_index\(n, (?P<value>[^\n]+)\);\n    \}',
+        re.S,
+    )
+    m = loops.search(body)
+    if not m:
+        return None
+    corners = maxp * 3
+    vertex = m['vertex'].replace('        dm_vertex_t v;\n', '')
+    primitive = m['primitive'].replace('        dm_prim_t p;\n', '')
+    replacement = (
+        f'    for (uint dm_corner = dm_lid; dm_corner < {corners}u; dm_corner += {m["step"]}u)\n'
+        '    {\n'
+        f'        uint dm_base = dm_slot * {corners}u;\n'
+        '        uint dm_at = dm_base + dm_corner;\n'
+        '        if (dm_corner >= np * 3u) { dm_ki[dm_at] = dm_base; continue; }\n'
+        '        uint n = dm_corner;\n'
+        + m['index']
+        + f'        const uint dm_vertex = uint({m["value"]});\n'
+        '        dm_vertex_t v;\n'
+        '        {\n'
+        '            uint n = dm_vertex;\n'
+        + ''.join('    ' + line for line in vertex.splitlines(keepends=True))
+        + '        }\n'
+        '        dm_prim_t p;\n'
+        '        {\n'
+        '            uint n = dm_corner / 3u;\n'
+        + ''.join('    ' + line for line in primitive.splitlines(keepends=True))
+        + '        }\n'
+        '        dm_kv[dm_at] = dm_kv_pack(v, p);\n'
+        '        dm_ki[dm_at] = dm_at;\n'
+        '    }'
+    )
+    return body[:m.start()] + replacement + body[m.end():]
+
+
 def mesh_kernels(s):
     m = re.search(r'metal::mesh<dm_vertex_t, (\w+), (\d+), (\d+), metal::topology::(\w+)>', s)
     if not m: return None, 'no mesh type'
-    if m.group(1) != 'void': return None, 'per-primitive outputs'
     if m.group(4) != 'triangle': return None, 'topology ' + m.group(4)
     maxv, maxp = int(m.group(2)), int(m.group(3))
+    vm = re.search(r'struct dm_vertex_t \{(.*?)\};', s, re.S)
+    if not vm: return None, 'no vertex type'
+    member = r'^\s*(\w+) (\w+) (\[\[[^\]]*\]\]);'
+    vertices = re.findall(member, vm.group(1), re.M)
+    primitives = []
+    if m.group(1) != 'void':
+        pm = re.search(r'struct dm_prim_t \{(.*?)\};', s, re.S)
+        if m.group(1) != 'dm_prim_t' or not pm: return None, 'unknown primitive type'
+        primitives = re.findall(member, pm.group(1), re.M)
+        if not primitives or len(primitives) != pm.group(1).count(';'):
+            return None, 'unsupported primitive output'
+        primitive_attrs = [re.fullmatch(r'\[\[user\((locn\d+)\)\]\]', attr) for _, _, attr in primitives]
+        if not all(primitive_attrs): return None, 'unsupported primitive output'
+        vertex_locs = set(re.findall(r'user\((locn\d+)\)', vm.group(1)))
+        if vertex_locs & {attr[1] for attr in primitive_attrs}:
+            return None, 'overlapping vertex and primitive outputs'
+    fields = vertices + primitives
+    record_vertices = maxp * 3 if primitives else maxv
     out = [f'\n// ---- mesh as compute (genk.py): MAXV {maxv} MAXP {maxp}\n']
     task = None
     for name, kname in (('main0', 'main0_k'), ('main0_z', 'main0_k_z')):
@@ -80,47 +143,51 @@ def mesh_kernels(s):
             body = body.replace('dm_block.first + dm_tg', 'dm_draw[1] + dm_tg')
         body = body.replace(')\n{', ')\n{' + pre, 1)
         body = re.sub(r'\n\s*if \(dm_lid == 0u\) dm_out\.set_primitive_count\(np\);', '', body)
-        body = body.replace('dm_out.set_vertex(n, v);', 'dm_kv[dm_slot * %du + n] = dm_kv_pack(v);' % maxv)
-        # index loop: run over every index slot, degenerate past the primitive count
-        lm = re.search(r'for \(uint n = dm_lid; n < np \* 3u; n \+= (\d+)u\)', body)
-        if not lm: return None, 'index loop'
-        body = body.replace(lm.group(0), 'for (uint n = dm_lid; n < %du; n += %su)' % (maxp * 3, lm.group(1)))
-        im = re.search(r'dm_out\.set_index\(n, (.*)\);', body)
-        if not im: return None, 'set_index'
-        body = body.replace(im.group(0), 'dm_ki[dm_slot * %du + n] = dm_slot * %du + (n < np * 3u ? uint(%s) : 0u);' % (maxp * 3, maxv, im.group(1)))
+        if primitives:
+            body = _expand_primitive_outputs(body, maxv, maxp)
+            if body is None: return None, 'primitive output loops'
+        else:
+            body = body.replace('dm_out.set_vertex(n, v);', 'dm_kv[dm_slot * %du + n] = dm_kv_pack(v);' % maxv)
+            # Run over every index slot and degenerate past the primitive count.
+            lm = re.search(r'for \(uint n = dm_lid; n < np \* 3u; n \+= (\d+)u\)', body)
+            if not lm: return None, 'index loop'
+            body = body.replace(lm.group(0), 'for (uint n = dm_lid; n < %du; n += %su)' % (maxp * 3, lm.group(1)))
+            im = re.search(r'dm_out\.set_index\(n, (.*)\);', body)
+            if not im: return None, 'set_index'
+            body = body.replace(im.group(0), 'dm_ki[dm_slot * %du + n] = dm_slot * %du + (n < np * 3u ? uint(%s) : 0u);' % (maxp * 3, maxv, im.group(1)))
         if 'dm_out' in body or 'dm_block' in body: return None, 'leftover mesh output use'
         out.append(sig + body + '\n')
     if len(out) < 2: return None, 'no mesh entry'
     # record type and packer from dm_vertex_t
-    vm = re.search(r'struct dm_vertex_t \{(.*?)\};', s, re.S)
-    fields = re.findall(r'^\s*(\w+) (\w+) \[\[[^\]]*\]\];', vm.group(1), re.M)
     rec = ['struct dm_kvrec_t {']
-    for t, n in fields:
+    for t, n, _ in fields:
         pt = t if t in ('float', 'int', 'uint', 'half', 'short', 'ushort') else 'packed_' + t
         rec.append(f'    {pt} {n};')
     rec.append('};')
-    pack = ['static inline dm_kvrec_t dm_kv_pack(thread const dm_vertex_t& v) { dm_kvrec_t r;'] + [f'    r.{n} = v.{n};' for _, n in fields] + ['    return r; }']
+    pack_args = 'thread const dm_vertex_t& v'
+    if primitives: pack_args += ', thread const dm_prim_t& p'
+    pack = [f'static inline dm_kvrec_t dm_kv_pack({pack_args}) {{ dm_kvrec_t r;']
+    pack += [f'    r.{n} = v.{n};' for _, n, _ in vertices]
+    pack += [f'    r.{n} = p.{n};' for _, n, _ in primitives] + ['    return r; }']
     # Metal links a vertex output to a fragment input only when their types are equal, where a mesh output may be narrower (Metal accepted float3 into float4 for mesh
     # pipelines). The game's fragment shaders take every input as float4 (SPIR-V Cross), so each user output is a float4 here, its missing components 0
-    attrs = dict(re.findall(r'^\s*\w+ (\w+) (\[\[[^\]]*\]\]);', vm.group(1), re.M))
-    out_t = ['struct dm_kvout_t {'] + [f'    {"float4" if n != "position" else t} {n} {attrs[n]};' for t, n in fields] + ['};']
-    have = {int(x) for x in re.findall(r'user\(locn(\d+)\)', vm.group(1))}
+    out_t = ['struct dm_kvout_t {'] + [f'    {"float4" if n != "position" else t} {n} {attr};' for t, n, attr in fields] + ['};']
+    have = {int(x) for _, _, attr in fields for x in re.findall(r'user\(locn(\d+)\)', attr)}
     pad = [i for i in range(16) if i not in have]   # a fragment input no output feeds fails the link: those are 0
     out_t = out_t[:-1] + [f'    float4 dm_z{i} [[user(locn{i})]];' for i in pad] + ['};']
     def widen(t, n):
         d = int(re.fullmatch(r'\w+?([234]?)', t).group(1) or 1)
         return f'float4(float{d if d > 1 else ""}(r.{n})' + ', 0.0' * (4 - d) + ')' if d < 4 else f'float4(r.{n})'
     vs = out_t + [f'vertex dm_kvout_t main0_kv(uint dm_vid [[vertex_id]], const device dm_kvrec_t* dm_kv [[buffer({KV})]])', '{',
-          '    dm_kvrec_t r = dm_kv[dm_vid]; dm_kvout_t v;'] + [f'    v.{n} = {widen(t, n)};' for t, n in fields] + [f'    v.dm_z{i} = float4(0.0);' for i in pad] + ['    return v;', '}']
-    size = {'float': 4, 'int': 4, 'uint': 4}
+          '    dm_kvrec_t r = dm_kv[dm_vid]; dm_kvout_t v;'] + [f'    v.{n} = {widen(t, n)};' for t, n, _ in fields] + [f'    v.dm_z{i} = float4(0.0);' for i in pad] + ['    return v;', '}']
     rb = 0
-    for t, _ in fields:
+    for t, _, _ in fields:
         m2 = re.fullmatch(r'(float|int|uint)([234]?)', t)
         if not m2: return None, 'vertex field type ' + t
         rb += 4 * int(m2.group(2) or 1)
     # the host reads the limits from this entry's name: dm_kinfo_<max vertices>_<max primitives>_<record bytes>
-    info = f'kernel void dm_kinfo_{maxv}_{maxp}_{rb}() {{}}\n'
-    return '\n'.join(rec + pack) + '\n' + ''.join(out) + '\n'.join(vs) + '\n' + info, f'{"task" if task else "notask"} {maxv} {maxp} rec {rb} bytes'
+    info = f'kernel void dm_kinfo_{record_vertices}_{maxp}_{rb}() {{}}\n'
+    return '\n'.join(rec + pack) + '\n' + ''.join(out) + '\n'.join(vs) + '\n' + info, f'{"task" if task else "notask"} {record_vertices} {maxp} rec {rb} bytes'
 
 
 def task_kernel(s):

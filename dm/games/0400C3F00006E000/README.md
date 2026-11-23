@@ -369,10 +369,11 @@ a duplicate buffer-29 binding in two variants without a task shader. The
 compute wrapper now uses the first-meshlet word from the existing draw
 record. The matching task wrapper also accepts the retained native
 first-meshlet binding and supplies the required payload and count buffers.
-All seven task shaders and seven convertible mesh variants compiled for
-iPadOS 16.1 in a compute-only test. The other eleven mesh shaders require
-per-primitive outputs that the current compute converter cannot express.
-The old iPad still has no verified race.
+All seven task shaders compiled for iPadOS 16.1. The
+[triangle-corner conversion](../../../docs/reference/shaders.md#per-triangle-user-values-in-compute-mesh-conversion)
+also compiled the 11 remaining mesh shaders with per-primitive user
+outputs. The old iPad still needs the runtime draw path to dispatch these
+compute libraries. It has no verified race.
 
 ### M2 60.105 retained iPadOS 16.1 build (November 14)
 

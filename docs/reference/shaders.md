@@ -1490,6 +1490,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game): the layout and the point size checked against the guest's address arithmetic in the translated shaders; the paintings not seen in the game since. Pull request #1590 found the layout and the point size.
 - **Check:** `python3 dm/gfx/tests/test_dmsh_meshstage.py`.
 
+### Per-triangle user values in compute mesh conversion
+
+- **Symptom:** the compute converter rejects triangle mesh shaders that emit a user varying per primitive, leaving those draws on the native mesh path.
+- **Cause:** the compute output normally stores one record per mesh vertex. Adjacent triangles that share a vertex can require different values at the same varying location.
+- **Fix:** after the guest's mesh writes finish, `dmsh_meshcompute.py` builds one record per triangle corner from its indexed vertex and its triangle's user values. The output stride encodes the expanded record count. Unused triangles keep degenerate indices. Meshes without these values keep their original indexed records. Primitive system outputs and conflicting varying locations are left to the native path.
+- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md#a10x-launch-boundary-2026-11-22). All 18 mesh variants compiled as compute and vertex functions for iPadOS 16.1. A synthetic Mac GPU test checked shared vertices with distinct triangle values, meshlet offsets and unused indices.
+
 ### Mesh shader per-primitive system values: the primitive count overwritten, the primitive id lost
 
 - **Symptom:** a mesh-shaded draw shows nothing, though its workgroups run: every workgroup ends with a primitive count of 0. Once that is mended, a visibility buffer written from `[[primitive_id]]` holds only the index within the meshlet, and each pixel is shaded from the wrong cluster.
