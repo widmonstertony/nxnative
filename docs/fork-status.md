@@ -505,6 +505,69 @@ discard elision disabled also faulted in 128×128 passes, this time on
 draws using vertex shader `d14e32c25680db7b`. Both runs restored their
 temporary settings and verified the original saves.
 
+### M2 Ocarina village transition on 60.168 (2026-11-23)
+
+The physical M2 replay used a copy of the same Kokiri Forest save on
+iPadOS 16.1. The candidate routes the faulting task family through Metal 3
+compute and indexed rasterization with the original fragment stage. Its
+matching task and mesh companions use the existing `70fa6008c58d` shader
+chain. The replay passed the previous 128×128 fault and logged no new
+Metal command-buffer page fault.
+
+The classic renderer also adopts upstream's idle-order eviction for
+finalized textures. The previous replay recreated one 576×576 texture
+across thousands of uploads and hit a 14,199 MiB Metal allocation guard.
+The 60.168 replay passed those repeated uploads, finished additional
+submissions and stayed around 10,150 MiB in the last samples, with at least
+6,500 MiB of measured process headroom over that interval. The screen
+remained black through the 265-second check. The village and movement
+remain unverified. The signed framework update preserved all six embedded
+guest sections, existing game images and the original save hashes.
+
+The separate predictive-pipeline replay progressed through scene
+submissions but produced two Metal address faults in a 4096×4096 shadow
+pass. In a 61-second frame, the measured GPU work was 0.86 seconds and
+new pipeline compilation was under 10 ms. The diagnostic replay also
+counted allocations around individual render operations and forced
+selected draws into separate encoders. That timing prompted a further
+replay with those diagnostics disabled.
+
+Two independent thread captures, including the replay with diagnostics
+disabled, resolved the presentation thread to `legacy_use_resource`.
+The old overflow list scanned thousands of prior declarations for each
+binding. The replacement uses an expanding hash table for each encoder
+and preserves the accumulated read, write and sample flags. The 42,319
+sanitizer checks and 116 real Metal reflection and readback checks passed.
+In a synthetic Mac replay with 4,096 resources across 600 draws, CPU time
+for this helper fell from 1.088 seconds to 0.004 seconds with the same
+declarations. The signed 60.169 M2 build advanced beyond the previous
+stall and rendered the hearts and movement prompt from the same save
+copy. It was around 1 FPS, with a black 3D scene and no GPU address fault
+in the captured run. The game image and original save hashes matched
+after the test.
+
+The 60.170 replay showed the HUD earlier. 60.171 added indirect mesh calls
+and faulted on 1440×810 passes. In 60.173, a recovered non-point shader
+source matched its retained Metal 3 library digest. The replay still
+showed a black 3D scene and faulted in a pass using the villager and leaf
+materials. The compressed target did not satisfy the BC4 render-view
+candidate's constraints.
+
+60.174 ported [the upstream object-grid split](https://github.com/seedds/nxnative/commit/09dcb627)
+to seven matching Metal 3 mesh companions. A local Metal validation
+fixture confirmed exact output for eight cases, including 1,771 and
+3,072 workgroups, a zero count and overflow. The M2 replay still faulted
+in 1440×810 render passes. The sampled input included zero-work indirect
+records. 60.177 waited for the GPU-written count and issued only positive
+native grids. That removed the empty-grid fault. A separate 1440×810
+fault remained in the forest leaf pass (vertex `5088c9ab1ccd796e`,
+fragment `c7134b77a6f0dac5`). The compressed render view was identified
+as a single slice of a 3D BC4 texture. The follow-up Metal fixture rendered
+its raw blocks into that slice, decoded 32 selected texels, and verified
+64 texels in adjacent slices were unchanged. The fix still needs the
+village check on M2. These replays verified unchanged local saves and
+restored the temporary shader and game settings.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
