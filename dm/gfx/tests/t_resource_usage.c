@@ -97,10 +97,11 @@ static void collisions_and_capacity(void) {
     for (size_t i = 0; i < COUNT; i++) {
         add(&c, crowded_key(i), READ, 0); add(&c, crowded_key(i), WRITE, 1);
     }
+    c.actual.epoch = UINT64_MAX;
     begin(&c);
     for (size_t i = 0; i < COUNT; i++) add(&c, crowded_key(i), READ, 1);
     nvn_resource_usage_dispose(&c.actual);
-    puts("collisions, capacity overflow, revisit order, and overflow epoch reset: PASS");
+    puts("collisions, capacity growth, revisit order, and expanded-table epoch rollover: PASS");
 }
 static size_t fill_until_allocation_failure(context *c, size_t first) {
     g_fail_next_allocation = 1; unsigned before = g_allocations;
