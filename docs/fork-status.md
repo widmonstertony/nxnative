@@ -271,6 +271,36 @@ same termination recurred with 540p and handheld mode requested. The log
 recorded the settings, though it did not confirm a game-side scene cap.
 There was no second oversized-buffer assertion in either test.
 
+60.146 tested file-backed guest memory on the same Pokopia chain. The
+isolated run stayed in the foreground for more than two minutes and passed
+3,500 frames, without the earlier Jetsam termination. The screen still
+showed only black behind the controls. This mode was diagnostic and the
+temporary override was removed. A second run without MetalFX remained
+black after 5,100 frames. Its log names 60 missing per-slice shaders. The
+original sources and libraries were recovered for those 60 keys, but all
+failed the current exporter's proof rules for per-slice execution. No
+unproven sources were installed. Mario Kart World on the same installed
+bundle still used its own renderer and reproduced the 2.37 GiB buffer
+registration failure. Naruto loaded the signed framework and entered the
+guest. Its 2,078 MiB `SetHeapSize` request exceeded the retained 128 MiB
+heap region. The guest then terminated during a write with `SIGBUS` at
+`sdk+0x50a380`, before drawing. The installed images and original saves
+verified after both isolated runs.
+
+60.149 replaced only Mario Kart World's framework with an independent
+renderer on the existing `b88c9e5f457c` shader chain. Its six signed guest
+sections matched the previous build. This run registered the 2.37 GiB pool
+and then hit `SIGILL` at `main+0x343b4a4`. That instruction was `LDSET` in
+an old address-rewrite stub. The current rewriter lowers atomics in newly
+generated stubs, but the archived image still contained 141 such instructions
+across its three modules.
+
+The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
+other ten failed framework preflight. Nine declared a different shader
+chain from the shared runtime, and the tenth also lacked a module table
+matching its installed resources. Shelf availability does not exercise
+the game or guarantee a successful launch.
+
 ### M2 Crisis Core first battle (2026-11-22)
 
 On 60.133, the title, new-game setup and opening movie render. The first
@@ -331,6 +361,19 @@ experimental in-pass retirement option. Metal's allocation counter went
 higher in that run. The option was used with an isolated save and was
 removed afterward.
 
+60.147 tested 12 GiB of file-backed guest memory in the same isolated
+village transition. The render log reached Metal error 3, a GPU address
+fault in pass `p283 128x128 ccfff02a d130`, after allocating 8,548 MiB of
+GPU resources. It did not reach playable control. The original save
+fingerprints matched after the diagnostic override was removed.
+
+60.148 also backported strong ownership for transient Metal texture views
+to the pinned renderer, preserving all six signed guest sections. The same
+village transition left the game in the background before showing a usable
+scene. Metal's allocation counter reached 19,579 MiB against more than
+21,000 resident root textures. No matching system crash report was captured
+in this run. The original save fingerprints still match.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
@@ -340,3 +383,18 @@ time. The log confirmed a 960×540 cap on the 3D scene's dynamic lists. The
 present path still fed the 1920×1080 composite to MetalFX. This run covered
 startup and the language menu. The first playable map, face editor and
 long-run audio were outside its scope.
+
+A 60.147 continuation reached the rendered Ditto wake-up prompt with no
+application exit and no audio underruns in the captured intervals. It used
+a copy of the local save, with cloud sync off. The original save hashes
+matched. This run ended before the face editor and first playable map.
+The archived face-fix libraries, reflection files, and tables still match
+all 87 device-side hashes on 60.148.
+
+On 60.148, an isolated run reached the face editor with the 960×540 scene
+cap and spatial MetalFX enabled. It rendered the facial features, but the
+preview still showed black clothing and arms. The iPad rejected two
+render pipelines with an internal compiler error: `d9baed7ec28d3f7e_b` /
+`45afc24df093ab72_b` and `9b42a7d8889b9cd8_b` / `8743dd823fc8e863_b`.
+Both source pairs compiled in a local M4 pipeline probe. The relationship
+between the rejected pipelines and the dark preview is unconfirmed.
