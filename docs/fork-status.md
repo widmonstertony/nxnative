@@ -328,6 +328,16 @@ Adding the shared fonts took the game further, to graphics initialization
 and a GPU fault before readable gameplay. The shelf increased from 14 to
 15 launchable entries. Game images and original save hashes verified.
 
+60.156 backported OpenGL texture sharing and cross-queue synchronization
+into the old iPad Naruto framework. The same startup replay showed the
+opening movie and submitted at least 2,700 frames. The final measured
+interval ran at 30 FPS. Combat remains unverified. Animal Crossing's
+companion index and six matching libraries let the renderer reach frame
+95. Metal then rejected a set of render targets requiring 48 bytes of
+pixel storage on this device, which supports 32 bytes. Some non-point
+and Tier 1 sampler companions are still missing. Both runs restored
+their diagnostic settings and verified the original saves.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table
@@ -422,6 +432,11 @@ references waiting. The device service disconnected during that run.
 After reconnection the diagnostic settings were restored and the original
 save fingerprints matched.
 
+60.155 filtered plain 2D descriptors out of array-texture tables before
+resolving them. The same village load still returned Metal error 8.
+The final allocation sample reached 18,003 MiB. Original saves verified
+after the isolated replay.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
@@ -456,3 +471,9 @@ iPadOS 16.1 at Metal optimization level zero still reproduced the black
 clothing and arms in the face editor. Changing the face color left the
 artifact visible. The same render pipeline compilation error was recorded.
 The original libraries were restored and the original save hashes matched.
+
+An additional 60.154 trial bounded the constant arrays in those fragment
+libraries and their two matching vertex source companions. It used the
+highest proven static index for each shader. The same pipeline compilation
+errors were logged before the replay reached the face editor. All four
+temporary shader changes were reverted and the original saves verified.
