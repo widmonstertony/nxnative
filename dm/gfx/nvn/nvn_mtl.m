@@ -9,7 +9,7 @@
 int mtl_addr_known(uint64_t addr, uint64_t len) {
     if (len > UINT64_MAX - addr) return 0;
     pthread_mutex_lock(&g_mu);
-    int known = pool_find(addr, len) >= 0;
+    int known = pool_held(addr, len) >= 0 || pool_span_for(addr, addr + len) >= 0;
     pthread_mutex_unlock(&g_mu);
     return known;
 }

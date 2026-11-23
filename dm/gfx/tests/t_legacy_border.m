@@ -82,8 +82,71 @@ static void encoded_border(void) {
     g_sampler_border_color = native_border;
 }
 
+static void check_oversized_pool_views(void) {
+    const size_t stride = 16u << 20, span = 3 * stride;
+    uint8_t *page = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    CHECK(page != MAP_FAILED, "allocate oversized-pool test pages");
+    if (page == MAP_FAILED) return;
+
+    // Install the oversized registration directly to exercise hardware-sized
+    // windows on a Mac without allocating a multi-gigabyte guest pool.
+    g_large_pools = realloc(g_large_pools, sizeof *g_large_pools);
+    CHECK(g_large_pools != NULL, "allocate oversized-pool metadata");
+    if (!g_large_pools) { munmap(page, span); return; }
+    uintptr_t lo = (uintptr_t)page, boundary = (lo + stride - 1) & ~(stride - 1);
+    boundary += stride;
+    g_large_pools[0] = (pool_span){lo + 1, lo + span - 1};
+    g_nlarge = g_large_cap = 1;
+    int count = g_npool;
+    CHECK(mtl_addr_known(boundary - 8, 16) && g_npool == count,
+          "address query does not create a buffer");
+
+    void *first = NULL, *crossing = NULL;
+    uint64_t offset = 0;
+    CHECK(mtl_addr(boundary - 8, 1, &first, &offset) && first != NULL,
+          "map address in first window");
+    nvn_dirty_add_range(page, span);
+    uint64_t tracked = nvn_dirty_now();
+    nvn_dirty_protect((void *)boundary, (size_t)getpagesize());
+    CHECK(mtl_addr(boundary - 8, 16, &crossing, &offset) && crossing != NULL && crossing != first,
+          "binding crossing a window gets a contiguous view");
+    CHECK(nvn_dirty_since((void *)boundary, 1, tracked),
+          "lazy buffer opens a tracked page before the GPU can write it");
+    if (crossing) {
+        id<MTLBuffer> window = (__bridge id<MTLBuffer>)crossing;
+        uint8_t *bytes = window.contents;
+        for (unsigned n = 0; n < 16; n++) bytes[offset + n] = (uint8_t)(0x4b + n);
+        CHECK(*(uint8_t *)(boundary + 7) == 0x5a, "window aliases guest pages");
+        id<MTLBuffer> copy = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cb = q_cb();
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromBuffer:window sourceOffset:offset toBuffer:copy destinationOffset:0 size:16];
+        [blit fillBuffer:window range:NSMakeRange(offset, 16) value:0x6b];
+        [blit endEncoding]; [cb commit]; [cb waitUntilCompleted];
+        CHECK(cb.status == MTLCommandBufferStatusCompleted && ((const uint8_t *)copy.contents)[0] == 0x4b &&
+              ((const uint8_t *)copy.contents)[15] == 0x5a,
+              "GPU reads both sides of the window boundary");
+        CHECK(*(uint8_t *)(boundary - 8) == 0x6b && *(uint8_t *)(boundary + 7) == 0x6b,
+              "GPU writes across the window boundary after a tracked page was protected");
+    }
+    CHECK(!mtl_addr(lo + span - 2, 2, &crossing, &offset), "logical end excludes padding");
+    CHECK(!mtl_addr(UINT64_MAX - 1, 4, &crossing, &offset), "overflowing range is rejected");
+    mtl_pool_del(page + 1);
+    CHECK(!mtl_addr_known(boundary - 8, 1) && !mtl_addr(boundary - 8, 1, &first, &offset),
+          "finalizing the pool invalidates every window and cached lookup");
+    CHECK(g_npool == count && g_nlarge == 0, "no registered window remains");
+    // Advance past the queued buffer retirements before unmapping their storage.
+    uint64_t done = g_done;
+    g_done = g_fence + 1;
+    defer_drain();
+    g_done = done;
+    nvn_dirty_remove_range(page);
+    munmap(page, span);
+}
+
 int main(void) { @autoreleasepool {
     mtl_init();
+    check_oversized_pool_views();
     CHECK(wrapm(NVN_WRAP_MODE_CLAMP_TO_BORDER, YES) == MTLSamplerAddressModeClampToZero,
         "transparent border selects clamp-to-zero on older hardware");
     CHECK(wrapm(NVN_WRAP_MODE_CLAMP_TO_BORDER, NO) == MTLSamplerAddressModeClampToBorderColor,

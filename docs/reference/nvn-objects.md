@@ -213,6 +213,14 @@ A game may tell NVN objects apart by their bytes, without an NVN call. A host re
 - **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md)'s base game, on a 16 GB M6: the GPU has touched 1,111 MB of its 2,427 MB graphics pool by the first race. Shared buffers in the residency set went from 3,864 to about 1,500 MB, wired memory stayed at 9.3 to 9.8 GB (it swung to 12.7 GB), and the 95th percentile frame of a race went from 33-85 ms to 17-33 ms.
 - **Check:** `t_pool_chunks`: a lookup's buffer says the same memory as the guest address, a read of unknown length takes the whole pool's buffer, a chunk asked for more is lengthened, a texture's upload wires no chunk, raw global memory's table covers the whole pool, the pool's removal takes every entry, and a smaller pool stays one buffer.
 
+The classic renderer also uses on-demand views when a logical pool exceeds
+`MTLDevice.maxBufferLength`. A query can recognize a logical range before any
+Metal buffer exists. A bounded GPU lookup gets a contiguous view even when it
+crosses a window boundary, and finalizing the pool retires every view. The
+classic dirty tracker opens read-only pages before creating a delayed view so
+GPU writes remain visible. `check_t_legacy_border` exercises GPU reads and
+writes spanning a window, address queries, and retirement.
+
 ### GPU writes dropped by a pool buffer made over write-protected pages
 
 - **Symptom:** what the GPU copies, fills or renders into a pool never shows, with no error and no red line: garbled text where the game copies its font textures inside one pool. `DM_NVN_POOL_CHUNKS=0` clears it when the buffer is a chunk.

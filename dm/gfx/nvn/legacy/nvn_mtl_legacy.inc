@@ -565,6 +565,11 @@ void bf_want_note(const char *key) {
 // ---------- Memory pools ----------
 typedef struct { uintptr_t lo, hi; uintptr_t base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; const void *key; int res; } pool_ent;   // res: already in the residency set (on demand, see pool_res)
 static pool_ent *g_pools; static int g_npool, g_cap;
+// Oversized logical pools are backed by page-aligned Metal buffers as the
+// guest binds individual ranges. The same guest bytes back every view.
+typedef struct { uintptr_t lo, hi; } pool_span;
+static pool_span *g_large_pools;
+static int g_nlarge, g_large_cap;
 static int g_pidx_ok, g_plast = -1;   // whether the address→pool index is valid, the last hit (pool_find)
 static NSMutableArray *g_keep;                  // Holds the buffer references (pool_ent has non-owning pointers)
 static uint64_t g_pool_adds;
@@ -721,27 +726,62 @@ static void pool_nocopy_failure(uintptr_t a, uintptr_t b, uintptr_t pg) {
         cursor = start + length;
     }
 }
+static id<MTLBuffer> pool_nocopy(uintptr_t a, uintptr_t b) {
+    return [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+}
+
+// The caller holds g_mu. Adding a view leaves cached views of existing
+// storage usable. Adding a new logical pool or removing one invalidates them.
+static int pool_add_view(uintptr_t lo, uintptr_t hi, uintptr_t base, const void *key, id<MTLBuffer> buf) {
+    if (g_npool == g_cap) {
+        g_cap = g_cap ? g_cap * 2 : 64;
+        g_pools = legacy_grow(g_pools, g_cap * sizeof *g_pools);
+    }
+    int i = g_npool++;
+    g_pools[i] = (pool_ent){lo, hi, base, buf, legacy_buffer_gpu(buf), key, 0};
+    [g_keep addObject:buf];
+    g_pidx_ok = 0;
+    g_plast = -1;
+    return i;
+}
+
 void mtl_pool_add(const void *mem, uint64_t size) {
-    mtl_init(); g_reg_gen++;
-    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)mem, hi = lo + size;
-    uintptr_t a = lo & ~(pg - 1), b = (hi + pg - 1) & ~(pg - 1);
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+    mtl_init();
+    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)mem;
+    if (!size || lo > UINTPTR_MAX - (pg - 1) || size > UINTPTR_MAX - lo - (pg - 1))
+        MDIE("Invalid memory pool %p+%#llx", mem, (unsigned long long)size);
+    uintptr_t hi = lo + size, a = lo & ~(pg - 1), b = (hi + pg - 1) & ~(pg - 1);
+    if (b - a > g_dev.maxBufferLength) {
+        pthread_mutex_lock(&g_mu);
+        if (g_nlarge == g_large_cap) {
+            g_large_cap = g_large_cap ? g_large_cap * 2 : 4;
+            g_large_pools = legacy_grow(g_large_pools, g_large_cap * sizeof *g_large_pools);
+        }
+        g_large_pools[g_nlarge++] = (pool_span){lo, hi};
+        g_pool_adds++;
+        g_reg_gen++;
+        atomic_fetch_add(&g_pool_gen, 1);
+        pthread_mutex_unlock(&g_mu);
+        MLOG("Registered oversized pool %p+%#llx (Metal buffer limit %#llx)", mem,
+             (unsigned long long)size, (unsigned long long)g_dev.maxBufferLength);
+        return;
+    }
+    id<MTLBuffer> buf = pool_nocopy(a, b);
     // Restored from the original backend: pinning an otherwise valid VM span
     // may be refused transiently while the guest maps/unmaps large regions.
     // Keep the original zero-copy storage and logical bounds; wait a bounded
     // interval before treating a temporary allocation refusal as fatal.
     for (int retry = 0; !buf && retry < 12; retry++) {
         usleep(10000u << (retry < 4 ? retry : 4));
-        buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+        buf = pool_nocopy(a, b);
         if (buf) MLOG("[RED] memory pool %p+%#llx: no-copy buffer created at retry %d", mem, (unsigned long long)size, retry + 1);
     }
     if (!buf) { pool_nocopy_failure(a, b, pg); MDIE("Cannot register no-copy memory pool %p+%#llx", mem, (unsigned long long)size); }
     pthread_mutex_lock(&g_mu);
-    if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = legacy_grow(g_pools, g_cap * sizeof *g_pools); }
-    g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);   // the address index and the per-thread caches are invalid (pool_find, pc_get)
-    g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, legacy_buffer_gpu(buf), mem, 0};   // not in the residency set yet: put in the first time it is addressed (pool_res)
+    pool_add_view(lo, hi, a, mem, buf);
     g_pool_adds++;
-    [g_keep addObject:buf];
+    g_reg_gen++;
+    atomic_fetch_add(&g_pool_gen, 1);
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -753,10 +793,25 @@ void mtl_pool_del(const void *mem) {
     // This may run on a guest thread whose implicit autorelease pool never drains;
     // keep weak-table operations from extending the finalized buffer's lifetime.
     @autoreleasepool {
-    for (int i = 0; i < g_npool; i++)
-        if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; defer_obj_release(b); if (g_pools[i].res) g_pool_res_n--;
+        for (int i = 0; i < g_nlarge; i++) {
+            if (g_large_pools[i].lo == (uintptr_t)mem) {
+                g_large_pools[i] = g_large_pools[--g_nlarge];
+                break;
+            }
+        }
+        for (int i = 0; i < g_npool;) {
+            if (g_pools[i].key != mem) { i++; continue; }
+            id<MTLBuffer> buffer = g_pools[i].buf;
+            [g_keep removeObject:buffer];
+            defer_obj_release(buffer);
+            if (g_pools[i].res) g_pool_res_n--;
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
-            [g_dead_pools addObject:b]; g_pools[i] = g_pools[--g_npool]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); break; }
+            [g_dead_pools addObject:buffer];
+            g_pools[i] = g_pools[--g_npool];
+            g_pidx_ok = 0;
+            g_plast = -1;
+        }
+        atomic_fetch_add(&g_pool_gen, 1);
     }
     pthread_mutex_unlock(&g_mu);
 }
@@ -765,12 +820,51 @@ void mtl_pool_del(const void *mem) {
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is re-sorted when next used. Caller holds g_mu
 static int *g_pidx; static int g_pidx_cap;
 static int pidx_cmp(const void *a, const void *b) { uintptr_t x = g_pools[*(const int *)a].lo, y = g_pools[*(const int *)b].lo; return x < y ? -1 : x > y; }
-static int pool_find(uint64_t addr, uint64_t len) {
+// Caller holds g_mu. Request a small view for typical bindings, and allow a
+// wider, overlapping view for any binding that crosses a window boundary.
+// A binding larger than the hardware limit cannot be represented by one
+// buffer. Report it as unmapped rather than returning a truncated view.
+static int pool_span_for(uintptr_t addr, uintptr_t end) {
+    for (int i = 0; i < g_nlarge; i++) {
+        pool_span p = g_large_pools[i];
+        if (addr >= p.lo && addr < p.hi && end <= p.hi) return i;
+    }
+    return -1;
+}
+static int pool_map_window(pool_span p, uintptr_t addr, uintptr_t end) { @autoreleasepool {
+    uintptr_t pg = (uintptr_t)getpagesize(), mask = pg - 1;
+    uintptr_t limit = g_dev.maxBufferLength & ~mask;
+    uintptr_t granule = MIN(limit, 16u << 20);
+    if (!granule) return -1;
+    uintptr_t first = addr & ~mask;
+    uintptr_t last = MAX(first + pg, (end + mask) & ~mask);
+    if (last - first > limit) return -1;
+    uintptr_t a = MAX(p.lo & ~mask, first / granule * granule), b = last;
+    if (b - a > limit) a = first;
+    uintptr_t pool_end = (p.hi + mask) & ~mask;
+    b = MAX(b, a + MIN(granule, pool_end - a));
+    // A delayed view can include pages the texture tracker has protected
+    // since pool registration. Metal silently drops GPU writes for buffers
+    // created over read-only pages. Mark them conservatively dirty and open
+    // them through the classic tracker's existing write preparation hook.
+    dm_guest_write_prepare((void *)a, b - a);
+    id<MTLBuffer> buffer = pool_nocopy(a, b);
+    if (!buffer && (a != first || b != last)) {
+        // Pages outside the actual binding can still be unmapped.
+        a = first;
+        b = last;
+        buffer = pool_nocopy(a, b);
+    }
+    if (!buffer) return -1;
+    return pool_add_view(MAX(a, p.lo), MIN(b, p.hi), a, (const void *)p.lo, buffer);
+} }
+static int pool_held(uint64_t addr, uint64_t len) {
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].lo && addr + len <= g_pools[g_plast].hi) return g_plast;
     if (!g_pidx_ok) {
         if (g_pidx_cap < g_npool) { g_pidx_cap = g_npool * 2; g_pidx = legacy_grow(g_pidx, (size_t)g_pidx_cap * sizeof *g_pidx); }
         for (int i = 0; i < g_npool; i++) g_pidx[i] = i;
-        qsort(g_pidx, (size_t)g_npool, sizeof *g_pidx, pidx_cmp); g_pidx_ok = 1;
+        if (g_npool > 1) qsort(g_pidx, (size_t)g_npool, sizeof *g_pidx, pidx_cmp);
+        g_pidx_ok = 1;
     }
     int lo = 0, hi = g_npool - 1, hit = -1;   // the last one whose start ≤ addr
     while (lo <= hi) { int m = (lo + hi) / 2; if (g_pools[g_pidx[m]].lo <= addr) { hit = m; lo = m + 1; } else hi = m - 1; }
@@ -778,7 +872,14 @@ static int pool_find(uint64_t addr, uint64_t len) {
     for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) return g_plast = i;
     return -1;
 }
+static int pool_find(uint64_t addr, uint64_t len) {
+    int i = pool_held(addr, len);
+    if (i >= 0) return i;
+    int span = pool_span_for(addr, addr + len);
+    return span >= 0 ? pool_map_window(g_large_pools[span], addr, addr + len) : -1;
+}
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+    if (len > UINT64_MAX - addr) return 0;
     const pc_ent *c = pc_get(addr, len);
     if (c) { *buf = (__bridge void *)c->buf; *off = addr - c->base; return 1; }
     int ok = 0;
@@ -789,6 +890,7 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     return ok;
 }
 int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_t *gpu) {
+    if (len > UINT64_MAX - addr) return 0;
     const pc_ent *c = pc_get(addr, len);
     if (c) { *buf = (__bridge void *)c->buf; *off = addr - c->base; *gpu = c->gpu + *off; return 1; }
     int ok = 0;
@@ -4503,16 +4605,19 @@ static void bare_dims(NSUInteger *w, NSUInteger *h) {
 // Adapted from upstream 89b608d: cache resolution separately from encoder state.
 // A pool replacement invalidates all entries even if guest addresses are reused.
 static void bind_vbufs(id<MTLRenderCommandEncoder> en) {
-    static struct { uint64_t addr, gen; NSUInteger offset; __unsafe_unretained id<MTLBuffer> buffer; } cache[16];
+    static struct { uint64_t addr, size, gen; NSUInteger offset; __unsafe_unretained id<MTLBuffer> buffer; } cache[16];
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     for (int s = 0; s < 16; s++) {
-        uint64_t addr = S.vbuf[s].address;
+        uint64_t addr = S.vbuf[s].address, size = S.vbuf[s].size;
         if (!addr) continue;
-        if (g_vbuf_cache && cache[s].addr == addr && cache[s].gen == gen) g_vbuf_reuse++;
+        if (g_vbuf_cache && cache[s].addr == addr && cache[s].size == size && cache[s].gen == gen) g_vbuf_reuse++;
         else {
             void *mb; uint64_t off; g_vbuf_resolve++;
-            if (!mtl_addr(addr, 1, &mb, &off)) continue;
-            cache[s].addr = addr; cache[s].gen = gen;
+            if (!mtl_addr(addr, size ? size : 1, &mb, &off)) {
+                legacy_bind_buffer(en, 0, VB_SLOT(s), nil, 0);
+                continue;
+            }
+            cache[s].addr = addr; cache[s].size = size; cache[s].gen = gen;
             cache[s].buffer = (__bridge id<MTLBuffer>)mb; cache[s].offset = (NSUInteger)off;
         }
         legacy_bind_buffer(en, 0, VB_SLOT(s), cache[s].buffer, cache[s].offset);
@@ -5954,7 +6059,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         if (b->kind == NVN_RB_CBUF) {
             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
             void *mb; uint64_t mo, gpu;
-            if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) {
+            if (!u || !u->addr || !mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) {
                 // Match the modern path: an unbound NVN uniform slot reads zero.
                 // A null argument-buffer pointer faults the entire legacy GPU queue.
                 RED_ONCE(16, "stage %d cb%d has no uniform buffer bound", nvn_stage, reg);
@@ -8594,8 +8699,10 @@ frz_plain:;
         }
         void *mb; uint64_t mo;
         uint64_t gpu;
-        if (!mtl_gpu_addr(di->ibuf, 1, &mb, &mo, &gpu)) { RED_ONCE(22, "索引缓冲不在内存池里"); return; }
-        use_rec("buf", di->ibuf, (uint64_t)di->count * (di->itype == 1 ? 2 : 4), 0, NULL);
+        if (!di->count) return;
+        uint64_t index_bytes = (uint64_t)di->count * (di->itype == 1 ? 2 : 4);
+        if (!mtl_gpu_addr(di->ibuf, index_bytes, &mb, &mo, &gpu)) { RED_ONCE(22, "索引缓冲不在内存池里"); return; }
+        use_rec("buf", di->ibuf, index_bytes, 0, NULL);
         if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ((__bridge id<MTLBuffer>)mb).length - mo,
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
@@ -10501,6 +10608,7 @@ static void classic_drop_registered_resources(void) {
     g_deferred = nil;
     g_keep = nil; g_dead_pools = nil;
     free(g_pools); g_pools = NULL; g_npool = g_cap = 0;
+    free(g_large_pools); g_large_pools = NULL; g_nlarge = g_large_cap = 0;
     free(g_pidx); g_pidx = NULL; g_pidx_cap = g_pidx_ok = 0; g_plast = -1;
 
     g_shmap = nil; g_msl_dir = nil; g_shcache = nil;

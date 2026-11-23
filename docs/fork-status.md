@@ -255,6 +255,15 @@ Their respective 2.37 GiB and 3.42 GiB buffers exceeded the device's 1 GiB
 single-buffer limit. Neither run reached its title screen. The cached
 game images and original save fingerprints verified on both updates.
 
+The classic renderer now registers oversized pools logically and creates
+page-aligned zero-copy views only as a binding needs them. On the Mac, 100
+classic Metal checks and 12 depth/stencil checks passed. The renderer also
+compiled for iPadOS 16.1 with an A10 target. The Pokopia 60.144 device build
+was relinked on the installed `a432daafc3d0` chain with all six A10X guest
+sections unchanged. Installation completed after the device bridge timed
+out, as confirmed by MobileInstallation and by reading back the new
+framework. The original game image and save fingerprints matched.
+
 ### M2 Crisis Core first battle (2026-11-22)
 
 On 60.133, the title, new-game setup and opening movie render. The first
@@ -304,3 +313,18 @@ releases between render passes. The retry still returned Metal error 8 at
 the village transition. GPU allocation reached 14,791 MiB and one pass
 accumulated over 85,000 pending releases before the boundary. The
 experimental renderer is retained as a local candidate.
+
+The same 60.143 runtime reproduced the failure in handheld mode with a 0.5
+render scale and MetalFX. It played the opening, then returned Metal error 8
+while streaming the village. The final sample reported 14,014 MiB of GPU
+allocations. The diagnostic overrides were removed after the run.
+
+### M2 Pokopia cold launch on 60.143 (2026-11-22)
+
+The installed independent runtime loaded from the game shelf with an
+isolated save and reached the Chinese language-selection screen. The last
+300-frame sample measured 59.9 frames per second and a 16.99 ms median frame
+time. The log confirmed a 960×540 cap on the 3D scene's dynamic lists. The
+present path still fed the 1920×1080 composite to MetalFX. This run covered
+startup and the language menu. The first playable map, face editor and
+long-run audio were outside its scope.
