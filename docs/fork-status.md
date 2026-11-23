@@ -563,3 +563,9 @@ the face editor and reproduced the white band over the eyes. The capture's
 pass log showed skipped draws from both rejected pipelines, in the
 768×432 single-channel target and the 1920×1080 color/depth target. The
 test used an isolated save and verified the original hashes afterward.
+
+On 60.161, the same-chain fragment rebuild with Metal optimization
+disabled still reproduced the R8Unorm pipeline compilation error during
+Ditto's opening and reached the character selection screen. The
+original libraries, settings, and save fingerprints were verified after
+the trial.

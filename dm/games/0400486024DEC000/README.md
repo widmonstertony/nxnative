@@ -670,3 +670,11 @@ and reflection. The GPU still reported an address fault during the 3D
 load, this time with faulted 1440×810 passes. The two original libraries
 were restored and verified, and the original save fingerprints remained
 unchanged.
+
+A separate replay requested graphics scale tier 2 and a 960×540 window
+using the original libraries. The faulted scene pass still measured
+1440×810. Both replays reported a fault in a pass whose first two draws
+paired `d9f51f9a3918a59b` with `792f87d4fb3b972d` and
+`22a12b15649c3bfe`. The matching classic source and reflection are
+available for those stages. The original game settings and save hashes
+matched after the replay.
