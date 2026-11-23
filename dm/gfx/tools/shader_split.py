@@ -58,6 +58,7 @@
 #   · NXSD (TETRIS THE GRAND MASTER 4): descriptor-referenced NVN control sections and code areas, one stage per entry; see nxsd_shaders
 #   · MVGL / NXSH (Media.Vision, Digimon Story Time Stranger): MDB1 archives (wide 64-bit LZ4 or legacy 32-bit doboz, mvgl.py) whose .shad entries and embedded main records are NXVS / NXFS / NXCS containers with control and code spans; see mvgl_jobs and nxsh_shader
 #   · VFS2 (Cornfox & Bros., Oceanhorn: Monster of Uncharted Seas): indexed archives (directory table, file table, optional name table) holding GLSLC outputs stored raw, bitwise-inverted, or length-prefixed zlib; see vfs2_shaders
+#   · SHADERS\0 (DrinkBox Studios, Guacamelee! STCE / Guacamelee! 2): indexed whole-file shader container (shaders.dat.nx) with string table, uniform descriptors, per-shader {header, uniforms, code area, control section} blobs and trailing 29-byte entry table; see dbx_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
@@ -66,7 +67,7 @@
 # Output: <package dir>/<stage>_<source group>.bin, each record = 'BTCDBTCD' + header (+0x08 the key's 8 bytes, +0x28 control length, +0x2c code length) padded to 0x38 + code area + control section, one copy per key
 #   (dmsh_build.py finds a map row's record by that key, not by the row's index: a package from another split than the map stops it instead of translating a neighbour's bytes, issue #1841);
 #   map rows have the same columns as D2R's shader_map.tsv (column 5 names the source chosen for the key); the answer table has one row per compute shader {"local", "shared"} (shared memory rounded up to 16 bytes, as D2R did).
-# Usage: shader_split.py <RomFS dir> <ExeFS main> <output package dir> <output map> <output answer table> [<output pair table> (geo_pairs.tsv is written beside it) [<output pipeline pair table (pso_pairs.tsv)> [<DLC RomFS dirs, comma-separated> [<play capture file list, JSON>]]]]   Environment J=concurrency (default 8)
+# Usage: shader_split.py <RomFS dir> <ExeFS main> <output package dir> <output map> <output answer table> [<output pair table> (geo_pairs.tsv and mesh_pairs.tsv are written beside it) [<output pipeline pair table (pso_pairs.tsv)> [<DLC RomFS dirs, comma-separated> [<play capture file list, JSON>]]]]   Environment J=concurrency (default 8)
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
@@ -511,6 +512,94 @@ def mshd_shaders(d, label):
         out.append((f'{label}#MSHD#var{len(out) // 2}', st, ctl, code))
         c = d.find(CTL_MAGIC, g + ncode)
     if len(out) % 2: red(f'{label} MSHD: {len(out)} stages, not in pairs')
+    return out
+
+DBX = b'SHADERS\0'
+DBX_UNIFORM = 127   # fixed-size uniform descriptor: char name[124] + 3 binding bytes (Guacamelee! 2 main +0x62e1c / +0x67518)
+DBX_ENTRY = 29      # <6IBI: name_off, entry_off, u_start, u_cnt, data_off, data_len, kind (0 vs / 1 ps), shader_id (+0x62fe4)
+DBX_BLOB_HEAD = 20  # <5I: code_len, ctl_len, n_uniforms, cbuf_size, flags (+0x67448 / +0x67500)
+
+def dbx_shaders(d, label):
+    """DrinkBox's SHADERS container (Guacamelee! STCE and Guacamelee! 2 shaders.dat.nx; verified against Guacamelee! 2 main +0x62ba0 and +0x673f0):
+      'SHADERS\\0' + u8 endian (1 = little-endian)
+      + u32 strtab_len + strtab (NUL-terminated UTF-8 shader source names and entry names)
+      + u32 uniform_count + uniform_count * 127-byte uniform descriptors
+      + u32 data_len + data (16-byte-aligned shader blobs)
+      + u32 shader_count + shader_count * 29-byte entries ending at EOF.
+    Each blob in data is a 20-byte header {u32 code_len, u32 ctl_len, u32 n_uniforms, u32 cbuf_size, u32 flags}, n_uniforms * 127-byte uniform descriptors,
+    the GPU code area (code_len bytes), and the NVN control section (ctl_len bytes, 0x838 here).
+    The engine caches pipelines in a vs_count * ps_count table (main +0x63300), so its shaders are single-stage programs paired through separable_pairs."""
+    where = f'{label} SHADERS'
+    if len(d) < 13 or d[:8] != DBX: red(f'{where}: truncated header')
+    endian, strtab_len = struct.unpack_from('<BI', d, 8)
+    if endian != 1: red(f'{where}: unsupported endian flag {endian}')
+    strtab = span(d, 13, strtab_len, f'{where} string table')
+    pos = 13 + strtab_len
+    uniform_cnt, = field(d, '<I', pos, f'{where} uniform count'); pos += 4
+    uniform_bytes = uniform_cnt * DBX_UNIFORM
+    if uniform_bytes > len(d) - pos:
+        red(f'{where}: {uniform_cnt} uniform records ({uniform_bytes:#x} bytes at {pos:#x}) lie outside the {len(d):#x} bytes there are')
+    pos += uniform_bytes
+    data_len, = field(d, '<I', pos, f'{where} data length'); pos += 4
+    if data_len > len(d) - pos:
+        red(f'{where}: {data_len:#x} bytes of shader data at {pos:#x} lie outside the {len(d):#x} bytes there are')
+    data_start = pos; pos += data_len
+    shader_cnt, = field(d, '<I', pos, f'{where} entry count'); pos += 4
+    table_bytes = shader_cnt * DBX_ENTRY
+    if pos + table_bytes != len(d):
+        red(f'{where}: {shader_cnt} entries ({table_bytes:#x} bytes at {pos:#x}) do not end at file size {len(d):#x}')
+
+    def cstr(off, what):
+        if off >= len(strtab): red(f'{what}: string offset {off:#x} lies outside the {len(strtab):#x}-byte string table')
+        end = strtab.find(0, off)
+        if end < 0: red(f'{what}: unterminated string at {off:#x}')
+        try: text = strtab[off:end].decode('utf-8')
+        except UnicodeDecodeError: red(f'{what}: string at {off:#x} is not UTF-8')
+        if any(ch in text for ch in '\t\r\n'): red(f'{what}: string {text!r} contains a control character that would break the shader map')
+        return text
+
+    entries = []
+    for i in range(shader_cnt):
+        item = f'{where} entry {i}'
+        name_off, entry_off, u_start, u_cnt, d_off, d_sz, kind, _ = struct.unpack_from('<6IBI', d, pos + i * DBX_ENTRY)
+        name, entry = cstr(name_off, f'{item} name'), cstr(entry_off, f'{item} entry')
+        if u_start > uniform_cnt or u_cnt > uniform_cnt - u_start:
+            red(f'{item} ({name}:{entry}): uniform range [{u_start}, {u_start + u_cnt}) lies outside {uniform_cnt} uniforms')
+        if kind not in (0, 1):
+            red(f'{item} ({name}:{entry}): unsupported shader kind {kind}')
+        if d_sz < DBX_BLOB_HEAD or d_off > data_len or d_sz > data_len - d_off:
+            red(f'{item} ({name}:{entry}): blob ({d_sz:#x} bytes at {d_off:#x}) lies outside the {data_len:#x}-byte data section')
+        entries.append((i, name, entry, u_cnt, d_off, d_sz, kind))
+
+    # Validate non-overlapping blobs before copying code or control sections.
+    cursor = 0
+    for _, name, entry, _, d_off, d_sz, _ in sorted(entries, key=lambda e: (e[4], e[5])):
+        if d_off < cursor: red(f'{where} ({name}:{entry}): shader blob at {d_off:#x} overlaps preceding blob ending at {cursor:#x}')
+        cursor = d_off + d_sz
+
+    out = []
+    for i, name, entry, u_cnt, d_off, d_sz, kind in entries:
+        item = f'{where} entry {i} ({name}:{entry})'
+        base = data_start + d_off
+        code_len, nctl, n_uni, _, _ = struct.unpack_from('<5I', d, base)
+        if n_uni != u_cnt:
+            red(f'{item}: blob uniform count {n_uni} does not match entry count {u_cnt}')
+        code_off = DBX_BLOB_HEAD + DBX_UNIFORM * n_uni
+        ctl_off = code_off + code_len
+        if ctl_off + nctl != d_sz:
+            red(f'{item}: blob spans ({code_off:#x} + {code_len:#x} + {nctl:#x}) do not match entry size {d_sz:#x}')
+        code = d[base + code_off:base + ctl_off]
+        ctl = d[base + ctl_off:base + ctl_off + nctl]
+        if nvn2_ctl(ctl): red(f'{item}: unsupported NVN2 control section')
+        if code[:4] != GFX_MAGIC or len(code) < 0x80:
+            red(f'{item}: graphics code area ({len(code):#x} bytes) missing header or truncated SPH')
+        st = sph_stage(code)
+        expected = ('vs', 'ps')[kind]
+        if st != expected:
+            red(f'{item}: code stage {st!r} does not match entry stage {expected!r}')
+        why = check(item, st, ctl, code)
+        if why: red(f'{item}: {why}')
+        out.append((f'{label}#SHDR#{name}:{entry}', st, ctl, code))
     return out
 
 def noire_wad_shaders(d, label):
@@ -4303,6 +4392,7 @@ def scan_blob(d, label, out, depth=0, left=None):
     if d[:4] == SHARC: out.extend(sharc_shaders(d, label)); return
     if d[:8] == SHAD: out.extend(shad_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
+    if d[:8] == DBX: out.extend(dbx_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames
         for nm, m in mem: scan_blob(m, f'{label}/{nm}', out, depth + 1, left)
         return
@@ -4373,7 +4463,7 @@ def pixel_input_cover(shaders):
         k = min(ins, key=lambda k: (-len(ins[k] & left), k)); cover.append(k); left -= ins[k]
     return cover
 
-SINGLE_STAGE = ('#GLSLC@', '#VIPER', '#CIVBSF@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#TFXO@', '#NEEDLE@', '#SNOWDROP@', '#PHYRE@', '#SUMO@', '#NVNSH@', '#D3@', '#SHAD@', '#NXSHADER@', '#NXSD@', '#NXSH@', '#SCIMITAR:')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+SINGLE_STAGE = ('#GLSLC@', '#VIPER', '#CIVBSF@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#TFXO@', '#NEEDLE@', '#SNOWDROP@', '#PHYRE@', '#SUMO@', '#NVNSH@', '#D3@', '#SHAD@', '#NXSHADER@', '#NXSD@', '#NXSH@', '#SHDR#', '#SCIMITAR:')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # Unreal Engine 3's shader caches (ue3_shaders, '#UE3@'); MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); control sections loose in main
 # (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs; YEBIS's effect file (tfxo_shaders); and Sumo's Ninty_NX descriptors and NVNsh records, one stage
@@ -4574,13 +4664,15 @@ def var_pairs(found):
     (vertex key, geometry key, 'geo') within the same variation: geo_pairs.tsv (BNSH variations and other archives that hold whole programs; bahs_variations maps only
     vertex and pixel binaries, so a BAHS geometry shader still waits for a G row), the pairs dmsh_build.py builds a mesh library for when the geometry shader is a lean
     passthrough (dmsh_chain.mesh_pairs). Before, only the pairs a recording had drawn got one, so each new variation a game reached was drawn through the slow compute path first
-    (Donkey Kong Bananza's SilverStarMaterial var18 and var28 with kernel 5d537f7630ec3671, Sublayer 1200)."""
+    (Donkey Kong Bananza's SilverStarMaterial var18 and var28 with kernel 5d537f7630ec3671, Sublayer 1200).
+    (task key or '-', mesh key, pixel key or '-', 'mesh') within the same variation: mesh_pairs.tsv, for the offline and device prebuild of Metal 4 mesh pipeline bases."""
     var = collections.defaultdict(dict)
     for where, st, ctl, code in found:
         g = where if '#var' in where else BAHS_VAR.get(where)
         if g: var[g][st] = skey(ctl, code)
     return ({(v[st], v['ps']) + (('prog',) if '#BAHS#prog' in g else ()) for g, v in var.items() for st in ('vs', 'ms') if st in v and 'ps' in v}
-            | {(v['vs'], v['gs'], 'geo') for v in var.values() if 'vs' in v and 'gs' in v})
+            | {(v['vs'], v['gs'], 'geo') for v in var.values() if 'vs' in v and 'gs' in v}
+            | {(v.get('ts', '-'), v['ms'], v.get('ps', '-'), 'mesh') for v in var.values() if 'ms' in v})
 
 def unreadable_why(e, name):
     why = str(e).removeprefix('[RED] ') if isinstance(e, SystemExit) else f'{type(e).__name__}: {e}'
@@ -4819,6 +4911,9 @@ def scan_file_in(args):
                 if '.fx' in entry[0] or '/shaders/' in entry[0] or entry[0].endswith(('.vs.bin', '.ps.bin', '.fs.bin')):
                     found += phyre_shaders(vbf.read(f, entry), f'/{rel}/{entry[0]}')
         return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:8] == DBX:   # DrinkBox's shader container (shaders.dat.nx): one whole-file format, blocks self-checking
+        with open(path, 'rb') as f: found += dbx_shaders(f.read(), '/' + rel)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == FZLC:   # REDengine 3's static shader cache (fzlc_shaders)
         found += fzlc_shaders(path, '/' + rel)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -4862,7 +4957,7 @@ def scan_file_in(args):
     # Containers the generic prefilter below would drop, read whole by scan_blob: Monolith's, which it also ships loose, without an ARH/ARD archive (Xenoblade DE;
     # DRSM model streams contain several embedded XBC1 resources; DMPA model packages (.wimdo) keep plain HCPS programs beside the model: 18 of Xenoblade DE's, the only copy
     # of 14 shaders its Switch 2 Edition's prologue draws with), and Phyre's effects and FFX/X-2's loose programs, their two lengths before the code (phyre_shaders)
-    if d[:4] in (b'HCPS', b'xbc1', b'DRSM', b'DMPA', b'RYHP') or d[:8] == b'cmp\0zlib' or d[8:12] == GFX_MAGIC:
+    if d[:4] in (b'HCPS', b'xbc1', b'DRSM', b'DMPA', b'RYHP') or d[:8] in (b'cmp\0zlib', DBX) or d[8:12] == GFX_MAGIC:
         scan_blob(d, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC): d = unsized(d, '/' + rel)   # HAL's .cmp containers (Kirby and the Forgotten Land: 7,201 of them, 5,121 zstd frames with 19,364 BNSH inside and 2,080 LZ4 frames). Read raw, the split found 121 shaders and the game asked for 900 it did not have ("[RED] shader ... is not in the shader map")
@@ -5115,7 +5210,8 @@ def main():
         played, play_pairs = glslc_play(sys.argv[9])
         results.append(('glslc_play', played, set(), {}))   # game files, boot captures and DLC retain ownership of any keys they share with play captures
     keys, pairs, per_src = merge_keys(results, registered)
-    pairs.update(pair for pair in play_pairs if any(keys[k][0].startswith('/glslc_play/') for k in pair[:2]))
+    pairs.update(pair for pair in play_pairs if any(k in keys and keys[k][0].startswith('/glslc_play/') for k in pair[:3]))
+    mesh = {(a, b, c) for a, b, *t in pairs if len(t) == 2 and t[1] == 'mesh' for c in (t[0],)}; pairs -= {(a, b, c, 'mesh') for a, b, c in mesh}
     geo = {(a, b) for a, b, *t in pairs if t == ['geo']}; pairs -= {(a, b, 'geo') for a, b in geo}
     prog = {(a, b) for a, b, *t in pairs if t} - pairs; pairs = {x for x in pairs if len(x) == 2}
     sp, cover = separable_pairs(keys); pairs |= sp
@@ -5170,10 +5266,13 @@ def main():
         with open(psopairsout, 'w') as f:
             f.write('# kind: evidence  supplemental vertex / pixel shader pairs (BAHS program variations and legacy Unity pass-input covers) for vertex output padding and the pipeline prebuild (generated by dm/gfx/tools/shader_split.py, do not edit): vertex key <TAB> pixel key\n')
             for a, b in sorted(prog - pairs): f.write(f'{a}\t{b}\n')
-    if pairsout:   # beside the pair table: geo_pairs.tsv, every vertex / geometry pair (var_pairs); the NSP script checks or keeps it as it does pso_pairs.tsv
+    if pairsout:   # beside the pair table: geo_pairs.tsv and mesh_pairs.tsv (var_pairs); the NSP script checks or keeps them as it does pso_pairs.tsv
         with open(os.path.join(os.path.dirname(os.path.abspath(pairsout)), 'geo_pairs.tsv'), 'w') as f:
             f.write('# kind: evidence  vertex / geometry shader pairs within shader variations, for mesh libraries (generated by dm/gfx/tools/shader_split.py, do not edit): vertex key <TAB> geometry key\n')
             for a, b in sorted(geo): f.write(f'{a}\t{b}\n')
+        with open(os.path.join(os.path.dirname(os.path.abspath(pairsout)), 'mesh_pairs.tsv'), 'w') as f:
+            f.write('# kind: evidence  task / mesh / pixel shader triples within shader variations, for mesh pipeline bases (generated by dm/gfx/tools/shader_split.py, do not edit): M <TAB> task key (or -) <TAB> mesh key <TAB> pixel key (or -)\n')
+            for a, b, c in sorted(mesh): f.write(f'M\t{a}\t{b}\t{c}\n')
     print(f'shaders: {len(rows)} (' + ', '.join(f'{STAGE_NAME[s]} {n}' for s, n in sorted(stat.items())) + '); sources ' + ', '.join(f'{g} {n}' for g, n in per_src.most_common()) + f'; compute shader answers {len(facts)} rows' + (f'; variation pairs {len(pairs)}' if pairsout else ''))
 
 if __name__ == '__main__':

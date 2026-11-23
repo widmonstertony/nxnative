@@ -1,5 +1,17 @@
 # TonTon upstream optimization audit
 
+The November 23 integration contains upstream main through
+[`685d2aec`](https://github.com/seedds/nxnative/commit/685d2aecf0ea9e6f1c37d9bd09d4fcb508d1be7f).
+The merge includes upstream's stage progress, texture mapping and retirement
+updates, iOS game-menu labels, lock-free pass-dump serial reads, and profile
+changes including offline support for Shredder's Revenge 1.0.9. It also
+includes the DrinkBox shader reader, asynchronous present isolation, and
+offline Metal 4 mesh pipeline prebuilding. The Metal 4 build chain is
+`aa057db81347`. The launcher still accepts previously signed
+independent engines with their original shader resources on their supported
+OS versions. A launcher update reuses those pairs. Rebuilding a specific
+game's runtime or shader remains a targeted operation when a fix requires it.
+
 Audited through November 13, 2026 (Pacific) against upstream [`df9ca262`](https://github.com/seedds/nxnative/commit/df9ca26217962a8463c91458d37a1a07be138256). This is a bounded source snapshot, not a claim about unreviewed open pull requests or future upstream changes.
 
 ## Integration and deployment are separate
