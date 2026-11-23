@@ -214,6 +214,28 @@ is a first-map performance check, not a complete graphics or all-area pass;
 Air's successful-scene measurements must not be presented as M2 results. The classic renderer does not
 implement Air's `DM_PRESENT_SNAP` setting.
 
+### M2 face preview and opening map (2026-11-23)
+
+Build 60.162 on iPadOS 16.1 rejected two opening pipelines during
+packed half conversion. The [targeted rebuild](../../ios/tools/patch_pokopia_m2_half.py)
+keeps the installed shader bindings and uses integer binary16 conversions
+for the three affected stages. The original compiler errors disappeared.
+
+The isolated replay recovered 20 missing shader keys from the cartridge
+already installed on the M2. All 20 compiled with the retained iPadOS
+16.1 translation tools. Stick movement worked in the first map, while the
+face preview still had a white band and the map character lacked a body.
+The corresponding failures named 12 missing non-point vertex sources.
+Build 60.163 replayed the same route with those sources bound to their
+Metal library hashes. The face model showed its eyes and body with the same
+face swatch selected. The body also rendered in the first map and responded
+to stick movement without a crash during the replay. One other render
+pipeline, `2e94f400e9346a51_b` with `754327f84eca6eed_b`, still logged
+an internal Metal compiler error in that first run. Rebuilding the latter
+fragment with the same packed-half conversion removed the error in a
+fresh launch from the isolated first-map save. Both updates are installed
+in the M2 library. Its original saves and cartridge image verified unchanged.
+
 ### A10X launch boundary (2026-11-22)
 
 The old iPad's 60.134 launch stops at the authenticated return
