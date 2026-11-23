@@ -294,6 +294,57 @@ find . -type f -ipath '*/userdata/save*/*' -exec sha256sum -- {{}} + | LC_ALL=C 
     return bridge.job('bash -c ' + Q(cmd), bridge.send(b'\n')).split()[0]
 
 
+def relocated_shader_env(contents, title, old_container, new_container):
+    # Only rewrite a game's standard resource overrides. Preserve user paths,
+    # whitespace, line endings and every setting unrelated to shader discovery.
+    for key, resource in ((b'DM_MSL_DIR', b'msl'), (b'DM_NVN_SHMAP', b'dm/shader_map.tsv')):
+        suffix = b'/Documents/Games/' + title.encode('ascii') + b'/Resources/' + resource
+        old_path = old_container.encode('ascii') + suffix
+        new_path = new_container.encode('ascii') + suffix
+        pattern = rb'(?m)^([ \t]*' + key + rb'=)' + re.escape(old_path) + rb'([ \t]*\r?)$'
+        contents = re.sub(pattern, lambda m: m[1] + new_path + m[2], contents)
+    return contents
+
+
+def repair_relocated_shader_envs(bridge, old_container, new_container, titles=None):
+    check(DATA_PATH.fullmatch(old_container) and DATA_PATH.fullmatch(new_container)
+          and old_container != new_container, 'Expected distinct verified app containers')
+    games = new_container + '/Documents/Games'
+    bridge.run(f'test ! -e {Q(old_container)} && test ! -L {Q(old_container)} && test ! -L {Q(games)}')
+    if titles is None:
+        catalog = bridge.run(f'find {Q(games)} -mindepth 3 -maxdepth 3 -type f -path "*/UserData/env.txt" -print')
+        titles = re.findall(r'^' + re.escape(games) + r'/([0-9a-f]{16})/UserData/env\.txt$', catalog, re.M)
+    updated = []
+    for title in titles:
+        if not re.fullmatch(r'[0-9a-f]{16}', title):
+            continue
+        slot = games + '/' + title
+        env_file = slot + '/UserData/env.txt'
+        data = bridge.run(f'''if test -d {Q(slot)} && test ! -L {Q(slot)} &&
+            test ! -L {Q(slot + '/UserData')} && test -f {Q(env_file)} && test ! -L {Q(env_file)} &&
+            test -d {Q(slot + '/Resources/msl')} && test -s {Q(slot + '/Resources/dm/shader_map.tsv')} &&
+            test "$(stat -c %s {Q(env_file)})" -le 65536; then
+            base64 < {Q(env_file)}
+        fi''')
+        original = base64.b64decode(data)
+        new = relocated_shader_env(original, title, old_container, new_container)
+        if new == original:
+            continue
+        piece = bridge.send(new)
+        old_sha = hashlib.sha256(original).hexdigest()
+        new_sha = hashlib.sha256(new).hexdigest()
+        bridge.run(f'''set -eu
+            test ! -L {Q(env_file)}
+            test "$(sha256sum < {Q(env_file)} | cut -d ' ' -f 1)" = {old_sha}
+            test "$(sha256sum < {Q(piece)} | cut -d ' ' -f 1)" = {new_sha}
+            chown --reference={Q(env_file)} {Q(piece)}
+            chmod --reference={Q(env_file)} {Q(piece)}
+            mv {Q(piece)} {Q(env_file)}
+            test "$(sha256sum < {Q(env_file)} | cut -d ' ' -f 1)" = {new_sha}''')
+        updated.append(title)
+    return updated
+
+
 def cached_baseline(bridge, conf, work):
     if not conf.get('baseline_device_ipa'):
         return bridge.upload(Path(conf['baseline_ipa']), work)
@@ -546,6 +597,10 @@ def install(signed, runtime, conf, work):
     mv {Q(staged_dm)} {Q(live_dm)} || {{ mv {Q(rolled)} {Q(live_dm)}; exit 1; }}
     ''')
         check_tables(live_dm)
+    if new_container != old_container:
+        repaired_envs = repair_relocated_shader_envs(bridge, old_container, new_container)
+        if repaired_envs:
+            say(f'Updated relocated shader paths for {len(repaired_envs)} existing game(s)')
     for name, digest in changed.items():
         if name.endswith(('/Info.plist', '/DmGame', '/game.manifest.json')):
             live_path = installed['bundle_path'] + '/' + name.removeprefix(prefix)

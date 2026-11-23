@@ -661,3 +661,12 @@ The shader-validation retry reached the same `p283` GPU address fault and
 later returned to SpringBoard. No precise shader-validation access report
 was captured, so the invalid resource access remains unidentified. A separate
 fragment-isolation run is diagnostic only and must not be presented as a fix.
+
+The 60.161 M2 reload reproduced the village fault from a copy of the
+existing save. An isolated check rebuilt only the two suspect classic
+`70fa6008c58d` mesh libraries with index storage for 128 triangles in
+threadgroup memory while keeping the declared 126-primitive mesh output
+and reflection. The GPU still reported an address fault during the 3D
+load, this time with faulted 1440×810 passes. The two original libraries
+were restored and verified, and the original save fingerprints remained
+unchanged.

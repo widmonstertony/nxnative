@@ -314,3 +314,17 @@ library was installed in place on 60.160 and verified by hash. Brief dark
 frames still occur when the incoming HDR image is already nearly black.
 The existing font and race libraries and the original game image and
 saves verified after installation.
+
+An A/B replay used copies of the same existing progress on the A10X iPad
+(60.160) and M2 (60.161). The Boxster Spyder's paint preview showed the
+car and the Chinese labels on both. Both showed the same brief dark
+transition with the swatches still visible before the next camera angle.
+The replay kept the sharp-preview library and the original fade.
+
+The old iPad also failed to boot after an in-place update moved the app's
+data container. Its saved shader map and library paths retained the old
+container UUID. The two overrides were repaired on-device. A clean launch
+using the stored settings loaded all 697 shader map entries without
+temporary path overrides. The compatibility installer now updates the
+standard per-game overrides after verifying a container rename. Custom
+paths, the original game image and save fingerprints were preserved.
