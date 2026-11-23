@@ -356,6 +356,10 @@ rendered the title at about 30 FPS without a missing-shader message in
 that replay. Combat remains unverified. The in-place update replaced two
 shader files and verified the game image identity and original saves.
 
+The next isolated 60.160 run reached the first-run BANDAI NAMCO agreement.
+Declining returned to the title, before a local battle. The old iPad had
+no existing local Naruto save to clone for this check.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table
@@ -492,6 +496,15 @@ transition through its capture window. That run logged frames taking
 1–2.3 seconds each and produced neither a playable village nor a Metal
 validation finding. The original game settings and save hashes verified.
 
+The same build also reproduced the GPU address fault after loading a
+copy of the user's locally synced Kokiri Forest autosave. The first
+failing encoder was a 128×128 pass drawing meshes `65d281ec666939bc`
+and `ca5e29acf2872384`. Both installed libraries matched the retained
+versions with triangle-index guards. A replay with color-attachment
+discard elision disabled also faulted in 128×128 passes, this time on
+draws using vertex shader `d14e32c25680db7b`. Both runs restored their
+temporary settings and verified the original saves.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
@@ -543,3 +556,10 @@ Removing position invariance from the two triangle vertex companions on
 language confirmation to Ditto's opening animation. It ended before the
 face editor. The original vertex sources and manifest were restored and the
 original save hashes verified.
+
+A further 60.161 replay cloned the locally available save and still
+started at language selection. It reached the same beige face option in
+the face editor and reproduced the white band over the eyes. The capture's
+pass log showed skipped draws from both rejected pipelines, in the
+768×432 single-channel target and the 1920×1080 color/depth target. The
+test used an isolated save and verified the original hashes afterward.

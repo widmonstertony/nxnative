@@ -53,6 +53,12 @@ def repair_paint(source):
     return repair_hdr_samples(source, 2, "    float3 _88 =", 2)
 
 
+def repair_paint_transition(source):
+    # Camera transitions switch to a second compositor with the same HDR
+    # texture and sampler, but no depth input and different argument indices.
+    return repair_hdr_samples(source, 0, "    float3 _70 =", 2)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("original_msl", type=Path)
@@ -60,6 +66,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     recipes = {
         "bb746472ac3e7420_b.metal": repair_paint,
+        "56adc6eb3a054e0e_b.metal": repair_paint_transition,
         "c85f31db03049b39_b.metal": repair_race,
     }
     recipe = recipes.get(args.original_msl.name)

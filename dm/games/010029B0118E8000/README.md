@@ -295,3 +295,22 @@ libraries, game image and original saves were verified afterward.
 A follow-up replay temporarily dropped the sprite overlay fragment
 `ffd232c1a7e1d183`. The color swatches disappeared, but the car still
 became soft during the same camera sequence. The overlay was restored.
+
+A three-way capture on 60.160 compared the full-resolution scene texture,
+the reduced-resolution input and the final compositor in the same preview.
+On a dark frame, the full-resolution input was already nearly black.
+Four consecutive soft samples instead used a different final fragment,
+`56adc6eb3a054e0e`, without the split marker. That fragment reads the same
+full-resolution scene texture. The capture separates the upstream dark
+frames from the alternate compositor. The temporary capture shader was
+restored and the original save hashes verified.
+
+The transition compositor used the same transparent-black HDR sampler as
+the normal view, at a different argument index. The legacy recipe now
+uses the same mip-zero linear sampler for this variant. A marked A/B run
+confirmed that the changed fragment rendered sharp bodywork in the passes
+that previously produced a gray, defocused image. The normal release
+library was installed in place on 60.160 and verified by hash. Brief dark
+frames still occur when the incoming HDR image is already nearly black.
+The existing font and race libraries and the original game image and
+saves verified after installation.
