@@ -344,6 +344,10 @@ that initial batch. Metal then aborted in the OpenGL upload path when
 it encountered BC3 on the A10X. The classic GL renderer now uses the
 existing CPU BC decoder on hardware without native BC textures, keeping
 the original GL format for upload validation and preserving sRGB and alpha.
+60.160 verified the signed framework and passed the same BC3 upload on
+the old iPad. Naruto reached the title and the initial save-creation dialog
+at about 30 FPS with an isolated save, then reached the game's first-run
+agreement. Combat was outside the completed check.
 
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
@@ -452,6 +456,23 @@ the observation window. The last renderer allocation sample was 8,531 MiB,
 and a few of the final frames took more than two seconds. A compute shader
 was absent from the installed map. The original save hashes matched after
 restoring the test settings. Village control and frame rate remain unverified.
+
+A second 60.158 replay used 128 draws between splits instead of one. The
+village stayed black and the GPU still reported no command-buffer fault
+during the check. The missing compute shader, `d17eefaff4f0bc23`, was
+identified in the installed RomFS by its content key. The retained shader
+translator reproduced it, but Metal 3 for iPadOS 16.1 rejected three image
+`atomic_fetch_or` calls. The compatible image-atomic companion used by this
+runtime was validated for unsigned addition. This compute shader also reads
+push constants at bank 24, while the companion's reflection validator only
+accepts banks 0 and 2. A buffer-backed OR variant compiled for iPadOS 16.1
+and made a valid Metal 3 pipeline on the Mac. Build 60.161 installed the
+signed companion in the title framework and validated its read-only uniform
+binding and push constants. The external copy targets iOS 18.0. The update
+verified the original game images and save fingerprints. The subsequent
+village replay stopped on a Metal GPU address fault in the 128×128 render
+sequence. It did not establish successful execution of the new dispatch or
+reach playable control. The isolated test settings were restored.
 
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
