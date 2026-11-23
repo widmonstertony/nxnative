@@ -221,6 +221,12 @@ classic dirty tracker opens read-only pages before creating a delayed view so
 GPU writes remain visible. `check_t_legacy_border` exercises GPU reads and
 writes spanning a window, address queries, and retirement.
 
+On hosts without Apple4 or Mac2, the classic renderer also defers wrapping
+ordinary pools larger than 64 KiB and uses a 64 KiB window granule. A lookup
+still covers its entire requested range. On A10X this let Mario Kart World
+pass the 64.625 MiB startup pool that Metal previously refused. The GPU test
+also exercises lazy registration and reads and writes through that path.
+
 ### GPU writes dropped by a pool buffer made over write-protected pages
 
 - **Symptom:** what the GPU copies, fills or renders into a pool never shows, with no error and no red line: garbled text where the game copies its font textures inside one pool. `DM_NVN_POOL_CHUNKS=0` clears it when the buffer is a chunk.

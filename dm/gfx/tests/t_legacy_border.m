@@ -82,22 +82,29 @@ static void encoded_border(void) {
     g_sampler_border_color = native_border;
 }
 
-static void check_oversized_pool_views(void) {
-    const size_t stride = 16u << 20, span = 3 * stride;
+static void check_pool_views(BOOL apple3) {
+    int native = g_bare_native;
+    if (apple3) g_bare_native = 0;
+    const size_t stride = pool_window_granule(), span = 3 * stride;
     uint8_t *page = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    CHECK(page != MAP_FAILED, "allocate oversized-pool test pages");
-    if (page == MAP_FAILED) return;
+    CHECK(page != MAP_FAILED, "allocate pool test pages");
+    if (page == MAP_FAILED) { g_bare_native = native; return; }
 
-    // Install the oversized registration directly to exercise hardware-sized
-    // windows on a Mac without allocating a multi-gigabyte guest pool.
-    g_large_pools = realloc(g_large_pools, sizeof *g_large_pools);
-    CHECK(g_large_pools != NULL, "allocate oversized-pool metadata");
-    if (!g_large_pools) { munmap(page, span); return; }
+    int count = g_npool;
     uintptr_t lo = (uintptr_t)page, boundary = (lo + stride - 1) & ~(stride - 1);
     boundary += stride;
-    g_large_pools[0] = (pool_span){lo + 1, lo + span - 1};
-    g_nlarge = g_large_cap = 1;
-    int count = g_npool;
+    if (apple3) {
+        // The crash occurs below the individual Metal buffer limit.
+        CHECK(span < g_dev.maxBufferLength, "Apple3 pool is below the device's single-buffer limit");
+        mtl_pool_add(page + 1, span - 2);
+        CHECK(g_nlarge == 1 && g_npool == count, "register the Apple3 pool without creating a Metal buffer");
+    } else {
+        // Exercise a logical registration on a Mac without allocating the
+        // multi-gigabyte region needed to trigger its true length limit.
+        g_large_pools = legacy_grow(g_large_pools, sizeof *g_large_pools);
+        g_large_pools[0] = (pool_span){lo + 1, lo + span - 1};
+        g_nlarge = g_large_cap = 1;
+    }
     CHECK(mtl_addr_known(boundary - 8, 16) && g_npool == count,
           "address query does not create a buffer");
 
@@ -142,11 +149,13 @@ static void check_oversized_pool_views(void) {
     g_done = done;
     nvn_dirty_remove_range(page);
     munmap(page, span);
+    g_bare_native = native;
 }
 
 int main(void) { @autoreleasepool {
     mtl_init();
-    check_oversized_pool_views();
+    check_pool_views(NO);
+    check_pool_views(YES);
     CHECK(wrapm(NVN_WRAP_MODE_CLAMP_TO_BORDER, YES) == MTLSamplerAddressModeClampToZero,
         "transparent border selects clamp-to-zero on older hardware");
     CHECK(wrapm(NVN_WRAP_MODE_CLAMP_TO_BORDER, NO) == MTLSamplerAddressModeClampToBorderColor,

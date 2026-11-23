@@ -304,6 +304,14 @@ at the same reported Metal allocation of 4,041.73 MiB. Neither run reached
 the title screen. Installed image identities and original save hashes
 verified.
 
+60.151 registered classic-renderer pools lazily on A10X and lowered the
+window granule to 64 KiB. On the iPad the same Mario Kart World installation
+got past the 64.625 MiB pool and submitted more than 212 frames. It stopped
+when the first NVN2 mesh draw required a GPU with native mesh shaders
+(Apple7 or Mac2). No race was verified on A10X. The game image and original
+saves verified after the run. The classic renderer's 113 GPU checks passed
+on the Mac.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table

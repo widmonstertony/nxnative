@@ -730,6 +730,12 @@ static id<MTLBuffer> pool_nocopy(uintptr_t a, uintptr_t b) {
     return [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
 }
 
+// Avoid eagerly wrapping an entire guest pool on the oldest renderer path.
+// Create a Metal buffer once an actual binding needs those pages.
+static uintptr_t pool_window_granule(void) {
+    return g_bare_native ? 16u << 20 : 64u << 10;
+}
+
 // The caller holds g_mu. Adding a view leaves cached views of existing
 // storage usable. Adding a new logical pool or removing one invalidates them.
 static int pool_add_view(uintptr_t lo, uintptr_t hi, uintptr_t base, const void *key, id<MTLBuffer> buf) {
@@ -751,7 +757,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     if (!size || lo > UINTPTR_MAX - (pg - 1) || size > UINTPTR_MAX - lo - (pg - 1))
         MDIE("Invalid memory pool %p+%#llx", mem, (unsigned long long)size);
     uintptr_t hi = lo + size, a = lo & ~(pg - 1), b = (hi + pg - 1) & ~(pg - 1);
-    if (b - a > g_dev.maxBufferLength) {
+    BOOL oversized = b - a > g_dev.maxBufferLength;
+    if (oversized || (!g_bare_native && b - a > pool_window_granule())) {
         pthread_mutex_lock(&g_mu);
         if (g_nlarge == g_large_cap) {
             g_large_cap = g_large_cap ? g_large_cap * 2 : 4;
@@ -762,8 +769,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         g_reg_gen++;
         atomic_fetch_add(&g_pool_gen, 1);
         pthread_mutex_unlock(&g_mu);
-        MLOG("Registered oversized pool %p+%#llx (Metal buffer limit %#llx)", mem,
-             (unsigned long long)size, (unsigned long long)g_dev.maxBufferLength);
+        if (oversized) MLOG("Registered oversized pool %p+%#llx (Metal buffer limit %#llx)", mem,
+                            (unsigned long long)size, (unsigned long long)g_dev.maxBufferLength);
         return;
     }
     id<MTLBuffer> buf = pool_nocopy(a, b);
@@ -834,7 +841,7 @@ static int pool_span_for(uintptr_t addr, uintptr_t end) {
 static int pool_map_window(pool_span p, uintptr_t addr, uintptr_t end) { @autoreleasepool {
     uintptr_t pg = (uintptr_t)getpagesize(), mask = pg - 1;
     uintptr_t limit = g_dev.maxBufferLength & ~mask;
-    uintptr_t granule = MIN(limit, 16u << 20);
+    uintptr_t granule = MIN(limit, pool_window_granule());
     if (!granule) return -1;
     uintptr_t first = addr & ~mask;
     uintptr_t last = MAX(first + pg, (end + mask) & ~mask);
