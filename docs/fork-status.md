@@ -583,6 +583,20 @@ The original Kokiri Forest save hashes and game image identities were
 verified after the in-place update and the replay. A visible, operable
 village remains the release criterion.
 
+60.182 ran the two failing foliage mesh stages as Metal 3 compute and
+indexed draws. The first two 413-object dispatches each expanded to 1,414
+mesh groups. Both original encoder faults were absent in that scoped
+replay. A heavy frame still took 51.5 seconds, including 0.64 seconds of
+GPU execution, and the screen remained black. Increasing the batch size
+on 60.184 did not materially reduce the longest frame. The original game
+image and save hashes verified after the in-place installs.
+
+A separate 60.184 replay used [the upstream subgroup-parameter rewrite](https://github.com/seedds/nxnative/pull/3069)
+on the two same-chain native mesh libraries. The first previous fault did
+not recur in that replay. The second foliage encoder and a later raster
+encoder still reported address faults. Original save hashes and settings
+matched after both scoped tests.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
