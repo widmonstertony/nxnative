@@ -597,6 +597,14 @@ not recur in that replay. The second foliage encoder and a later raster
 encoder still reported address faults. Original save hashes and settings
 matched after both scoped tests.
 
+60.185 retained the upstream native mesh variant for the first draw and
+used compute for the second. The scoped Kokiri Forest replay completed the
+second draw without the earlier foliage encoder fault. Its CPU measurements
+were 4.02 ms for the task/checkpoint and 0.79 ms for mesh and raster encoding.
+A later 1440×810 raster encoder still reported an address fault across a
+batch of 163 draws. The screen was still black. The replay ended at 6%
+battery and verified the original save hashes and restored settings.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
