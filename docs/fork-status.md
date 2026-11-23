@@ -474,6 +474,12 @@ village replay stopped on a Metal GPU address fault in the 128×128 render
 sequence. It did not establish successful execution of the new dispatch or
 reach playable control. The isolated test settings were restored.
 
+On 60.161, temporarily dropping fragment `ccfff02a2829b620` still led to
+a Metal address fault at a 720×405 render pass with zero draws. The
+`d17eefaff4f0bc23` compute encoder subsequently appeared as completed in
+Metal's encoder status. Its rendered output remains unverified. This replay
+also restored the game settings and verified the original save hashes.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
@@ -514,3 +520,8 @@ libraries and their two matching vertex source companions. It used the
 highest proven static index for each shader. The same pipeline compilation
 errors were logged before the replay reached the face editor. All four
 temporary shader changes were reverted and the original saves verified.
+
+On 60.161, returning a scalar float from `45afc24df093ab72_b` for the
+R8Unorm render target still produced the same Metal compiler error. The
+replay covered the language menu. The original library and save hashes were
+verified after restoring the temporary settings.

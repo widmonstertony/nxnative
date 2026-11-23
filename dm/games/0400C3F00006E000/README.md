@@ -362,6 +362,16 @@ On the old iPad, 60.137 passed SDK initialization and then stopped during
 Metal initialization. The game requested a single 2.37 GiB no-copy buffer;
 A10X reported a 1 GiB maximum. This run did not reach the title.
 
+60.151 passed the later pool allocation with lazy GPU registration. The
+old iPad then stopped when the first native mesh draw required a newer GPU
+family. An offline compute conversion of the retained mesh sources exposed
+a duplicate buffer-29 binding in two variants without a task shader. The
+compute wrapper now uses the first-meshlet word from the existing draw
+record. All seven convertible mesh variants compiled as compute and vertex
+entries for iPadOS 16.1. The other eleven require per-primitive outputs that
+the current compute converter cannot express. The old iPad still has no
+verified race.
+
 ### M2 60.105 retained iPadOS 16.1 build (November 14)
 
 The in-place build reused the signed classic cartridge and its

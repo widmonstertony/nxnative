@@ -63,6 +63,11 @@ def mesh_kernels(s):
         sig = re.sub(r',\s*const object_data dm_(?:payload|block)_t& dm_(?:payload|block) \[\[payload\]\]', '', sig)
         if task:
             sig = sig.replace('uint dm_tg [[threadgroup_position_in_grid]]', 'uint dm_gtg [[threadgroup_position_in_grid]]')
+        else:
+            # The native wrapper reads firstMeshlet at slot 29. The compute
+            # draw record already occupies that slot and carries it at word 1.
+            sig = sig.replace(', constant uint* dm_first [[buffer(29)]]', '')
+            body = body.replace('dm_first[0]', 'dm_draw[1]')
         sig += (f', device dm_kvrec_t* dm_kv [[buffer({KV})]], device uint* dm_ki [[buffer({KI})]], constant uint* dm_draw [[buffer({DRAW})]]')
         if task: sig += f', const device dm_payload_t* dm_pl [[buffer({PL})]], const device uint* dm_moff [[buffer({MOFF})]]'
         if task:
