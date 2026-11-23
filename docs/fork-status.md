@@ -295,6 +295,15 @@ an old address-rewrite stub. The current rewriter lowers atomics in newly
 generated stubs, but the archived image still contained 141 such instructions
 across its three modules.
 
+60.150 lowered those retained instructions and registered in place after
+MobileInstallation finished its 501.52-second install. The isolated game
+got through that instruction and opened its audio renderer. It then aborted
+when Metal refused a separate 64.625 MiB no-copy pool that spanned multiple
+guest VM regions. The same refusal occurred with file-backed memory disabled,
+at the same reported Metal allocation of 4,041.73 MiB. Neither run reached
+the title screen. Installed image identities and original save hashes
+verified.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table
@@ -398,3 +407,7 @@ render pipelines with an internal compiler error: `d9baed7ec28d3f7e_b` /
 `45afc24df093ab72_b` and `9b42a7d8889b9cd8_b` / `8743dd823fc8e863_b`.
 Both source pairs compiled in a local M4 pipeline probe. The relationship
 between the rejected pipelines and the dark preview is unconfirmed.
+Removing the unused point-size output from both triangle variants did not
+clear either error on the M2. That diagnostic ended at the character
+confirmation screen. The original companion sources and their manifest
+were restored and the save hashes matched.

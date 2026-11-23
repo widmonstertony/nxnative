@@ -29,6 +29,22 @@ class GuestArmv80Tests(unittest.TestCase):
         immediate = code[-1] & 0x3FFFFFF
         self.assertEqual(last + ((immediate ^ 0x2000000) - 0x2000000) * 4, 0x104)
 
+    def test_ldset_in_address_rewrite_stub_returns_the_old_value(self):
+        instruction = 0xB8313160  # ldset w17, w0, [x11]
+        stub = struct.pack("<4I", 0x8B000021, 0xF9400020, instruction, 0xF9000020)
+        self.assertEqual(list(atomics(stub, [(0, len(stub))])), [(8, instruction, "rmw")])
+
+        thunk = atomic_thunk(instruction, "rmw", 8, 0x100)
+        self.assertEqual(thunk[2:7], [
+            0x885F7D69,  # ldxr w9, [x11]
+            0x2A11012A,  # orr w10, w9, w17
+            0x880C7D6A,  # stxr w12, w10, [x11]
+            0x35FFFFAC,  # cbnz w12, back to the load
+            0x2A0903E0,  # mov w0, w9
+        ])
+        emitted = struct.pack(f"<{len(thunk)}I", *thunk)
+        self.assertFalse(list(atomics(emitted, [(0, len(emitted))])))
+
 
 if __name__ == "__main__":
     unittest.main()
