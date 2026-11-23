@@ -492,12 +492,18 @@ def install(signed, runtime, conf, work):
                                              expected=conf['app_version'], original_app=original['CFBundleVersion']),
                                         indent=2) + '\n')
     say('Installing the signed update over the existing TonTon gamebox')
+    package_size = int(bridge.run(f'stat -c %s {Q(candidate)}'))
+    started = time.monotonic()
     try:
         bridge.call('install_app', {'path': candidate}, timeout=240)
     except (RuntimeError, OSError):
-        # The daemon may still be extracting a large IPA after the call times out.
-        pass
+        # MobileInstallation may still be extracting or verifying the IPA.
+        say('Waiting for the device to register the expected app version')
+    # A10X took over nine minutes to register one 2.8 GiB in-place update,
+    # even though the bridge returned early. Keep observing the same request.
     deadline = time.monotonic() + 300
+    if package_size >= (1 << 30):
+        deadline = max(deadline, started + 900)
     installed = None
     while time.monotonic() < deadline:
         try:

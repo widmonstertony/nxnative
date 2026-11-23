@@ -264,6 +264,13 @@ sections unchanged. Installation completed after the device bridge timed
 out, as confirmed by MobileInstallation and by reading back the new
 framework. The original game image and save fingerprints matched.
 
+60.144 passed that pool initialization on the A10X and rendered more than
+600 frames. The system then moved the app out of the foreground. The
+matching Jetsam report names `DmIOS` and gives `per-process-limit`. The
+same termination recurred with 540p and handheld mode requested. The log
+recorded the settings, though it did not confirm a game-side scene cap.
+There was no second oversized-buffer assertion in either test.
+
 ### M2 Crisis Core first battle (2026-11-22)
 
 On 60.133, the title, new-game setup and opening movie render. The first
@@ -318,6 +325,11 @@ The same 60.143 runtime reproduced the failure in handheld mode with a 0.5
 render scale and MetalFX. It played the opening, then returned Metal error 8
 while streaming the village. The final sample reported 14,014 MiB of GPU
 allocations. The diagnostic overrides were removed after the run.
+
+60.145 also returned Metal error 8 in the same village load with an
+experimental in-pass retirement option. Metal's allocation counter went
+higher in that run. The option was used with an isolated save and was
+removed afterward.
 
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
