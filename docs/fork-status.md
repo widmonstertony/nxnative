@@ -568,6 +568,21 @@ its raw blocks into that slice, decoded 32 selected texels, and verified
 village check on M2. These replays verified unchanged local saves and
 restored the temporary shader and game settings.
 
+60.179 decoded the BC4 volume slice on the iPad and reached additional
+village draws. It initially reported 17 missing same-chain mesh
+companions. Replacing those companions for the scoped replay removed the
+missing-library reports. The village still failed in GPU submission.
+
+60.180 captured the per-encoder Metal status from the indirect-count
+readback command buffer. The two faulted encoders were 1440×810 passes
+immediately after issuing positive draws with object shader
+`99280b7b8aae78df` and mesh shaders `65a079a285d693a0` and
+`eb021183bf9b0092`. Each draw requested 413 object groups. A replay with
+bounds checks on both shaders' output indices reproduced both faults.
+The original Kokiri Forest save hashes and game image identities were
+verified after the in-place update and the replay. A visible, operable
+village remains the release criterion.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
