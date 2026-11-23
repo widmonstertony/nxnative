@@ -312,6 +312,22 @@ when the first NVN2 mesh draw required a GPU with native mesh shaders
 saves verified after the run. The classic renderer's 113 GPU checks passed
 on the Mac.
 
+60.153 kept Pokopia on `a432daafc3d0` and checked its layered companion
+index against that embedded chain. On the A10X the game drew its opening
+animation and reached the Simplified Chinese language confirmation screen
+at about 35 FPS. Three sampler compatibility companions were later
+installed after their original library and reflection hashes matched.
+The first playable map remains unverified.
+
+The same old iPad build gave Naruto a 2.12 GiB guest heap region. Its
+2.03 GiB allocation succeeded and it drew four frames. It then aborted
+when the retained host reached OpenGL texture sharing and NVN/GL sync
+functions it did not implement. Animal Crossing cleared framework
+preflight with an exact-match guest image, shaders and runtime tables.
+Adding the shared fonts took the game further, to graphics initialization
+and a GPU fault before readable gameplay. The shelf increased from 14 to
+15 launchable entries. Game images and original save hashes verified.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table
@@ -397,6 +413,14 @@ transition. Metal still reported error 8 while loading the village. GPU
 allocations reached 15,905 MiB with 82,268 deferred releases in the final
 sample before the fault. The replay used an isolated save, and the original
 save fingerprints matched afterward.
+
+60.154 added submission boundaries after texture copies under pressure.
+The same village load stayed black. The recovered log recorded 16,850 MiB
+allocated and more than 114,000 deferred references in one submission.
+The queue first reached a safe cut at a render-pass boundary, with 127,479
+references waiting. The device service disconnected during that run.
+After reconnection the diagnostic settings were restored and the original
+save fingerprints matched.
 
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
