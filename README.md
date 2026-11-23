@@ -20,7 +20,14 @@ Open **Build → Device builds and transfers** in the Mac Gamebox to filter regi
 
 ## TonTon Gamebox: game fixes and verification
 
-The [upstream optimization audit](docs/tonton-upstream-audit.md) covers every installed title and the new Fate/EXTELLA LINK request: upstream source coverage, classic-device backport boundaries, TonTon-only fixes, measured scenes and unresolved issues. The audit now includes upstream through `df9ca262` (November 13): sparse-binding cache updates, dynamic-resolution MetalFX input ranges, GL/Vulkan texture-lifetime repairs, and geometry/tessellation fixes. Source integration is distinct from device installation. The classic frame-step controller also has a targeted upstream backport, with 86 simulated timing checks passing; installation and performance validation are pending.
+The [upstream optimization audit](docs/tonton-upstream-audit.md) tracks
+the source merge through upstream `0293739d` (November 23), mobile
+compatibility backports and measured scenes. The merged sources add build
+stage progress, Metal 4 mesh-pipeline prebuilding, and texture and depth
+buffer updates. New builds use the updated Metal 4 chain. A launcher update
+can reuse previously signed per-game runtimes and their matching shader
+libraries. A renderer fix can still require rebuilding the affected
+runtime or shader libraries.
 
 The [iOS feature deployment matrix](docs/tonton-upstream-audit.md#ios-shell-functions-november-13) records the NX2Apple snapshot, return-to-library boundary, controller/menu features and remaining device checks. The Air glass update pairs the new bookshelf with the safe return menu in Fate/EXTELLA LINK. Older engines do not acquire teardown support merely from a shell update. On the M2 and older iPad, the classic engine still needs its own safe teardown of guest threads, audio and GPU work before it can return to the library and launch another game.
 
