@@ -291,3 +291,7 @@ depth sampling still produced soft frames. Forcing the sharp input in the
 final compositor still produced both dark and soft frames during camera
 changes. Both trials were reverted. The installed paint, race and font
 libraries, game image and original saves were verified afterward.
+
+A follow-up replay temporarily dropped the sprite overlay fragment
+`ffd232c1a7e1d183`. The color swatches disappeared, but the car still
+became soft during the same camera sequence. The overlay was restored.

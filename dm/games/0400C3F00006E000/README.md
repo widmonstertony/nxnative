@@ -367,10 +367,12 @@ old iPad then stopped when the first native mesh draw required a newer GPU
 family. An offline compute conversion of the retained mesh sources exposed
 a duplicate buffer-29 binding in two variants without a task shader. The
 compute wrapper now uses the first-meshlet word from the existing draw
-record. All seven convertible mesh variants compiled as compute and vertex
-entries for iPadOS 16.1. The other eleven require per-primitive outputs that
-the current compute converter cannot express. The old iPad still has no
-verified race.
+record. The matching task wrapper also accepts the retained native
+first-meshlet binding and supplies the required payload and count buffers.
+All seven task shaders and seven convertible mesh variants compiled for
+iPadOS 16.1 in a compute-only test. The other eleven mesh shaders require
+per-primitive outputs that the current compute converter cannot express.
+The old iPad still has no verified race.
 
 ### M2 60.105 retained iPadOS 16.1 build (November 14)
 

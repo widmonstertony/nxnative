@@ -129,7 +129,13 @@ def task_kernel(s):
     f = s[a:b]
     f = f.replace('[[object]] void main0(', 'kernel void main0_tk(', 1)
     f = re.sub(r',\s*object_data dm_payload_t& dm_payload \[\[payload\]\], mesh_grid_properties dm_grid', '', f)
-    f = f.replace('constant uint* dm_draw [[buffer(29)]])', f'constant uint* dm_draw [[buffer({DRAW})]], device dm_payload_t* dm_pl [[buffer({PL})]], device uint* dm_cnt [[buffer({CNT})]])')
+    f, draw_count = re.subn(
+        rf'constant uint\* dm_(?:draw|first) \[\[buffer\({DRAW}\)\]\]\)',
+        f'constant uint* dm_draw [[buffer({DRAW})]], device dm_payload_t* dm_pl [[buffer({PL})]], device uint* dm_cnt [[buffer({CNT})]])',
+        f,
+    )
+    if draw_count != 1: return None, 'draw record'
+    f = f.replace('dm_first[0]', 'dm_draw[1]')
     f = f.replace('dm_payload.w[', 'dm_pl[dm_tg].w[')
     gm = re.search(r'dm_grid\.set_threadgroups_per_grid\(uint3\((.*), 1u, 1u\)\);', f)
     if not gm: return None, 'grid'

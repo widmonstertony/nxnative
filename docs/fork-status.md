@@ -349,6 +349,13 @@ the old iPad. Naruto reached the title and the initial save-creation dialog
 at about 30 FPS with an isolated save, then reached the game's first-run
 agreement. Combat was outside the completed check.
 
+Another 60.160 run captured 50 missing fragment shaders. The iPadOS 16.1
+library expanded to 387 entries, with the binding reflection of all 337
+existing entries unchanged. The old iPad loaded the expanded library and
+rendered the title at about 30 FPS without a missing-shader message in
+that replay. Combat remains unverified. The in-place update replaced two
+shader files and verified the game image identity and original saves.
+
 The A10X shelf reported 14 launchable entries out of 24 on 60.146. The
 other ten failed framework preflight. Nine declared a different shader
 chain from the shared runtime, and the tenth also lacked a module table
@@ -480,6 +487,11 @@ a Metal address fault at a 720×405 render pass with zero draws. The
 Metal's encoder status. Its rendered output remains unverified. This replay
 also restored the game settings and verified the original save hashes.
 
+The next replay enabled Metal validation and observed the black village
+transition through its capture window. That run logged frames taking
+1–2.3 seconds each and produced neither a playable village nor a Metal
+validation finding. The original game settings and save hashes verified.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
@@ -525,3 +537,9 @@ On 60.161, returning a scalar float from `45afc24df093ab72_b` for the
 R8Unorm render target still produced the same Metal compiler error. The
 replay covered the language menu. The original library and save hashes were
 verified after restoring the temporary settings.
+
+Removing position invariance from the two triangle vertex companions on
+60.161 left both pipeline errors in place. The replay advanced through
+language confirmation to Ditto's opening animation. It ended before the
+face editor. The original vertex sources and manifest were restored and the
+original save hashes verified.
