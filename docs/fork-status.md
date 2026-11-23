@@ -391,6 +391,13 @@ scene. Metal's allocation counter reached 19,579 MiB against more than
 21,000 resident root textures. No matching system crash report was captured
 in this run. The original save fingerprints still match.
 
+60.152 left provably unwritten render targets unallocated in the dynamic
+descriptor table. The M2 replay left 43 targets unallocated during the
+transition. Metal still reported error 8 while loading the village. GPU
+allocations reached 15,905 MiB with 82,268 deferred releases in the final
+sample before the fault. The replay used an isolated save, and the original
+save fingerprints matched afterward.
+
 ### M2 Pokopia cold launch on 60.143 (2026-11-22)
 
 The installed independent runtime loaded from the game shelf with an
@@ -419,3 +426,9 @@ Removing the unused point-size output from both triangle variants did not
 clear either error on the M2. That diagnostic ended at the character
 confirmation screen. The original companion sources and their manifest
 were restored and the save hashes matched.
+
+On 60.152, two replacement fragment libraries built specifically for
+iPadOS 16.1 at Metal optimization level zero still reproduced the black
+clothing and arms in the face editor. Changing the face color left the
+artifact visible. The same render pipeline compilation error was recorded.
+The original libraries were restored and the original save hashes matched.
