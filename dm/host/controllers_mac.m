@@ -14,6 +14,7 @@
 #include "steam_input.h"
 #include "pad_motion.h"
 #include "pad_hid_mac.h"
+#include "pad_gip_mac.h"
 #include "pad_joycon_mac.h"
 #include "pad_switch2_apple.h"
 #include "home_quit.h"
@@ -29,6 +30,7 @@ enum { PAD_OFF, PAD_DPAD, PAD_LEFT_STICK, PAD_RIGHT_STICK, PAD_TOUCH };
     IOHIDDeviceRef device; // Triton only: proprietary output and feature reports
     joycon_pad *joycon; // borrowed until joycon_detach, with an independent player slot
     hid_pad *generic; // borrowed until hidpad_detach; never a Triton output route
+    gip_pad *gip; // borrowed until gippad_detach
     s2_pad *s2; // borrowed until s2pad_detach: a Switch 2 controller over Bluetooth LE (pad_switch2_apple.h)
     unsigned char report[512];
     BOOL feature_warning, rumble_warning, gyro_enabled, connected;
@@ -378,6 +380,34 @@ static void controller_pro_changed(void) {
     }
     dm_motion_pro_players(count, players);
 }
+static DMController *controller_pro_for_player(int player) {
+    DMController *found = nil;
+    for (DMController *controller in g_devices) {
+        GCController *native = controller.controller;
+        if (controller->slot < 0 || (g_merge ? 0 : controller->slot) != player ||
+            pro_model_of_category(native.productCategory.UTF8String) != PRO_MODEL_PRO) continue;
+        if (found) return nil;
+        found = controller;
+    }
+    return found;
+}
+static int controller_pro_stick_moved(GCController *controller, int right) {
+    GCExtendedGamepad *profile = controller.extendedGamepad;
+    GCControllerDirectionPad *mapped = right ? profile.rightThumbstick : profile.leftThumbstick;
+    if (mapped.xAxis.value != 0.f || mapped.yAxis.value != 0.f) return 1;
+    id<GCDirectionPadElement> raw = controller.input.unmappedInput.dpads[right ? GCInputRightThumbstick : GCInputLeftThumbstick];
+    return raw && (raw.xAxis.value != 0.f || raw.yAxis.value != 0.f);
+}
+static int controller_pro_gc_sticks(int player, int moved[2]) {
+    DMController *controller = controller_pro_for_player(player);
+    if (!controller) return 0;
+    for (int stick = 0; stick < 2; stick++) moved[stick] = controller_pro_stick_moved(controller.controller, stick);
+    return 1;
+}
+static void controller_pro_stick_changed(int player) {
+    DMController *controller = controller_pro_for_player(player);
+    if (controller) controller_read_gc(controller, [controller.controller.input capture]);
+}
 static void controller_attach_motion(DMController *d) {
     if (d.controller && d->slot >= 0 && g_focus && d->gyro_enabled) dm_motion_attach(d.controller, g_merge ? 0 : d->slot);
 }
@@ -436,6 +466,9 @@ GCController *front_controllers_quit_buttons(int *home, int *a, int *b) {
             // A Switch 2 controller has no GCController, so no holder (the prompt shows the default A / B symbols)
             if(s2_pad_home(&d->s2->st)) *home=1;
             s2_pad_ab(&d->s2->st,a,b);
+        } else if(d->gip) {
+            *home |= d->gip->st.guide;
+            *a |= !!(d->gip->st.buttons & DM_BTN_A); *b |= !!(d->gip->st.buttons & DM_BTN_B);
         } else if(d->device) {
             // Triton's Guide and physical A (bottom) / B (right), before DM_PAD_MAP.
             *home|=!!(d->quit_buttons & (1u<<22));
@@ -485,6 +518,7 @@ static void controller_update_focus(void) {
         for(DMController *d in g_devices) if(d->slot>=0) {
             if(d.controller) { controller_attach_motion(d); controller_read_gc(d,[d.controller.input capture]); }
             else if(d->generic) hidpad_read(d->generic);
+            else if(d->gip) gippad_read(d->gip);
             else if(d->joycon) joycon_read(d->joycon);
             else if(d->s2) s2pad_read(d->s2);
             else if(d->device) controller_publish(d);
@@ -509,6 +543,7 @@ void front_controllers_applet_buttons(int *a, int *b) {
         if(g) { *a|=g.buttonA.isPressed; *b|=g.buttonB.isPressed; }
         else if(d->joycon) joycon_pad_buttons(d->joycon,NULL,a,b);
         else if(d->s2) s2_pad_ab(&d->s2->st,a,b);
+        else if(d->gip) { *a |= !!(d->gip->st.buttons & DM_BTN_A); *b |= !!(d->gip->st.buttons & DM_BTN_B); }
         else if(d->device) { *a|=!!(d->quit_buttons & DM_BTN_B); *b|=!!(d->quit_buttons & DM_BTN_A); }   // Triton's physical A (bottom) / B (right)
         else if(d->generic) {
             uint64_t m=d->generic->twin && hidpad_is_pro(d->generic) ? d->generic->pro_m : pad_hid_buttons(&d->generic->st);
@@ -615,6 +650,41 @@ static void hidpad_attach(hid_pad *hid) {
 static void hidpad_detach(hid_pad *hid) {
     DMController *d=controller_for_hid(hid); if(!d) return;
     controller_disconnect(d); d->generic=NULL; [g_devices removeObject:d];
+    controller_panel_refresh();
+}
+static DMController *controller_for_gip(const gip_pad *pad) {
+    for (DMController *controller in g_devices) if (controller->gip == pad) return controller;
+    return nil;
+}
+static void gippad_read(gip_pad *pad) {
+    DMController *controller = controller_for_gip(pad);
+    if (!controller) return;
+    const pad_gip *input = &pad->st;
+    controller->input = (steam_state){.buttons = (uint32_t)input->buttons,
+        .lx = input->s[0], .ly = input->s[1], .rx = input->s[2], .ry = input->s[3]};
+    if (controller->slot < 0) {
+        if (!input->guide && !input->buttons) return;
+        controller_connect(controller);
+    }
+    if (controller_listening()) front_home_poll();
+    controller_publish(controller);
+}
+static void gippad_attach(gip_pad *pad) {
+    DMController *controller = [DMController new];
+    controller->gip = pad;
+    controller.name = @(pad->name);
+    controller.model = [@"Xbox USB / " stringByAppendingString:controller.name];
+    controller_load_map(controller);
+    [g_devices addObject:controller];
+    if (!g_press_to_join) controller_connect(controller);
+    front_cp_poll();
+}
+static void gippad_detach(gip_pad *pad) {
+    DMController *controller = controller_for_gip(pad);
+    if (!controller) return;
+    controller_disconnect(controller);
+    controller->gip = NULL;
+    [g_devices removeObject:controller];
     controller_panel_refresh();
 }
 static int32_t controller_axis(float v) { return (int32_t)(fmaxf(-1, fminf(1, v)) * DM_STICK_MAX); }
@@ -827,8 +897,13 @@ static void controller_read_gc(DMController *d, id<GCDevicePhysicalInputState> s
     K(GCInputButtonHome,22); K(GCInputButtonShare,23);
     #undef K
     id<GCDirectionPadElement> left=state.dpads[GCInputLeftThumbstick], right=state.dpads[GCInputRightThumbstick];
-    d->input = (steam_state){.buttons=b, .lx=controller_axis(left.xAxis.value), .ly=controller_axis(left.yAxis.value),
-                              .rx=controller_axis(right.xAxis.value), .ry=controller_axis(right.yAxis.value)};
+    int32_t sticks[4] = {controller_axis(left.xAxis.value), controller_axis(left.yAxis.value),
+        controller_axis(right.xAxis.value), controller_axis(right.yAxis.value)};
+    if (d->slot >= 0 && pro_model_of_category(d.controller.productCategory.UTF8String) == PRO_MODEL_PRO) {
+        int moved[2] = {controller_pro_stick_moved(d.controller, 0), controller_pro_stick_moved(d.controller, 1)};
+        dm_pro_sticks(g_merge ? 0 : d->slot, moved, sticks);
+    }
+    d->input = (steam_state){.buttons = b, .lx = sticks[0], .ly = sticks[1], .rx = sticks[2], .ry = sticks[3]};
     if(d->slot<0) {
         if(!b && abs(d->input.lx)<4096 && abs(d->input.ly)<4096 && abs(d->input.rx)<4096 && abs(d->input.ry)<4096) return;
         controller_connect(d);
@@ -1347,9 +1422,10 @@ void front_controllers_start(void) {
     joycon_start();
     controllers_changed(nil);
     hidpad_start();
+    gippad_start();
     static const dm_switch2_front s2front={s2pad_attach,s2pad_detach,s2pad_read,s2pad_player,s2pad_blocked};
     dm_switch2_start(&s2front);
-    dm_motion_pro_start(controller_pro_changed);
+    dm_motion_pro_start(controller_pro_changed, controller_pro_gc_sticks, controller_pro_stick_changed);
     dm_motion_pro_active(g_focus);
     for(NSNotificationName name in @[NSApplicationDidResignActiveNotification,NSApplicationDidBecomeActiveNotification])
         [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { front_controllers_focus([n.name isEqual:NSApplicationDidBecomeActiveNotification]); }];

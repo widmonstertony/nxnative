@@ -303,6 +303,8 @@ static int boot_env(void) {
     BOOL per_game = [romfs hasPrefix:gdir];   // messaging nil is NO here: no data means the shared layout
     if (!set_data_env(romfs, NO)) { if (!romfs) romfs_identity_report(doc);   // a slim build says why its romfs.img was not used
         fprintf(stderr, "boot: no game data yet (Documents/romfs.img, Documents/romfs or <App>/romfs); the launcher asks for it\n"); }
+    setenv("DM_ALBUM_DIR", [doc stringByAppendingPathComponent:@"album"].fileSystemRepresentation, 0);   // local album screenshots (hle_album.c), visible in Files; created lazily on first save
+    setenv("DM_SYSTEM_DIR", [doc stringByAppendingPathComponent:@"system"].fileSystemRepresentation, 0);
     setenv("DM_GUEST_FILE_DIR", NSTemporaryDirectory().fileSystemRepresentation, 0);   // DM_GUEST_FILE (hle_svc.c) keeps the guest's memory in files there
     NSString *program_dir = g_prog ? [res stringByAppendingPathComponent:g_prog] : res;
     NSString *siblings = [program_dir stringByAppendingPathComponent:@"romfs_programs"];

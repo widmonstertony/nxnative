@@ -2,6 +2,7 @@
 PYTHON ?= python3
 
 # Game profile (dm/games/<id>/): the host is built for it (make GAME=base game title ID, required: there is no default game). game_profile.h is generated from game.tsv into gen/<id>/; the chain version header dmsh_chain.h (one for every game) lives in dm/gfx/nvn
+PYTHON ?= $(or $(DM_PYTHON),python3)
 # without GAME only clean passes; anything else (a bare make too, whose default goal is the host) stops and lists the profiles
 ifeq ($(strip $(GAME)),)
 ifneq ($(filter-out clean,$(or $(MAKECMDGOALS),dmhost)),)
@@ -26,7 +27,7 @@ ifeq ($(filter -j%,$(MAKEFLAGS)),)
 MAKEFLAGS += -j$(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 endif
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c save_cloudkit.m memstat.m haptics_apple.m audio_input.c audio_input_mac.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m controllers_mac.m web_apple.m entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c save_cloudkit.m memstat.m haptics_apple.m audio_input.c audio_input_mac.m audio_input_dualsense_mac.m dualsense_mic_mac.c pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m controllers_mac.m web_apple.m entry.S
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
 GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
@@ -78,7 +79,7 @@ FORCE:
 # lists the headers its source read (-MMD; -MP: a removed header is no error), so an edit rebuilds the objects that include it and the link; the Makefile (CFLAGS, these lines)
 # rebuilds them all. The generated headers come first (order-only: the dependency files name them for the sources that read them). The NSP script builds gen/<id>/dmhost and takes it
 HOST_CFLAGS = $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc
-HOST_FRAMEWORKS = -framework Cocoa -framework CloudKit -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework CoreAudio -framework AVFAudio -framework CoreFoundation -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+HOST_FRAMEWORKS = -framework Cocoa -framework CloudKit -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework IOUSBHost -framework AudioToolbox -framework CoreAudio -framework AVFAudio -framework CoreFoundation -framework CoreGraphics -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
 HOST_SRC = $(SRC) $(GFX)
 ifneq ($(filter ../%,$(filter-out ../gfx/%,$(HOST_SRC))),)
 $(error host sources outside dm/host and dm/gfx need an object rule: $(filter ../%,$(filter-out ../gfx/%,$(HOST_SRC))))
@@ -94,6 +95,7 @@ $(OBJ_DIR)/gfx/%.o: ../gfx/% Makefile ../mac/min_os.mk | $(GAME_H) $(MSL_H)
 	clang $(HOST_CFLAGS) -MMD -MP -c $< -o $@
 $(HOST_BIN): $(HOST_OBJ) $(VPX_LIB) $(DAV1D_LIB) Makefile ../mac/min_os.mk
 	clang $(HOST_CFLAGS) -o $@ $(HOST_OBJ) $(VPX_LIB) $(DAV1D_LIB) $(HOST_FRAMEWORKS)
+	./$@ --check-tables || { rm -f $@; exit 1; }
 	dsymutil $@
 ifneq ($(strip $(GAME)),)
 -include $(HOST_OBJ:.o=.d)

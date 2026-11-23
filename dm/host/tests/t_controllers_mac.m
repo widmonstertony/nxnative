@@ -224,6 +224,7 @@ void dm_haptics_apple_controller(int p, GCController *c) { ++route_changes[p]; r
 @end
 @implementation TestLiveInput
 - (id)capture { return self; }
+- (id)unmappedInput { return self; }
 - (id)buttons {
     NSMutableDictionary *buttons=[NSMutableDictionary dictionary];
     for(NSString *key in self.snapshot.physicalInputProfile.buttons) {
@@ -567,15 +568,21 @@ static void test_native_motion_integration(void) {
         static char keyboard; if (!merged) pad_slot_take(&g_slots, &keyboard, "keyboard");
         MotionController *c = [MotionController new]; c.testMotion = [TestNativeMotion new];
         TestNativeMotion *m = c.testMotion; m.hasRotationRate = YES; m.sensorsRequireManualActivation = YES;
-        m.acceleration = (GCAcceleration){0, 0, -1}; m.rotationRate = (GCRotationRate){0, 1, 0};
+        m.acceleration = (GCAcceleration){0, 0, -1}; m.rotationRate = (GCRotationRate){0, 0, 0};
         DMController *d = controller_add_gc(c);
         [c.extendedGamepad.buttonB setValue:1]; gc_event(d);
         int player = merged ? 0 : 1;
         assert(d->slot == player && m.sensorsActive && m.valueChangedHandler);
         assert(g_pro_pair[PRO_MODEL_PRO].controllers == 1 && g_pro_pair[PRO_MODEL_PRO].slot == player);
+        unsigned previous_samples = native_motion_samples;
+        m.valueChangedHandler((id)m); assert(native_motion_samples == previous_samples);
+        m.rotationRate = (GCRotationRate){0, 1, 0};
         m.valueChangedHandler((id)m); assert(native_motion_player == player && native_motion_samples);
         front_controllers_focus(0); assert(!m.sensorsActive && !m.valueChangedHandler && native_motion_cleared == player && !g_pro_active);
         front_controllers_focus(1); assert(m.sensorsActive && m.valueChangedHandler && g_pro_active);
+        m.rotationRate = (GCRotationRate){0, 0, 0};
+        m.valueChangedHandler((id)m);
+        m.rotationRate = (GCRotationRate){0, 1, 0};
         m.valueChangedHandler((id)m); assert(native_motion_player == player);
         controller_disconnect(d); assert(!m.valueChangedHandler && !m.sensorsActive && g_pro_pair[PRO_MODEL_PRO].slot == -1);
         [g_devices removeObject:d]; controller_pro_changed(); assert(g_pro_pair[PRO_MODEL_PRO].controllers == 0);
